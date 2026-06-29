@@ -1,0 +1,26 @@
+name: Backend CD
+
+on:
+  workflow_run:
+    workflows: ['Backend CI']
+    types:
+      - completed
+    branches: [main, develop]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Deploy to AWS EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /home/ec2-user/app
+            docker compose down --remove-orphans
+            docker compose pull
+            docker compose up -d --force-recreate --remove-orphans
+            docker image prune -af
