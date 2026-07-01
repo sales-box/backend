@@ -4,6 +4,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsUrl,
   Max,
   Min,
   MinLength,
@@ -58,6 +59,23 @@ export class EnvironmentVariables {
   @IsInt()
   @Min(1)
   THROTTLE_LIMIT: number = 100;
+
+  // ----- Google OAuth (Gmail) -----
+
+  @IsString()
+  @MinLength(1)
+  GOOGLE_CLIENT_ID!: string;
+
+  @IsString()
+  @MinLength(1)
+  GOOGLE_CLIENT_SECRET!: string;
+
+  @IsUrl({ require_tld: false })
+  GOOGLE_REDIRECT_URI!: string;
+
+  @IsString()
+  @MinLength(1)
+  GOOGLE_SCOPES!: string;
 }
 
 export function validateEnv(
