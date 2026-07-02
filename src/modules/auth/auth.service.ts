@@ -108,4 +108,25 @@ export class AuthService {
       throw new BadRequestException('Google authentication failed');
     }
   }
+
+  public async getUserCredentials(email: string): Promise<{
+    accessToken: string;
+    refreshToken?: string;
+    tokenExpiresAt?: Date;
+  }> {
+    const account = await this.prisma.connectedAccount.findUnique({
+      where: { email },
+    });
+    if (!account) {
+      throw new BadRequestException('No connected account found for user');
+    }
+
+    return {
+      accessToken: this.crypto.decrypt(account.accessToken),
+      refreshToken: account.refreshToken
+        ? this.crypto.decrypt(account.refreshToken)
+        : undefined,
+      tokenExpiresAt: account.tokenExpiresAt ?? undefined,
+    };
+  }
 }
