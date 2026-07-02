@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { google } from 'googleapis';
+import { gmail_v1, google } from 'googleapis';
 
 @Injectable()
 export class EmailsService {
@@ -22,26 +22,50 @@ export class EmailsService {
 
     try {
       // Query threads involving clientEmail (covers to, from, cc, bcc)
-      const listRes = await gmail.users.threads.list({
-        userId: 'me',
-        q: clientEmail,
-      });
-
-      const threads = listRes.data.threads || [];
-      if (threads.length === 0) {
+      const allThreads: gmail_v1.Schema$Thread[] = [];
+      let pageToken: string | undefined = undefined;
+      do {
+        try {
+          const listRes: { data: gmail_v1.Schema$ListThreadsResponse } =
+            await gmail.users.threads.list({
+              userId: 'me',
+              q: clientEmail,
+              pageToken: pageToken,
+              maxResults: 20,
+            });
+          const responseData: gmail_v1.Schema$ListThreadsResponse =
+            listRes.data;
+          const threads: gmail_v1.Schema$Thread[] = responseData.threads ?? [];
+          allThreads.push(...threads);
+          pageToken = responseData.nextPageToken ?? undefined;
+        } catch (pageErr) {
+          this.logger.warn(
+            `Pagination error after collecting ${allThreads.length} thread(s): ${pageErr instanceof Error ? pageErr.message : String(pageErr)}`,
+          );
+          break; // stop looping, keep whatever we collected so far
+        }
+      } while (pageToken);
+      if (!allThreads.length) {
         return [];
       }
-
       // Fetch detailed thread objects
-      const threadDetailsPromises = threads.map(async (t) => {
-        const threadRes = await gmail.users.threads.get({
-          userId: 'me',
-          id: t.id!,
-        });
-        return threadRes.data;
+      const threadDetailsPromises = allThreads.map(async (t) => {
+        try {
+          const threadRes = await gmail.users.threads.get({
+            userId: 'me',
+            id: t.id!,
+          });
+          return threadRes.data;
+        } catch (err) {
+          this.logger.warn(
+            `Failed to fetch details for thread ${t.id}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          return null;
+        }
       });
 
-      const fullThreads = await Promise.all(threadDetailsPromises);
+      const fullThreadsRaw = await Promise.all(threadDetailsPromises);
+      const fullThreads = fullThreadsRaw.filter((t) => t !== null);
 
       const formattedThreads = fullThreads.map((thread) => {
         const messages = thread.messages || [];
@@ -112,7 +136,7 @@ export class EmailsService {
       this.logger.error(
         `Failed to fetch threads for client ${clientEmail}: ${error instanceof Error ? error.message : String(error)}`,
       );
-      throw error;
+      return [];
     }
   }
 

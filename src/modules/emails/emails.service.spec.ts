@@ -56,6 +56,8 @@ describe('EmailsService', () => {
       expect(mockGmail.users.threads.list).toHaveBeenCalledWith({
         userId: 'me',
         q: clientEmail,
+        pageToken: undefined,
+        maxResults: 20,
       });
       expect(mockGmail.users.threads.get).not.toHaveBeenCalled();
     });
@@ -135,18 +137,44 @@ describe('EmailsService', () => {
       expect(mockGmail.users.threads.list).toHaveBeenCalledWith({
         userId: 'me',
         q: clientEmail,
+        pageToken: undefined,
+        maxResults: 20,
       });
       expect(mockGmail.users.threads.get).toHaveBeenCalledTimes(2);
     });
 
-    it('should throw an error if list threads API call fails', async () => {
+    it('should return empty array if list threads API call fails', async () => {
       mockGmail.users.threads.list.mockRejectedValue(
         new Error('Gmail API Error'),
       );
 
-      await expect(
-        service.fetchThreadsForClient(clientEmail, token),
-      ).rejects.toThrow('Gmail API Error');
+      const result = await service.fetchThreadsForClient(clientEmail, token);
+      expect(result).toEqual([]);
+    });
+
+    it('should filter out individual threads that fail to fetch details', async () => {
+      mockGmail.users.threads.list.mockResolvedValue({
+        data: {
+          threads: [{ id: 'thread1' }, { id: 'thread2' }],
+        },
+      });
+
+      mockGmail.users.threads.get.mockImplementation(({ id }) => {
+        if (id === 'thread1') {
+          return Promise.resolve({
+            data: {
+              id: 'thread1',
+              snippet: 'Snippet 1',
+              messages: [],
+            },
+          });
+        }
+        return Promise.reject(new Error('Failed to get thread2'));
+      });
+
+      const result = await service.fetchThreadsForClient(clientEmail, token);
+      expect(result).toHaveLength(1);
+      expect(mockGmail.users.threads.get).toHaveBeenCalledTimes(2);
     });
   });
 });
