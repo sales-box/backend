@@ -6,6 +6,6 @@ import { CryptoService } from './crypto.service';
 @Module({
   controllers: [AuthController],
   providers: [AuthService, CryptoService],
-  exports: [AuthService],
+  exports: [AuthService, CryptoService],
 })
 export class AuthModule {}
