@@ -1,7 +1,3 @@
-// Inbox Sales Copilot — Prisma schema (foundation scaffold).
-// Intentionally minimal: no domain models yet (modeled in a later sprint).
-// pgvector is enabled now so RAG embedding tables are unblocked later.
-
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["postgresqlExtensions"]
@@ -10,8 +6,6 @@ generator client {
 generator erd {
   provider = "prisma-erd-generator"
   output   = "ERD.md"
-  // Markdown (Mermaid) output — no Chromium/mmdc needed. Becomes a real
-  // diagram once domain models are added in a later sprint.
 }
 
 datasource db {
@@ -20,8 +14,6 @@ datasource db {
   extensions = [vector]
 }
 
-// Connected Gmail OAuth accounts. Access/refresh tokens are stored
-// encrypted at rest.
 model ConnectedAccount {
   id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   email          String    @unique
@@ -36,8 +28,6 @@ model ConnectedAccount {
   @@map("connected_accounts")
 }
 
-// Stores Gmail message IDs we already saw. The unique messageId is the
-// idempotency guard: if Gmail returns the same unread email again, we skip it.
 model ProcessedGmailMessage {
   id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   messageId    String   @unique @map("message_id")
