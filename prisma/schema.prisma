@@ -19,3 +19,31 @@ datasource db {
   url        = env("DATABASE_URL")
   extensions = [vector]
 }
+
+// Connected Gmail OAuth accounts. Access/refresh tokens are stored
+// encrypted at rest.
+model ConnectedAccount {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email          String    @unique
+  accessToken    String    @map("access_token")
+  refreshToken   String?   @map("refresh_token")
+  scope          String?
+  tokenExpiresAt DateTime? @map("token_expires_at") @db.Timestamptz(6)
+  status         String    @default("connected")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("connected_accounts")
+}
+
+// Stores Gmail message IDs we already saw. The unique messageId is the
+// idempotency guard: if Gmail returns the same unread email again, we skip it.
+model ProcessedGmailMessage {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  messageId    String   @unique @map("message_id")
+  threadId     String?  @map("thread_id")
+  accountEmail String   @map("account_email")
+  processedAt  DateTime @default(now()) @map("processed_at") @db.Timestamptz(6)
+
+  @@map("processed_gmail_messages")
+}
