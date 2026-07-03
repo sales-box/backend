@@ -14,6 +14,36 @@ datasource db {
   extensions = [vector]
 }
 
+model Client {
+  id           String        @id @default(uuid())
+  email        String        @unique
+  name         String?
+  company      String?
+  status       String        @default("new_inquiry")
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  interactions Interaction[]
+
+  @@map("clients")
+}
+
+model Interaction {
+  id             String   @id @default(uuid())
+  clientId       String   @map("client_id")
+  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  date           DateTime @default(now())
+  type           String
+  subject        String
+  aiSummary      String   @map("ai_summary")
+  classification String?
+  confidence     Float?
+  recommendation String?
+  createdAt      DateTime @default(now())
+
+  @@map("interactions")
+}
+
+
 model ConnectedAccount {
   id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   email          String    @unique
