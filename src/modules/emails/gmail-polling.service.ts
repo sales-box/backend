@@ -23,9 +23,9 @@ export class GmailPollingService
   ) {}
 
   onApplicationBootstrap(): void {
-    this.timer = setInterval(() => {
-      void this.pollAllAccounts();
-    }, POLL_INTERVAL_MS);
+    // this.timer = setInterval(() => {
+    //   void this.pollAllAccounts();
+    // }, POLL_INTERVAL_MS);
   }
 
   onModuleDestroy(): void {
