@@ -49,13 +49,13 @@ describe('GmailProvider', () => {
   });
 
   it('creates a client for the given account', async () => {
-    await provider.getMessage('msg-1', 'account-42');
+    await provider.fetchMessage('msg-1', 'account-42');
 
     expect(mockCreateClient).toHaveBeenCalledWith('account-42');
   });
 
   it('fetches the message in full format', async () => {
-    await provider.getMessage('msg-1', 'account-1');
+    await provider.fetchMessage('msg-1', 'account-1');
 
     expect(mockMessagesGet).toHaveBeenCalledWith({
       userId: 'me',
@@ -65,13 +65,13 @@ describe('GmailProvider', () => {
   });
 
   it('passes the raw API data to the parser', async () => {
-    await provider.getMessage('msg-1', 'account-1');
+    await provider.fetchMessage('msg-1', 'account-1');
 
     expect(mockParseMessage).toHaveBeenCalledWith(stubRawData);
   });
 
   it('returns the result from the parser', async () => {
-    const result = await provider.getMessage('msg-1', 'account-1');
+    const result = await provider.fetchMessage('msg-1', 'account-1');
 
     expect(result).toEqual(stubMessage);
   });
@@ -79,7 +79,7 @@ describe('GmailProvider', () => {
   it('propagates errors from the client factory', async () => {
     mockCreateClient.mockRejectedValue(new Error('Auth failure'));
 
-    await expect(provider.getMessage('msg-1', 'account-1')).rejects.toThrow(
+    await expect(provider.fetchMessage('msg-1', 'account-1')).rejects.toThrow(
       'Auth failure',
     );
   });
@@ -87,7 +87,7 @@ describe('GmailProvider', () => {
   it('propagates errors from the Gmail API', async () => {
     mockMessagesGet.mockRejectedValue(new Error('API error'));
 
-    await expect(provider.getMessage('msg-1', 'account-1')).rejects.toThrow(
+    await expect(provider.fetchMessage('msg-1', 'account-1')).rejects.toThrow(
       'API error',
     );
   });

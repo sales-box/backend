@@ -14,9 +14,9 @@ export class GmailWebhookService {
     this.topicName = this.config.getOrThrow<string>('GOOGLE_PUBSUB_TOPIC_NAME');
   }
 
-  async subscribeToTopic(emailAccountId: string): Promise<void> {
+  async subscribeToTopic(emailAccount: string): Promise<void> {
     const gmailClient =
-      await this.gmailClientFactory.createClient(emailAccountId);
+      await this.gmailClientFactory.createClient(emailAccount);
 
     const response = await gmailClient.users.watch({
       userId: 'me',
@@ -28,7 +28,7 @@ export class GmailWebhookService {
     });
 
     console.log(
-      `Subscribed to Gmail Pub/Sub topic for account ${emailAccountId}:`,
+      `Subscribed to Gmail Pub/Sub topic for account ${emailAccount}:`,
       response.data,
     );
   }

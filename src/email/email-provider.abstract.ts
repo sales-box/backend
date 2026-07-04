@@ -1,8 +1,8 @@
 import { ParsedMessage } from '@/email/email.types';
 
 export abstract class EmailProvider {
-  abstract getMessage(
+  abstract fetchMessage(
     messageId: string,
-    emailAccountId: string,
+    emailAccount: string,
   ): Promise<ParsedMessage>;
 }

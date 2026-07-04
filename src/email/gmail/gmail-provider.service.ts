@@ -8,10 +8,10 @@ import { GmailClientFactory } from "@/email/gmail/gmail-client.factory";
 export class GmailProvider implements EmailProvider {
     constructor(private readonly clientFactory: GmailClientFactory, private readonly parser: GmailParserService) {}
 
-    async getMessage(messageId: string, emailAccountId: string): Promise<ParsedMessage> {
-      const client = await this.clientFactory.createClient(emailAccountId);
+    async fetchMessage(messageId: string, emailAccount: string): Promise<ParsedMessage> {
+      const gmailClient = await this.clientFactory.createClient(emailAccount);
 
-      const message = await client.users.messages.get({
+      const message = await gmailClient.users.messages.get({
         userId: "me",
         id: messageId,
         format: "full"

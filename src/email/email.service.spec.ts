@@ -27,7 +27,7 @@ describe('EmailService', () => {
         EmailService,
         {
           provide: EmailProvider,
-          useValue: { getMessage: mockGetMessage },
+          useValue: { fetchMessage: mockGetMessage },
         },
       ],
     }).compile();
@@ -35,10 +35,10 @@ describe('EmailService', () => {
     service = module.get<EmailService>(EmailService);
   });
 
-  it('delegates getMessage to the provider with correct arguments', async () => {
+  it('delegates fetchMessage to the provider with correct arguments', async () => {
     mockGetMessage.mockResolvedValue(stubMessage);
 
-    const result = await service.getMessage('msg-1', 'account-1');
+    const result = await service.fetchMessage('msg-1', 'account-1');
 
     expect(mockGetMessage).toHaveBeenCalledTimes(1);
     expect(mockGetMessage).toHaveBeenCalledWith('msg-1', 'account-1');
@@ -48,7 +48,7 @@ describe('EmailService', () => {
   it('propagates errors thrown by the provider', async () => {
     mockGetMessage.mockRejectedValue(new Error('Provider failure'));
 
-    await expect(service.getMessage('msg-1', 'account-1')).rejects.toThrow(
+    await expect(service.fetchMessage('msg-1', 'account-1')).rejects.toThrow(
       'Provider failure',
     );
   });

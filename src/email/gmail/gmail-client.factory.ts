@@ -3,13 +3,13 @@ import { google, gmail_v1 } from "googleapis";
 
 @Injectable()
 export class GmailClientFactory {
-    // TODO: Integrate with AuthService to fetch the token for the given emailAccountId
+    // TODO: Integrate with AuthService to fetch the token for the given emailAccount
     // and with ConfigStore to fetch the clientId and clientSecret for the Gmail API.
     // constructor(private readonly AuthService: any) {} 
 
-    async createClient(emailAccountId: string): Promise<gmail_v1.Gmail> {
+    async createClient(emailAccount: string): Promise<gmail_v1.Gmail> {
         // TODO: Uncomment when AuthService is integrated
-        // const userCredentials = await this.AuthService.getUserCredentials(emailAccountId);
+        // const userCredentials = await this.AuthService.getUserCredentials(emailAccount);
         const userCredentials = {};
         
         const auth = new google.auth.OAuth2({
