@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { google } from 'googleapis';
 import { PrismaService } from '../../database/prisma.service';
@@ -97,7 +102,7 @@ export class AuthService {
         },
         update: account,
       });
-      
+
       this.eventEmitter.emit('google.account.connected', {
         id: connectedAccount.id,
         email: connectedAccount.email,
@@ -119,7 +124,7 @@ export class AuthService {
   public async getUserCredentials(email: string): Promise<{
     access_token: string;
     refresh_token?: string;
-    expiry_date?: number; 
+    expiry_date?: number;
   }> {
     const account = await this.prisma.connectedAccount.findUnique({
       where: { email },
@@ -133,7 +138,9 @@ export class AuthService {
       refresh_token: account.refreshToken
         ? this.crypto.decrypt(account.refreshToken)
         : undefined,
-      expiry_date: account.tokenExpiresAt ? account.tokenExpiresAt.getTime() : undefined,
+      expiry_date: account.tokenExpiresAt
+        ? account.tokenExpiresAt.getTime()
+        : undefined,
     };
   }
 }

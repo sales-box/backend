@@ -89,7 +89,7 @@ export class EnvironmentVariables {
   @IsString()
   @MinLength(1)
   GOOGLE_PUBSUB_TOPIC_NAME!: string;
-  
+
   // ----- Google OAuth (Gmail) -----
 
   @IsString()

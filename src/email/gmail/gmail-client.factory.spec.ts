@@ -1,5 +1,7 @@
 import { GmailClientFactory } from '@/email/gmail/gmail-client.factory';
 import { google } from 'googleapis';
+import { AuthService } from '@/modules/auth/auth.service';
+import { ConfigService } from '@nestjs/config';
 
 jest.mock('googleapis', () => {
   const mockSetCredentials = jest.fn();
@@ -19,9 +21,20 @@ describe('GmailClientFactory', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.GMAIL_CLIENT_ID = 'test-client-id';
-    process.env.GMAIL_CLIENT_SECRET = 'test-client-secret';
-    factory = new GmailClientFactory();
+    const mockAuthService = {
+      getUserCredentials: jest.fn().mockResolvedValue({
+        access_token: 'mock-access',
+        refresh_token: 'mock-refresh',
+        expiry_date: 12345,
+      }),
+    } as unknown as AuthService;
+    const mockConfigService = {
+      get: jest.fn().mockImplementation((key) => {
+        if (key === 'GOOGLE_CLIENT_ID') return 'test-client-id';
+        if (key === 'GOOGLE_CLIENT_SECRET') return 'test-client-secret';
+      }),
+    } as unknown as ConfigService;
+    factory = new GmailClientFactory(mockAuthService, mockConfigService);
   });
 
   it('creates an OAuth2 client with env var credentials', async () => {
@@ -41,7 +54,11 @@ describe('GmailClientFactory', () => {
     type AuthStub = { setCredentials: jest.Mock };
     const authInstance = MockOAuth2.mock.results[0]
       .value as unknown as AuthStub;
-    expect(authInstance.setCredentials).toHaveBeenCalledWith({});
+    expect(authInstance.setCredentials).toHaveBeenCalledWith({
+      access_token: 'mock-access',
+      refresh_token: 'mock-refresh',
+      expiry_date: 12345,
+    });
   });
 
   it('returns a Gmail v1 client', async () => {

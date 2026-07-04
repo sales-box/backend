@@ -12,6 +12,8 @@ const validEnv = {
   GOOGLE_SCOPES: 'https://www.googleapis.com/auth/gmail.readonly',
   TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 'k').toString('base64'),
   FRONTEND_DASHBOARD_URL: 'http://localhost:5173/dashboard',
+  GOOGLE_PUBSUB_VERIFICATION_TOKEN: 'token',
+  GOOGLE_PUBSUB_TOPIC_NAME: 'topic',
 };
 
 describe('validateEnv', () => {
@@ -26,6 +28,8 @@ describe('validateEnv', () => {
     'GOOGLE_SCOPES',
     'TOKEN_ENCRYPTION_KEY',
     'FRONTEND_DASHBOARD_URL',
+    'GOOGLE_PUBSUB_VERIFICATION_TOKEN',
+    'GOOGLE_PUBSUB_TOPIC_NAME',
   ])('throws at startup when %s is missing', (key) => {
     const env = { ...validEnv };
     delete (env as Record<string, unknown>)[key];

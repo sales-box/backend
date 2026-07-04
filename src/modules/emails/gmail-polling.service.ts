@@ -7,7 +7,7 @@ import {
 import { PrismaService } from '../../database/prisma.service';
 import { GmailClientProvider } from './gmail-client.provider';
 
-const POLL_INTERVAL_MS = 60_000;
+// const POLL_INTERVAL_MS = 60_000;
 const UNREAD_LAST_24H_QUERY = 'is:unread newer_than:1d';
 
 @Injectable()

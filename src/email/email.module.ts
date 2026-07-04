@@ -7,12 +7,12 @@ import { GmailProvider } from '@/email/gmail/gmail-provider.service';
 @Module({
   imports: [GmailModule],
   providers: [
-    EmailService, 
+    EmailService,
     {
       provide: EmailProvider,
-      useExisting: GmailProvider
-    }
+      useExisting: GmailProvider,
+    },
   ],
-  exports: [EmailService]
+  exports: [EmailService],
 })
 export class EmailModule {}
