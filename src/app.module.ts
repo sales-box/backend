@@ -4,6 +4,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
+import { ScheduleModule } from '@nestjs/schedule';
 import { createKeyv } from '@keyv/redis';
 import { Redis } from 'ioredis';
 import { LoggerModule } from 'nestjs-pino';
@@ -22,6 +23,7 @@ const isProd = process.env.NODE_ENV === 'production';
       isGlobal: true,
       validate: validateEnv,
     }),
+    ScheduleModule.forRoot(),
     // Drain in-flight requests and close DB/Redis cleanly on SIGTERM/SIGINT.
     GracefulShutdownModule.forRoot({
       gracefulShutdownTimeout: 10_000,
