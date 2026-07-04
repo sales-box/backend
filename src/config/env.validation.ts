@@ -9,10 +9,12 @@ import {
   Min,
   MinLength,
   Validate,
+  ValidateIf,
   ValidatorConstraint,
   ValidatorConstraintInterface,
   validateSync,
 } from 'class-validator';
+import { CrmProvider } from '../modules/crm/crm.constants';
 
 export enum NodeEnv {
   Development = 'development',
@@ -103,6 +105,18 @@ export class EnvironmentVariables {
 
   @IsUrl({ require_tld: false })
   FRONTEND_DASHBOARD_URL!: string;
+
+  // ----- CRM (HubSpot) -----
+
+  @IsEnum(CrmProvider)
+  CRM_PROVIDER: CrmProvider = CrmProvider.Mock;
+
+  @ValidateIf(
+    (env: EnvironmentVariables) => env.CRM_PROVIDER === CrmProvider.HubSpot,
+  )
+  @IsString()
+  @MinLength(1)
+  HUBSPOT_API_KEY!: string;
 }
 
 export function validateEnv(
