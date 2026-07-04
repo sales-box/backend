@@ -58,6 +58,14 @@ export class EnvironmentVariables {
   @IsInt()
   @Min(1)
   THROTTLE_LIMIT: number = 100;
+
+  @IsString()
+  @MinLength(1)
+  GOOGLE_PUBSUB_VERIFICATION_TOKEN!: string;
+
+  @IsString()
+  @MinLength(1)
+  GOOGLE_PUBSUB_TOPIC_NAME!: string;
 }
 
 export function validateEnv(
