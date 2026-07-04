@@ -10,10 +10,14 @@ import { Redis } from 'ioredis';
 import { LoggerModule } from 'nestjs-pino';
 import { GracefulShutdownModule } from 'nestjs-graceful-shutdown';
 import { validateEnv } from './config/env.validation';
+import { reqSerializer } from './config/log-serializers';
 import { PrismaModule } from './database/prisma.module';
 import { QueueModule } from './queue/queue.module';
 import { HealthModule } from './modules/health/health.module';
 import { EmailModule } from './email/email.module';
+import { AuthModule } from './modules/auth/auth.module';
+import { EmailsModule } from './modules/emails/emails.module';
+import { ClientsModule } from './modules/clients/clients.module';
 
 const isProd = process.env.NODE_ENV === 'production';
 
@@ -35,11 +39,17 @@ const isProd = process.env.NODE_ENV === 'production';
         transport: isProd
           ? undefined
           : { target: 'pino-pretty', options: { singleLine: true } },
-        // Never leak credentials into logs.
+        // Keep credentials out of logs: strip the query string from req.url
+        // and redact known-sensitive fields.
+        serializers: { req: reqSerializer },
         redact: [
           'req.headers.authorization',
           'req.headers.cookie',
           'res.headers["set-cookie"]',
+          'req.query.code',
+          'req.query.access_token',
+          'req.query.refresh_token',
+          'req.query.state',
         ],
       },
     }),
@@ -78,6 +88,9 @@ const isProd = process.env.NODE_ENV === 'production';
     QueueModule,
     HealthModule,
     EmailModule,
+    AuthModule,
+    EmailsModule,
+    ClientsModule,
   ],
   providers: [
     // Apply rate limiting globally.
