@@ -5,4 +5,8 @@ export abstract class EmailProvider {
     messageId: string,
     emailAccount: string,
   ): Promise<ParsedMessage>;
+
+  abstract fetchThreads(
+    emailAccount: string,
+  )
 }

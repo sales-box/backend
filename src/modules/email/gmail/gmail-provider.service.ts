@@ -25,4 +25,14 @@ export class GmailProvider implements EmailProvider {
 
     return this.parser.parseMessage(message.data);
   }
+
+   fetchThreads(emailAccount: string) {
+    /**
+     * Suggested refactoring steps:
+     * 1. create a generic type (ex. EmailThread) in email.types.ts to represent the structure of an email thread.
+     * 2. use GmailClientFactory to create authenticated client for the given emailAccount.
+     * 3. delegate any response parsing steps to GmailParserService.
+     * 4. return the parsed threads as an array of EmailThread objects.
+     */
+  }
 }

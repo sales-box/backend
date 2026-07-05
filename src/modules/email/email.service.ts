@@ -12,4 +12,8 @@ export class EmailService {
   ): Promise<ParsedMessage> {
     return this.emailProvider.fetchMessage(messageId, emailAccount);
   }
+
+  async fetchThreads(emailAccount: string) {
+    return this.emailProvider.fetchThreads(emailAccount);
+  }
 }
