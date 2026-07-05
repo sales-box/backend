@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { EmailService } from '@/email/email.service';
-import { EmailProvider } from '@/email/email-provider.abstract';
-import { ParsedMessage } from '@/email/email.types';
+import { EmailService } from '@/modules/email/email.service';
+import { EmailProvider } from '@/modules/email/email-provider.abstract';
+import { ParsedMessage } from '@/modules/email/email.types';
 
 const stubMessage: ParsedMessage = {
   id: 'msg-1',

@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { EmailProvider } from '@/email/email-provider.abstract';
-import { ParsedMessage } from '@/email/email.types';
-import { GmailParserService } from '@/email/gmail/gmail-parser.service';
-import { GmailClientFactory } from '@/email/gmail/gmail-client.factory';
+import { EmailProvider } from '@/modules/email/email-provider.abstract';
+import { ParsedMessage } from '@/modules/email/email.types';
+import { GmailParserService } from '@/modules/email/gmail/gmail-parser.service';
+import { GmailClientFactory } from '@/modules/email/gmail/gmail-client.factory';
 
 @Injectable()
 export class GmailProvider implements EmailProvider {

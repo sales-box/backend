@@ -1,4 +1,4 @@
-import { GmailClientFactory } from '@/email/gmail/gmail-client.factory';
+import { GmailClientFactory } from '@/modules/email/gmail/gmail-client.factory';
 import { google } from 'googleapis';
 import { AuthService } from '@/modules/auth/auth.service';
 import { ConfigService } from '@nestjs/config';

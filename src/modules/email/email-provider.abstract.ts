@@ -1,4 +1,4 @@
-import { ParsedMessage } from '@/email/email.types';
+import { ParsedMessage } from '@/modules/email/email.types';
 
 export abstract class EmailProvider {
   abstract fetchMessage(

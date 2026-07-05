@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { GmailClientFactory } from '@/email/gmail/gmail-client.factory';
+import { GmailClientFactory } from '@/modules/email/gmail/gmail-client.factory';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '@/database/prisma.service';

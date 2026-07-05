@@ -1,4 +1,4 @@
-import { GmailParserService } from '@/email/gmail/gmail-parser.service';
+import { GmailParserService } from '@/modules/email/gmail/gmail-parser.service';
 import type { gmail_v1 } from 'googleapis';
 
 function encode(text: string): string {

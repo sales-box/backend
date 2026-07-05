@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { ParsedMessage } from '@/email/email.types';
+import { ParsedMessage } from '@/modules/email/email.types';
 import type { gmail_v1 } from 'googleapis';
 import { DecodedGmailHistory } from './gmail.types';
 

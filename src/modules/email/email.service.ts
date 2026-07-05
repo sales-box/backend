@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { EmailProvider } from '@/email/email-provider.abstract';
-import { ParsedMessage } from '@/email/email.types';
+import { EmailProvider } from '@/modules/email/email-provider.abstract';
+import { ParsedMessage } from '@/modules/email/email.types';
 
 @Injectable()
 export class EmailService {

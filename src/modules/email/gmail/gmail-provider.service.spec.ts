@@ -1,8 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { GmailProvider } from '@/email/gmail/gmail-provider.service';
-import { GmailClientFactory } from '@/email/gmail/gmail-client.factory';
-import { GmailParserService } from '@/email/gmail/gmail-parser.service';
-import { ParsedMessage } from '@/email/email.types';
+import { GmailProvider } from '@/modules/email/gmail/gmail-provider.service';
+import { GmailClientFactory } from '@/modules/email/gmail/gmail-client.factory';
+import { GmailParserService } from '@/modules/email/gmail/gmail-parser.service';
+import { ParsedMessage } from '@/modules/email/email.types';
 
 const stubMessage: ParsedMessage = {
   id: 'msg-1',
