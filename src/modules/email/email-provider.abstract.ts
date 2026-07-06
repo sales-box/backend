@@ -1,4 +1,4 @@
-import { ParsedMessage } from '@/modules/email/email.types';
+import { EmailThread, ParsedMessage } from '@/modules/email/email.types';
 
 export abstract class EmailProvider {
   abstract fetchMessage(
@@ -8,5 +8,6 @@ export abstract class EmailProvider {
 
   abstract fetchThreads(
     emailAccount: string,
-  )
+    query?: string,
+  ): Promise<EmailThread[]>;
 }

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { EmailProvider } from '@/modules/email/email-provider.abstract';
-import { ParsedMessage } from '@/modules/email/email.types';
+import { EmailThread, ParsedMessage } from '@/modules/email/email.types';
 
 @Injectable()
 export class EmailService {
@@ -13,7 +13,10 @@ export class EmailService {
     return this.emailProvider.fetchMessage(messageId, emailAccount);
   }
 
-  async fetchThreads(emailAccount: string) {
-    return this.emailProvider.fetchThreads(emailAccount);
+  async fetchThreads(
+    emailAccount: string,
+    query?: string,
+  ): Promise<EmailThread[]> {
+    return this.emailProvider.fetchThreads(emailAccount, query);
   }
 }

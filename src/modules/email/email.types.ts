@@ -16,3 +16,9 @@ export interface ParsedMessage {
   textHtml: string;
   attachments: EmailAttachment[];
 }
+
+export interface EmailThread {
+  id: string;
+  snippet: string;
+  messages: ParsedMessage[];
+}
