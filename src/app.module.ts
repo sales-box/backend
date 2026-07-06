@@ -15,7 +15,7 @@ import { reqSerializer } from './config/log-serializers';
 import { PrismaModule } from './database/prisma.module';
 import { QueueModule } from './queue/queue.module';
 import { HealthModule } from './modules/health/health.module';
-import { EmailModule } from './email/email.module';
+import { EmailModule } from './modules/email/email.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { EmailsModule } from './modules/emails/emails.module';
 import { ClientsModule } from './modules/clients/clients.module';

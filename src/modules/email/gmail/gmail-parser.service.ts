@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { ParsedMessage } from '@/email/email.types';
+import { EmailThread, ParsedMessage } from '@/modules/email/email.types';
 import type { gmail_v1 } from 'googleapis';
 import { DecodedGmailHistory } from './gmail.types';
 
@@ -109,5 +109,16 @@ export class GmailParserService {
         parsedMessage.textHtml += decodedData;
       }
     }
+  }
+
+  public parseThread(thread: gmail_v1.Schema$Thread): EmailThread {
+    const messages = (thread.messages || []).map((msg) =>
+      this.parseMessage(msg),
+    );
+    return {
+      id: thread.id || '',
+      snippet: thread.snippet || '',
+      messages,
+    };
   }
 }

@@ -1,9 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { gmail_v1, google } from 'googleapis';
+import { google } from 'googleapis';
+import { EmailService } from '@/modules/email/email.service';
 
 @Injectable()
 export class EmailsService {
   private readonly logger = new Logger(EmailsService.name);
+
+  constructor(private readonly emailService: EmailService) {}
 
   async fetchThreadsForClient(
     clientEmail: string,
@@ -16,58 +19,22 @@ export class EmailsService {
       direction: 'inbound' | 'outbound';
     }[]
   > {
-    const oauth2Client = new google.auth.OAuth2();
-    oauth2Client.setCredentials({ access_token: accessToken });
-    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-
     try {
-      // Query threads involving clientEmail (covers to, from, cc, bcc)
-      const allThreads: gmail_v1.Schema$Thread[] = [];
-      let pageToken: string | undefined = undefined;
-      do {
-        try {
-          const listRes: { data: gmail_v1.Schema$ListThreadsResponse } =
-            await gmail.users.threads.list({
-              userId: 'me',
-              q: clientEmail,
-              pageToken: pageToken,
-              maxResults: 20,
-            });
-          const responseData: gmail_v1.Schema$ListThreadsResponse =
-            listRes.data;
-          const threads: gmail_v1.Schema$Thread[] = responseData.threads ?? [];
-          allThreads.push(...threads);
-          pageToken = responseData.nextPageToken ?? undefined;
-        } catch (pageErr) {
-          this.logger.warn(
-            `Pagination error after collecting ${allThreads.length} thread(s): ${pageErr instanceof Error ? pageErr.message : String(pageErr)}`,
-          );
-          break; // stop looping, keep whatever we collected so far
-        }
-      } while (pageToken);
-      if (!allThreads.length) {
-        return [];
+      const oauth2Client = new google.auth.OAuth2();
+      oauth2Client.setCredentials({ access_token: accessToken });
+      const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+      const profile = await gmail.users.getProfile({ userId: 'me' });
+      const emailAccount = profile.data.emailAddress;
+      if (!emailAccount) {
+        throw new Error('Could not resolve email account from token');
       }
-      // Fetch detailed thread objects
-      const threadDetailsPromises = allThreads.map(async (t) => {
-        try {
-          const threadRes = await gmail.users.threads.get({
-            userId: 'me',
-            id: t.id!,
-          });
-          return threadRes.data;
-        } catch (err) {
-          this.logger.warn(
-            `Failed to fetch details for thread ${t.id}: ${err instanceof Error ? err.message : String(err)}`,
-          );
-          return null;
-        }
-      });
 
-      const fullThreadsRaw = await Promise.all(threadDetailsPromises);
-      const fullThreads = fullThreadsRaw.filter((t) => t !== null);
+      const emailThreads = await this.emailService.fetchThreads(
+        emailAccount,
+        clientEmail,
+      );
 
-      const formattedThreads = fullThreads.map((thread) => {
+      const formattedThreads = emailThreads.map((thread) => {
         const messages = thread.messages || [];
         if (messages.length === 0) {
           return {
@@ -78,41 +45,23 @@ export class EmailsService {
           };
         }
 
-        // Sort messages chronologically by internalDate (oldest to newest)
-        // so that the last message is the most recent one.
+        // Sort messages chronologically by date (oldest to newest)
         const sortedMessages = [...messages].sort((a, b) => {
-          const tA = parseInt(a.internalDate || '0', 10);
-          const tB = parseInt(b.internalDate || '0', 10);
-          return tA - tB;
+          return new Date(a.date).getTime() - new Date(b.date).getTime();
         });
 
         const latestMessage = sortedMessages[sortedMessages.length - 1];
         const firstMessage = sortedMessages[0];
 
-        // Extract Subject from first message's headers
-        const firstHeaders = firstMessage.payload?.headers || [];
-        const subjectHeader = firstHeaders.find(
-          (h) => h.name?.toLowerCase() === 'subject',
-        );
-        const subject = subjectHeader?.value || '(No Subject)';
+        const subject = firstMessage.subject || '(No Subject)';
+        const date = latestMessage.date;
+        const snippet =
+          latestMessage.textPlain ||
+          latestMessage.textHtml ||
+          thread.snippet ||
+          '';
 
-        // Extract Date from latest message's internalDate
-        const latestTimestamp = parseInt(latestMessage.internalDate || '0', 10);
-        const date = latestTimestamp
-          ? new Date(latestTimestamp).toISOString()
-          : new Date().toISOString();
-
-        // Extract Snippet
-        const snippet = latestMessage.snippet || thread.snippet || '';
-
-        // Extract Direction: inbound if sender of latest message matches clientEmail
-        const latestHeaders = latestMessage.payload?.headers || [];
-        const fromHeader = latestHeaders.find(
-          (h) => h.name?.toLowerCase() === 'from',
-        );
-        const fromValue = fromHeader?.value || '';
-        const fromEmail = this.extractEmailAddress(fromValue);
-
+        const fromEmail = this.extractEmailAddress(latestMessage.from);
         const direction =
           fromEmail.toLowerCase() === clientEmail.toLowerCase()
             ? ('inbound' as const)

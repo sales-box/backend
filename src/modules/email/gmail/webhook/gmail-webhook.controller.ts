@@ -6,7 +6,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import { GmailWebhookGuard } from '@/email/gmail/webhook/gmail-webhook.guard';
+import { GmailWebhookGuard } from '@/modules/email/gmail/webhook/gmail-webhook.guard';
 import { GmailPubSubNotificationDto } from './dtos/gmail-pub-sub-notification.dto';
 import { GmailParserService } from '../gmail-parser.service';
 import { DecodedGmailHistory } from '../gmail.types';

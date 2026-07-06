@@ -1,4 +1,4 @@
-import { GmailParserService } from '@/email/gmail/gmail-parser.service';
+import { GmailParserService } from '@/modules/email/gmail/gmail-parser.service';
 import type { gmail_v1 } from 'googleapis';
 
 function encode(text: string): string {
@@ -233,5 +233,31 @@ describe('GmailParserService', () => {
     expect(result!.textPlain).toBe('');
     expect(result!.textHtml).toBe('');
     expect(result!.attachments).toHaveLength(0);
+  });
+
+  it('parseThread → parses a thread with messages correctly', () => {
+    const rawThread: gmail_v1.Schema$Thread = {
+      id: 'thread-1',
+      snippet: 'Hello snippet',
+      messages: [
+        {
+          id: 'msg-1',
+          threadId: 'thread-1',
+          payload: {
+            headers: BASE_HEADERS,
+            mimeType: 'text/plain',
+            body: { data: encode('Hello') },
+          },
+        },
+      ],
+    };
+
+    const result = service.parseThread(rawThread);
+
+    expect(result.id).toBe('thread-1');
+    expect(result.snippet).toBe('Hello snippet');
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0].id).toBe('msg-1');
+    expect(result.messages[0].subject).toBe('Test Subject');
   });
 });
