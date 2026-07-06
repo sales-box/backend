@@ -81,6 +81,15 @@ export class EnvironmentVariables {
   @Min(1)
   THROTTLE_LIMIT: number = 100;
 
+  // ----- Google Pub/Sub (Gmail) -----
+  @IsString()
+  @MinLength(1)
+  GOOGLE_PUBSUB_VERIFICATION_TOKEN!: string;
+
+  @IsString()
+  @MinLength(1)
+  GOOGLE_PUBSUB_TOPIC_NAME!: string;
+
   // ----- Google OAuth (Gmail) -----
 
   @IsString()

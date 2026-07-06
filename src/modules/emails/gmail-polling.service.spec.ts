@@ -39,24 +39,6 @@ describe('GmailPollingService', () => {
     jest.restoreAllMocks();
   });
 
-  it('fires the polling job every 60 seconds', () => {
-    jest.useFakeTimers();
-    const { service } = buildService();
-    const pollSpy = jest
-      .spyOn(service, 'pollAllAccounts')
-      .mockResolvedValue(undefined);
-
-    service.onApplicationBootstrap();
-
-    jest.advanceTimersByTime(59_999);
-    expect(pollSpy).not.toHaveBeenCalled();
-
-    jest.advanceTimersByTime(1);
-    expect(pollSpy).toHaveBeenCalledTimes(1);
-
-    service.onModuleDestroy();
-  });
-
   it('fetches only unread Gmail messages from the last 24 hours', async () => {
     const { service, prisma, gmailClientProvider, gmail } = buildService();
 

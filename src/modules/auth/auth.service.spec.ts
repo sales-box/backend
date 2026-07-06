@@ -52,6 +52,7 @@ describe('AuthService buildGoogleAuthUrl', () => {
       makeConfig(env),
       {} as PrismaService,
       {} as CryptoService,
+      { emit: jest.fn() } as any,
     );
     return new URL(service.buildGoogleAuthUrl());
   }
@@ -82,6 +83,7 @@ describe('AuthService buildGoogleAuthUrl', () => {
       makeConfig({ GOOGLE_CLIENT_ID: 'x' }),
       {} as PrismaService,
       {} as CryptoService,
+      { emit: jest.fn() } as any,
     );
     expect(() => service.buildGoogleAuthUrl()).toThrow();
   });
@@ -101,10 +103,12 @@ describe('AuthService handleGoogleCallback', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    upsert = jest.fn();
+    upsert = jest.fn().mockResolvedValue({ id: 'mock-id', email: EMAIL });
     prisma = { connectedAccount: { upsert } } as unknown as PrismaService;
     crypto = new CryptoService(makeConfig({ TOKEN_ENCRYPTION_KEY: KEY }));
-    service = new AuthService(makeConfig(env), prisma, crypto);
+    service = new AuthService(makeConfig(env), prisma, crypto, {
+      emit: jest.fn(),
+    } as any);
   });
 
   function happyTokens(overrides: Record<string, unknown> = {}) {

@@ -7,7 +7,7 @@ import {
 import { PrismaService } from '../../database/prisma.service';
 import { GmailClientProvider } from './gmail-client.provider';
 
-const POLL_INTERVAL_MS = 60_000;
+// const POLL_INTERVAL_MS = 60_000;
 const UNREAD_LAST_24H_QUERY = 'is:unread newer_than:1d';
 
 @Injectable()
@@ -23,9 +23,9 @@ export class GmailPollingService
   ) {}
 
   onApplicationBootstrap(): void {
-    this.timer = setInterval(() => {
-      void this.pollAllAccounts();
-    }, POLL_INTERVAL_MS);
+    // this.timer = setInterval(() => {
+    //   void this.pollAllAccounts();
+    // }, POLL_INTERVAL_MS);
   }
 
   onModuleDestroy(): void {

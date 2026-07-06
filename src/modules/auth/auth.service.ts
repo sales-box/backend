@@ -1,10 +1,16 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { google } from 'googleapis';
 import { PrismaService } from '../../database/prisma.service';
 import { withTimeout } from '../../common/with-timeout';
 import { CryptoService } from './crypto.service';
 import { describeOAuthError } from './oauth-error.util';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 const GOOGLE_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GMAIL_API_VERSION = 'v1';
@@ -19,6 +25,7 @@ export class AuthService {
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   buildGoogleAuthUrl(): string {
@@ -85,7 +92,7 @@ export class AuthService {
         ...(tokens.scope ? { scope: tokens.scope } : {}),
       };
 
-      await this.prisma.connectedAccount.upsert({
+      const connectedAccount = await this.prisma.connectedAccount.upsert({
         where: { email },
         create: {
           email,
@@ -94,6 +101,11 @@ export class AuthService {
           ...account,
         },
         update: account,
+      });
+
+      this.eventEmitter.emit('google.account.connected', {
+        id: connectedAccount.id,
+        email: connectedAccount.email,
       });
 
       this.logger.log(`Gmail account connected: ${email}`);
@@ -110,23 +122,25 @@ export class AuthService {
   }
 
   public async getUserCredentials(email: string): Promise<{
-    accessToken: string;
-    refreshToken?: string;
-    tokenExpiresAt?: Date;
+    access_token: string;
+    refresh_token?: string;
+    expiry_date?: number;
   }> {
     const account = await this.prisma.connectedAccount.findUnique({
       where: { email },
     });
     if (!account) {
-      throw new BadRequestException('No connected account found for user');
+      throw new NotFoundException('No connected account found for user');
     }
 
     return {
-      accessToken: this.crypto.decrypt(account.accessToken),
-      refreshToken: account.refreshToken
+      access_token: this.crypto.decrypt(account.accessToken),
+      refresh_token: account.refreshToken
         ? this.crypto.decrypt(account.refreshToken)
         : undefined,
-      tokenExpiresAt: account.tokenExpiresAt ?? undefined,
+      expiry_date: account.tokenExpiresAt
+        ? account.tokenExpiresAt.getTime()
+        : undefined,
     };
   }
 }

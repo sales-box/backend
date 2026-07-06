@@ -54,7 +54,7 @@ model ConnectedAccount {
   status         String    @default("connected")
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-
+  webhookSubscription WebhookSubscription?
   @@map("connected_accounts")
 }
 
@@ -66,4 +66,15 @@ model ProcessedGmailMessage {
   processedAt  DateTime @default(now()) @map("processed_at") @db.Timestamptz(6)
 
   @@map("processed_gmail_messages")
+}
+
+model WebhookSubscription {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  connectedAccountId  String    @unique @map("connected_account_id") @db.Uuid
+  provider            String    @default("GMAIL")
+  expirationDate      DateTime  @map("expiration_date") @db.Timestamptz(6)
+  subscriptionId      String?   @map("subscription_id")
+  connectedAccount    ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+
+  @@map("webhook_subscriptions")
 }

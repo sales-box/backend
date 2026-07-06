@@ -1,4 +1,5 @@
 import { ValidationPipe } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import {
@@ -53,8 +54,19 @@ describe('Auth (e2e)', () => {
         AuthService,
         CryptoService,
         {
+          provide: EventEmitter2,
+          useValue: { emit: jest.fn() },
+        },
+        {
           provide: PrismaService,
-          useValue: { connectedAccount: { upsert: jest.fn() } },
+          useValue: {
+            connectedAccount: {
+              upsert: jest.fn().mockResolvedValue({
+                id: 'mock-id',
+                email: 'mock@example.com',
+              }),
+            },
+          },
         },
         {
           provide: ConfigService,
