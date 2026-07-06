@@ -25,6 +25,9 @@ importers:
       '@fastify/helmet':
         specifier: ^13.0.2
         version: 13.0.2
+      '@hubspot/api-client':
+        specifier: ^14.0.1
+        version: 14.0.1
       '@keyv/redis':
         specifier: ^5.1.6
         version: 5.1.6(keyv@5.6.0)
@@ -1243,6 +1246,13 @@ packages:
     engines: { node: '>=10' }
     peerDependencies:
       tailwindcss: ^3.0 || ^4.0
+
+  '@hubspot/api-client@14.0.1':
+    resolution:
+      {
+        integrity: sha512-+2/9e3DguqVXB/htjQ5yxWkLD4fGdS1MNsOVYlc05a4TAGx0PGt+EgvW8o5P9GwQsMIGHCCiR6CJpNYNQtbiqw==,
+      }
+    engines: { node: '>=22.0.0' }
 
   '@humanfs/core@0.19.2':
     resolution:
@@ -3778,6 +3788,12 @@ packages:
       }
     engines: { node: '>=18' }
 
+  bottleneck@2.19.5:
+    resolution:
+      {
+        integrity: sha512-VHiNCbI1lKdl44tGrhNfU3lup0Tj/ZBMJB5/2ZbNXRCPuRCO7ed2mgcK4r17y+KB2EfuYuRaVlwNbAeaWGSpbw==,
+      }
+
   brace-expansion@1.1.15:
     resolution:
       {
@@ -5047,6 +5063,12 @@ packages:
     resolution:
       {
         integrity: sha512-G5iZ6Pc/FNRY/soKZHC+TxGDD83rHUDXxzaWhGCX44vAv/tMs56WMusnm/KMNK+luUPsgA9U28cGr4RDlSzL2g==,
+      }
+
+  es6-promise@4.2.8:
+    resolution:
+      {
+        integrity: sha512-HJDGx5daxeIvxdBxvG2cb9g4tEvwIk3i8+nhX0yGrYmZUzbkdg8QbDevheDB8gd0//uPj4c1EQua8Q+MViT0/w==,
       }
 
   esbuild@0.28.1:
@@ -9873,6 +9895,14 @@ snapshots:
     dependencies:
       tailwindcss: 4.3.1
 
+  '@hubspot/api-client@14.0.1':
+    dependencies:
+      '@types/node': 24.13.2
+      bottleneck: 2.19.5
+      es6-promise: 4.2.8
+      form-data: 4.0.6
+      lodash.merge: 4.6.2
+
   '@humanfs/core@0.19.2':
     dependencies:
       '@humanfs/types': 0.15.0
@@ -11667,6 +11697,8 @@ snapshots:
       - supports-color
     optional: true
 
+  bottleneck@2.19.5: {}
+
   brace-expansion@1.1.15:
     dependencies:
       balanced-match: 1.0.2
@@ -12339,6 +12371,8 @@ snapshots:
       hasown: 2.0.4
 
   es-toolkit@1.49.0: {}
+
+  es6-promise@4.2.8: {}
 
   esbuild@0.28.1:
     optionalDependencies:
