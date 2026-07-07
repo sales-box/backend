@@ -13,3 +13,6 @@ allowBuilds:
   '@scarf/scarf': false
   # Chromium download for mermaid-cli; not needed — ERD outputs Markdown.
   puppeteer: false
+
+overrides:
+  multer: ^2.2.0
