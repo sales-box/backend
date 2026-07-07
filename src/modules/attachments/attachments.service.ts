@@ -80,7 +80,7 @@ export class AttachmentsService {
 
   async parseXlsx(buffer: Buffer): Promise<string> {
     const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(buffer);
+    await workbook.xlsx.load(buffer as any);
     const sheetsData: Record<string, unknown[][]> = {};
     workbook.eachSheet((worksheet) => {
       const sheetName = worksheet.name;
