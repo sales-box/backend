@@ -78,3 +78,42 @@ model WebhookSubscription {
 
   @@map("webhook_subscriptions")
 }
+
+enum DocumentStatus {
+  processing
+  completed
+  failed
+
+  @@map("document_status")
+}
+
+model Document {
+  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  filename        String         @db.VarChar
+  productName     String?        @map("product_name") @db.VarChar
+  fileType        String?        @map("file_type") @db.VarChar
+  status          DocumentStatus @default(processing)
+  chunkCount      Int            @default(0) @map("chunk_count")
+  processingError String?        @map("processing_error")
+  uploadedBy      String?        @map("uploaded_by") @db.VarChar
+  uploadDate      DateTime       @default(now()) @map("upload_date") @db.Timestamptz(6)
+  processedAt     DateTime?      @map("processed_at") @db.Timestamptz(6)
+  chunks          DocumentChunk[]
+
+  @@unique([filename, productName], map: "uq_documents_file")
+  @@map("documents")
+}
+
+model DocumentChunk {
+  id         String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  documentId String                       @map("document_id") @db.Uuid
+  document   Document                     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  chunkIndex Int?                         @map("chunk_index")
+  content    String?
+  embedding  Unsupported("vector(1536)")?
+  tokenCount Int?                         @map("token_count")
+  metadata   Json?
+
+  @@index([documentId], map: "idx_chunks_doc")
+  @@map("document_chunks")
+}
