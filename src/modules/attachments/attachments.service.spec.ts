@@ -15,6 +15,45 @@ jest.mock('pdf-parse', () => {
   };
 });
 
+jest.mock('mammoth', () => ({
+  extractRawText: jest.fn().mockResolvedValue({ value: 'mocked docx text' }),
+}));
+
+jest.mock('xlsx', () => {
+  return {
+    read: jest.fn().mockReturnValue({
+      SheetNames: ['Sheet1'],
+      Sheets: {
+        Sheet1: {},
+      },
+    }),
+    utils: {
+      sheet_to_json: jest.fn().mockReturnValue([
+        ['Name', 'Age'],
+        ['Ahmed', 25],
+      ]),
+    },
+  };
+});
+
+jest.mock('jszip', () => {
+  const mockZip = {
+    files: {
+      'ppt/slides/slide1.xml': {
+        async: jest
+          .fn()
+          .mockResolvedValue('<a:t>mocked</a:t><a:t> slide 1</a:t>'),
+      },
+      'ppt/slides/slide2.xml': {
+        async: jest.fn().mockResolvedValue('<a:t>mocked slide 2</a:t>'),
+      },
+    },
+  };
+  return {
+    loadAsync: jest.fn().mockResolvedValue(mockZip),
+  };
+});
+
 type MockGmailApi = {
   users: {
     messages: {
@@ -59,7 +98,7 @@ describe('AttachmentsService', () => {
     jest.clearAllMocks();
   });
 
-  describe('parsePdf', () => {
+  describe('Parsers directly', () => {
     it('1. should extract readable text from a PDF buffer', async () => {
       const buffer = Buffer.from('dummy pdf content');
       const text = await service.parsePdf(buffer);
@@ -67,20 +106,43 @@ describe('AttachmentsService', () => {
       expect(text).toBe('mocked pdf text');
       expect(pdfParse.PDFParse).toHaveBeenCalledWith({ data: buffer });
     });
-  });
 
-  describe('parseImage', () => {
     it('2. should return a valid base64 string for an image buffer', () => {
       const buffer = Buffer.from('dummy image content');
       const base64 = service.parseImage(buffer);
 
       expect(base64).toBe(buffer.toString('base64'));
     });
+
+    it('should extract text from docx using mammoth', async () => {
+      const buffer = Buffer.from('dummy docx');
+      const text = await service.parseDocx(buffer);
+      expect(text).toBe('mocked docx text');
+    });
+
+    it('should extract structured json from xlsx', () => {
+      const buffer = Buffer.from('dummy xlsx');
+      const jsonStr = service.parseXlsx(buffer);
+      expect(JSON.parse(jsonStr)).toEqual({
+        Sheet1: [
+          ['Name', 'Age'],
+          ['Ahmed', 25],
+        ],
+      });
+    });
+
+    it('should extract text with slide numbers from pptx', async () => {
+      const buffer = Buffer.from('dummy pptx');
+      const text = await service.parsePptx(buffer);
+      expect(text).toContain('## Slide 1');
+      expect(text).toContain('mocked slide 1');
+      expect(text).toContain('## Slide 2');
+      expect(text).toContain('mocked slide 2');
+    });
   });
 
   describe('downloadAttachment', () => {
-    it('5. should call Gmail API with correct messageId and attachmentId', async () => {
-      // Mock Gmail returning base64url data
+    it('should call Gmail API with correct messageId and attachmentId', async () => {
       mockGmailApi.users.messages.attachments.get.mockResolvedValue({
         data: { data: Buffer.from('test data').toString('base64url') },
       });
@@ -91,24 +153,21 @@ describe('AttachmentsService', () => {
         'att-456',
       );
 
-      // Verify the API was called with the correct parameters
       expect(mockGmailApi.users.messages.attachments.get).toHaveBeenCalledWith({
         userId: 'me',
         messageId: 'msg-123',
         id: 'att-456',
       });
-
-      // Verify base64url decoding worked correctly
       expect(buffer.toString('utf-8')).toBe('test data');
     });
   });
 
-  describe('parseAttachment Gates', () => {
-    it('3. should skip oversized attachments without calling Gmail API', async () => {
+  describe('parseAttachment Gates & Routing', () => {
+    it('should skip oversized attachments without calling Gmail API', async () => {
       const oversizedAtt = {
         filename: 'huge_presentation.pdf',
         mimeType: 'application/pdf',
-        size: 15 * 1024 * 1024, // 15MB
+        size: 15 * 1024 * 1024,
         attachmentId: 'att-123',
       };
 
@@ -120,8 +179,112 @@ describe('AttachmentsService', () => {
 
       expect(result.skipped).toBe(true);
       expect(result.reason).toBe('exceeds_size_limit');
+      expect(
+        mockGmailApi.users.messages.attachments.get,
+      ).not.toHaveBeenCalled();
+    });
 
-      // Ensure the download was never attempted
+    it('should route docx correctly', async () => {
+      mockGmailApi.users.messages.attachments.get.mockResolvedValue({
+        data: { data: Buffer.from('data').toString('base64url') },
+      });
+      const att = {
+        filename: 'doc.docx',
+        mimeType:
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        size: 1000,
+        attachmentId: 'att-1',
+      };
+      const result = await service.parseAttachment(
+        'test@example.com',
+        'msg-1',
+        att,
+      );
+      expect(result.type).toBe('docx');
+      expect(result.text).toBe('mocked docx text');
+      expect(result.skipped).toBe(false);
+    });
+
+    it('should route xlsx correctly', async () => {
+      mockGmailApi.users.messages.attachments.get.mockResolvedValue({
+        data: { data: Buffer.from('data').toString('base64url') },
+      });
+      const att = {
+        filename: 'data.xlsx',
+        mimeType:
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        size: 1000,
+        attachmentId: 'att-1',
+      };
+      const result = await service.parseAttachment(
+        'test@example.com',
+        'msg-1',
+        att,
+      );
+      expect(result.type).toBe('xlsx');
+      expect(result.structured).toBeDefined();
+      expect(result.skipped).toBe(false);
+    });
+
+    it('should route pptx correctly', async () => {
+      mockGmailApi.users.messages.attachments.get.mockResolvedValue({
+        data: { data: Buffer.from('data').toString('base64url') },
+      });
+      const att = {
+        filename: 'pres.pptx',
+        mimeType:
+          'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        size: 1000,
+        attachmentId: 'att-1',
+      };
+      const result = await service.parseAttachment(
+        'test@example.com',
+        'msg-1',
+        att,
+      );
+      expect(result.type).toBe('pptx');
+      expect(result.text).toContain('## Slide 1');
+      expect(result.skipped).toBe(false);
+    });
+
+    it('should handle corrupt docx with parse_error', async () => {
+      mockGmailApi.users.messages.attachments.get.mockResolvedValue({
+        data: { data: Buffer.from('data').toString('base64url') },
+      });
+      jest
+        .spyOn(service, 'parseDocx')
+        .mockRejectedValueOnce(new Error('corrupt docx'));
+
+      const att = {
+        filename: 'doc.docx',
+        mimeType:
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        size: 1000,
+        attachmentId: 'att-1',
+      };
+      const result = await service.parseAttachment(
+        'test@example.com',
+        'msg-1',
+        att,
+      );
+      expect(result.skipped).toBe(true);
+      expect(result.reason).toBe('parse_error');
+    });
+
+    it('should skip unknown formats directly', async () => {
+      const att = {
+        filename: 'archive.zip',
+        mimeType: 'application/zip',
+        size: 1000,
+        attachmentId: 'att-1',
+      };
+      const result = await service.parseAttachment(
+        'test@example.com',
+        'msg-1',
+        att,
+      );
+      expect(result.skipped).toBe(true);
+      expect(result.reason).toBe('unsupported_type');
       expect(
         mockGmailApi.users.messages.attachments.get,
       ).not.toHaveBeenCalled();
@@ -129,7 +292,7 @@ describe('AttachmentsService', () => {
   });
 
   describe('parseAttachments Batch Processing', () => {
-    it('4. should process 3 attachments (1 corrupt) and not fail the entire batch', async () => {
+    it('should process mixed email (pdf, xlsx, zip) appropriately', async () => {
       const email = {
         id: 'msg-1',
         attachments: [
@@ -140,56 +303,41 @@ describe('AttachmentsService', () => {
             attachmentId: 'att-1',
           },
           {
-            filename: 'corrupt.pdf',
-            mimeType: 'application/pdf',
+            filename: 'data.xlsx',
+            mimeType:
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             size: 1000,
             attachmentId: 'att-2',
           },
           {
-            filename: 'photo.jpg',
-            mimeType: 'image/jpeg',
+            filename: 'archive.zip',
+            mimeType: 'application/zip',
             size: 1000,
             attachmentId: 'att-3',
           },
         ],
       };
 
-      // Mock Gmail download behavior
-      mockGmailApi.users.messages.attachments.get.mockImplementation(
-        (args: { id: string }) => {
-          if (args.id === 'att-2') {
-            // Simulate a network failure or corrupted base64 for the second attachment
-            return Promise.reject(new Error('Gmail API failed for att-2'));
-          }
-          return Promise.resolve({
-            data: { data: Buffer.from('valid data').toString('base64url') },
-          });
-        },
-      );
+      mockGmailApi.users.messages.attachments.get.mockResolvedValue({
+        data: { data: Buffer.from('valid data').toString('base64url') },
+      });
 
       const results = await service.parseAttachments('test@example.com', email);
 
       expect(results).toHaveLength(3);
 
-      // Attachment 1: Valid PDF
       expect(results[0].filename).toBe('doc1.pdf');
       expect(results[0].skipped).toBeFalsy();
       expect(results[0].type).toBe('pdf');
 
-      // We must cast to ParsedAttachment or any because TypeScript might not narrow it fully without type guards
-      // but since we checked type === 'pdf', we can assert it has text.
-      expect(results[0].text).toBe('mocked pdf text');
+      expect(results[1].filename).toBe('data.xlsx');
+      expect(results[1].skipped).toBeFalsy();
+      expect(results[1].type).toBe('xlsx');
+      expect(results[1].structured).toBeDefined();
 
-      // Attachment 2: Corrupted/Failed (but the batch didn't crash!)
-      expect(results[1].filename).toBe('corrupt.pdf');
-      expect(results[1].skipped).toBe(true);
-      expect(results[1].reason).toBe('parse_error');
-
-      // Attachment 3: Valid Image
-      expect(results[2].filename).toBe('photo.jpg');
-      expect(results[2].skipped).toBeFalsy();
-      expect(results[2].type).toBe('image');
-      expect(results[2].base64).toBeDefined();
+      expect(results[2].filename).toBe('archive.zip');
+      expect(results[2].skipped).toBe(true);
+      expect(results[2].reason).toBe('unsupported_type');
     });
   });
 });

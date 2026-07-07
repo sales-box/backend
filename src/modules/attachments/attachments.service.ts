@@ -1,13 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { GmailClientProvider } from '../emails/gmail-client.provider';
 import * as pdfParse from 'pdf-parse';
+import * as mammoth from 'mammoth';
+import * as xlsx from 'xlsx';
+import JSZip from 'jszip';
 
 //------ types -------
 export type ParsedAttachment = {
   filename: string;
-  type: 'pdf' | 'image' | 'unsupported';
+  type: 'pdf' | 'image' | 'docx' | 'xlsx' | 'pptx' | 'unsupported';
   text?: string;
   base64?: string;
+  structured?: string;
   skipped?: boolean;
   reason?: string;
 };
@@ -24,6 +28,12 @@ interface EmailRef {
 
 //------------constants-------------
 const MAX_SIZE_BYTES = 10 * 1024 * 1024; //10MB
+const MIME_DOCX =
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const MIME_XLSX =
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const MIME_PPTX =
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
 @Injectable()
 export class AttachmentsService {
@@ -63,6 +73,45 @@ export class AttachmentsService {
     return buffer.toString('base64');
   }
 
+  async parseDocx(buffer: Buffer): Promise<string> {
+    const result = await mammoth.extractRawText({ buffer });
+    return result.value;
+  }
+
+  parseXlsx(buffer: Buffer): string {
+    const workbook = xlsx.read(buffer, { type: 'buffer' });
+    const sheetsData: Record<string, unknown[][]> = {};
+    for (const sheetName of workbook.SheetNames) {
+      const worksheet = workbook.Sheets[sheetName];
+      sheetsData[sheetName] = xlsx.utils.sheet_to_json(worksheet, {
+        header: 1,
+      });
+    }
+    return JSON.stringify(sheetsData);
+  }
+
+  async parsePptx(buffer: Buffer): Promise<string> {
+    const zip = await JSZip.loadAsync(buffer);
+    const slideKeys = Object.keys(zip.files)
+      .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+      .sort();
+
+    const slideTexts: string[] = [];
+    for (const slideKey of slideKeys) {
+      const xmlContent = await zip.files[slideKey].async('string');
+      const textMatches: string[] =
+        xmlContent.match(/<a:t[^>]*>[^<]+<\/a:t>/g) ?? [];
+      const slideText = textMatches
+        .map((tag: string) => tag.replace(/<[^>]+>/g, '').trim())
+        .filter(Boolean)
+        .join(' ');
+
+      const slideNumber = slideKey.match(/slide(\d+)/)?.[1] ?? '?';
+      slideTexts.push(`## Slide ${slideNumber}\n${slideText}`);
+    }
+    return slideTexts.join('\n\n');
+  }
+
   async parseAttachment(
     accountEmail: string,
     messageId: string,
@@ -82,7 +131,11 @@ export class AttachmentsService {
     const mime = attachment.mimeType.toLowerCase();
     const isPdf = mime === 'application/pdf';
     const isImage = mime.startsWith('image/');
-    if (!isPdf && !isImage) {
+    const isDocx = mime === MIME_DOCX;
+    const isXlsx = mime === MIME_XLSX;
+    const isPptx = mime === MIME_PPTX;
+
+    if (!isPdf && !isImage && !isDocx && !isXlsx && !isPptx) {
       return {
         filename: attachment.filename,
         type: 'unsupported',
@@ -96,28 +149,74 @@ export class AttachmentsService {
         messageId,
         attachment.attachmentId,
       );
+
       if (isPdf) {
         const text = await this.parsePdf(buffer);
         return {
           filename: attachment.filename,
           type: 'pdf',
           text,
+          skipped: false,
         };
-      } else {
+      }
+
+      if (isImage) {
         const base64 = this.parseImage(buffer);
         return {
           filename: attachment.filename,
           type: 'image',
           base64,
+          skipped: false,
         };
       }
+
+      if (isDocx) {
+        const text = await this.parseDocx(buffer);
+        return {
+          filename: attachment.filename,
+          type: 'docx',
+          text,
+          skipped: false,
+        };
+      }
+
+      if (isXlsx) {
+        const structured = this.parseXlsx(buffer);
+        return {
+          filename: attachment.filename,
+          type: 'xlsx',
+          structured,
+          skipped: false,
+        };
+      }
+
+      if (isPptx) {
+        const text = await this.parsePptx(buffer);
+        return {
+          filename: attachment.filename,
+          type: 'pptx',
+          text,
+          skipped: false,
+        };
+      }
+
+      throw new Error(`Unhandled supported MIME type reached router: ${mime}`);
     } catch (err) {
       this.logger.error(
         `Failed to parse "${attachment.filename}": ${err instanceof Error ? err.message : String(err)}`,
       );
+      const type = isDocx
+        ? 'docx'
+        : isXlsx
+          ? 'xlsx'
+          : isPptx
+            ? 'pptx'
+            : isPdf
+              ? 'pdf'
+              : 'image';
       return {
         filename: attachment.filename,
-        type: isPdf ? 'pdf' : 'image',
+        type,
         skipped: true,
         reason: 'parse_error',
       };
