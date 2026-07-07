@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { GmailClientProvider } from '../emails/gmail-client.provider';
 import * as pdfParse from 'pdf-parse';
 import * as mammoth from 'mammoth';
-import * as xlsx from 'xlsx';
+import * as ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 
 //------ types -------
@@ -78,15 +78,19 @@ export class AttachmentsService {
     return result.value;
   }
 
-  parseXlsx(buffer: Buffer): string {
-    const workbook = xlsx.read(buffer, { type: 'buffer' });
+  async parseXlsx(buffer: Buffer): Promise<string> {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer);
     const sheetsData: Record<string, unknown[][]> = {};
-    for (const sheetName of workbook.SheetNames) {
-      const worksheet = workbook.Sheets[sheetName];
-      sheetsData[sheetName] = xlsx.utils.sheet_to_json(worksheet, {
-        header: 1,
+    workbook.eachSheet((worksheet) => {
+      const sheetName = worksheet.name;
+      const rows: unknown[][] = [];
+      worksheet.eachRow((row) => {
+        const values = Array.isArray(row.values) ? row.values.slice(1) : [];
+        rows.push(values);
       });
-    }
+      sheetsData[sheetName] = rows;
+    });
     return JSON.stringify(sheetsData);
   }
 
@@ -181,7 +185,7 @@ export class AttachmentsService {
       }
 
       if (isXlsx) {
-        const structured = this.parseXlsx(buffer);
+        const structured = await this.parseXlsx(buffer);
         return {
           filename: attachment.filename,
           type: 'xlsx',
