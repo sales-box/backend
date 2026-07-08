@@ -118,3 +118,30 @@ model DocumentChunk {
   @@index([documentId], map: "idx_chunks_doc")
   @@map("document_chunks")
 }
+
+// US-043 — allow-list gate for the external content resolver (SSRF boundary).
+// A domain NOT present here is never fetched. Karim inserts rows directly.
+model AllowedDomain {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  domain    String   @unique
+  addedBy   String   @map("added_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("allowed_domains")
+}
+
+// US-043 — single admin-level Google Drive OAuth connection (separate from the
+// per-user Gmail connected_accounts). Tokens stored encrypted at rest.
+model DriveConnection {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email          String    @unique
+  accessToken    String    @map("access_token")
+  refreshToken   String?   @map("refresh_token")
+  scope          String?
+  tokenExpiresAt DateTime? @map("token_expires_at") @db.Timestamptz(6)
+  status         String    @default("connected")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("drive_connections")
+}
