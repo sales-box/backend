@@ -1,0 +1,262 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument */
+import { BadRequestException, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import * as googleapis from 'googleapis';
+import { PrismaService } from '../../database/prisma.service';
+import { AuthService } from './auth.service';
+import { CryptoService } from './crypto.service';
+
+jest.mock('googleapis', () => {
+  const getToken = jest.fn();
+  const setCredentials = jest.fn();
+  const getProfile = jest.fn();
+  return {
+    __mocks: { getToken, setCredentials, getProfile },
+    google: {
+      auth: {
+        OAuth2: jest
+          .fn()
+          .mockImplementation(() => ({ getToken, setCredentials })),
+      },
+      gmail: jest.fn().mockReturnValue({ users: { getProfile } }),
+    },
+  };
+});
+
+const gmocks = (googleapis as unknown as { __mocks: Record<string, jest.Mock> })
+  .__mocks;
+const OAuth2Mock = (googleapis.google.auth as unknown as { OAuth2: jest.Mock })
+  .OAuth2;
+
+function makeConfig(values: Record<string, string>): ConfigService {
+  return {
+    getOrThrow: (key: string): string => {
+      const value = values[key];
+      if (value === undefined) throw new Error(`Missing config: ${key}`);
+      return value;
+    },
+  } as unknown as ConfigService;
+}
+
+const KEY = Buffer.alloc(32, 'k').toString('base64');
+const env = {
+  GOOGLE_CLIENT_ID: 'test-client-id',
+  GOOGLE_CLIENT_SECRET: 'test-client-secret',
+  GOOGLE_REDIRECT_URI: 'http://localhost:3000/auth/google/callback',
+  GOOGLE_SCOPES: 'https://www.googleapis.com/auth/gmail.readonly',
+};
+
+describe('AuthService buildGoogleAuthUrl', () => {
+  function build(): URL {
+    const service = new AuthService(
+      makeConfig(env),
+      {} as PrismaService,
+      {} as CryptoService,
+      { emit: jest.fn() } as any,
+    );
+    return new URL(service.buildGoogleAuthUrl());
+  }
+
+  it('targets the Google OAuth consent endpoint', () => {
+    const url = build();
+    expect(`${url.origin}${url.pathname}`).toBe(
+      'https://accounts.google.com/o/oauth2/v2/auth',
+    );
+  });
+
+  it('includes client_id, redirect_uri and scope from config', () => {
+    const params = build().searchParams;
+    expect(params.get('client_id')).toBe(env.GOOGLE_CLIENT_ID);
+    expect(params.get('redirect_uri')).toBe(env.GOOGLE_REDIRECT_URI);
+    expect(params.get('scope')).toBe(env.GOOGLE_SCOPES);
+  });
+
+  it('requests an offline authorization code with forced consent', () => {
+    const params = build().searchParams;
+    expect(params.get('response_type')).toBe('code');
+    expect(params.get('access_type')).toBe('offline');
+    expect(params.get('prompt')).toBe('consent');
+  });
+
+  it('throws when a required OAuth env var is missing', () => {
+    const service = new AuthService(
+      makeConfig({ GOOGLE_CLIENT_ID: 'x' }),
+      {} as PrismaService,
+      {} as CryptoService,
+      { emit: jest.fn() } as any,
+    );
+    expect(() => service.buildGoogleAuthUrl()).toThrow();
+  });
+});
+
+describe('AuthService handleGoogleCallback', () => {
+  const ACCESS = 'ACCESS_Trap_123';
+  const REFRESH = 'REFRESH_Trap_456';
+  const CODE = 'auth-code-xyz';
+  const EMAIL = 'seller@example.com';
+  const EXPIRY = 1893456000000;
+
+  let prisma: PrismaService;
+  let upsert: jest.Mock;
+  let crypto: CryptoService;
+  let service: AuthService;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    upsert = jest.fn().mockResolvedValue({ id: 'mock-id', email: EMAIL });
+    prisma = { connectedAccount: { upsert } } as unknown as PrismaService;
+    crypto = new CryptoService(makeConfig({ TOKEN_ENCRYPTION_KEY: KEY }));
+    service = new AuthService(makeConfig(env), prisma, crypto, {
+      emit: jest.fn(),
+    } as any);
+  });
+
+  function happyTokens(overrides: Record<string, unknown> = {}) {
+    gmocks.getToken.mockResolvedValue({
+      tokens: {
+        access_token: ACCESS,
+        refresh_token: REFRESH,
+        expiry_date: EXPIRY,
+        scope: env.GOOGLE_SCOPES,
+        ...overrides,
+      },
+    });
+    gmocks.getProfile.mockResolvedValue({ data: { emailAddress: EMAIL } });
+  }
+
+  it('exchanges the code and upserts an encrypted account, returning the email', async () => {
+    happyTokens();
+
+    const result = await service.handleGoogleCallback(CODE);
+
+    expect(result).toEqual({ email: EMAIL });
+    expect(gmocks.getToken).toHaveBeenCalledWith(CODE);
+    expect(OAuth2Mock).toHaveBeenCalledWith(
+      env.GOOGLE_CLIENT_ID,
+      env.GOOGLE_CLIENT_SECRET,
+      env.GOOGLE_REDIRECT_URI,
+    );
+    expect(upsert).toHaveBeenCalledTimes(1);
+
+    const arg = upsert.mock.calls[0][0];
+    expect(arg.where).toEqual({ email: EMAIL });
+    expect(arg.create.status).toBe('connected');
+    expect(arg.create.scope).toBe(env.GOOGLE_SCOPES);
+    expect(arg.create.tokenExpiresAt).toEqual(new Date(EXPIRY));
+  });
+
+  it('stores tokens as ciphertext that decrypts back to the originals', async () => {
+    happyTokens();
+
+    await service.handleGoogleCallback(CODE);
+    const arg = upsert.mock.calls[0][0];
+
+    expect(arg.create.accessToken).not.toBe(ACCESS);
+    expect(arg.create.refreshToken).not.toBe(REFRESH);
+    expect(crypto.decrypt(arg.create.accessToken)).toBe(ACCESS);
+    expect(crypto.decrypt(arg.create.refreshToken)).toBe(REFRESH);
+  });
+
+  it('throws BadRequestException and skips upsert when the code is invalid', async () => {
+    gmocks.getToken.mockRejectedValue(new Error('invalid_grant'));
+
+    await expect(service.handleGoogleCallback(CODE)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it('throws and skips upsert when the profile lookup fails', async () => {
+    gmocks.getToken.mockResolvedValue({ tokens: { access_token: ACCESS } });
+    gmocks.getProfile.mockRejectedValue({
+      response: {
+        status: 403,
+        data: { error: { status: 'PERMISSION_DENIED', message: 'disabled' } },
+      },
+    });
+
+    await expect(service.handleGoogleCallback(CODE)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it('throws BadRequestException for a missing code without calling Google', async () => {
+    await expect(service.handleGoogleCallback('')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(gmocks.getToken).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it('stores null expiry when Google omits expiry_date', async () => {
+    happyTokens({ expiry_date: undefined });
+
+    await service.handleGoogleCallback(CODE);
+
+    expect(upsert.mock.calls[0][0].create.tokenExpiresAt).toBeNull();
+  });
+
+  it('does not overwrite a stored refresh token when re-consent omits it', async () => {
+    happyTokens({ refresh_token: undefined });
+
+    await service.handleGoogleCallback(CODE);
+    const arg = upsert.mock.calls[0][0];
+
+    expect('refreshToken' in arg.update).toBe(false);
+    expect(arg.update.accessToken).toBeDefined();
+  });
+
+  it('does not overwrite a stored scope when re-consent omits it', async () => {
+    happyTokens({ scope: undefined });
+
+    await service.handleGoogleCallback(CODE);
+    const arg = upsert.mock.calls[0][0];
+
+    expect('scope' in arg.update).toBe(false);
+    expect(arg.create.scope).toBe(env.GOOGLE_SCOPES);
+  });
+
+  it('throws and skips upsert when the account email cannot be resolved', async () => {
+    gmocks.getToken.mockResolvedValue({
+      tokens: { access_token: ACCESS, refresh_token: REFRESH },
+    });
+    gmocks.getProfile.mockResolvedValue({ data: {} });
+
+    await expect(service.handleGoogleCallback(CODE)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it('never leaks tokens or the auth code to logs', async () => {
+    const spies = [
+      jest.spyOn(Logger.prototype, 'log').mockImplementation(() => {}),
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => {}),
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => {}),
+      jest.spyOn(Logger.prototype, 'debug').mockImplementation(() => {}),
+      jest.spyOn(console, 'log').mockImplementation(() => {}),
+      jest.spyOn(console, 'error').mockImplementation(() => {}),
+    ];
+
+    happyTokens();
+    await service.handleGoogleCallback(CODE);
+
+    gmocks.getToken.mockRejectedValue(new Error(`boom ${ACCESS}`));
+    await expect(service.handleGoogleCallback(CODE)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+
+    const output = spies
+      .flatMap((s) => s.mock.calls)
+      .flat()
+      .map((a) => JSON.stringify(a))
+      .join(' ');
+
+    expect(output).not.toContain(ACCESS);
+    expect(output).not.toContain(REFRESH);
+    expect(output).not.toContain(CODE);
+
+    spies.forEach((s) => s.mockRestore());
+  });
+});

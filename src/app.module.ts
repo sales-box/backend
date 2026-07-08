@@ -4,23 +4,39 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
+import { ScheduleModule } from '@nestjs/schedule';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { createKeyv } from '@keyv/redis';
 import { Redis } from 'ioredis';
 import { LoggerModule } from 'nestjs-pino';
 import { GracefulShutdownModule } from 'nestjs-graceful-shutdown';
+import { PrometheusModule } from '@willsoto/nestjs-prometheus';
 import { validateEnv } from './config/env.validation';
+import { reqSerializer } from './config/log-serializers';
 import { PrismaModule } from './database/prisma.module';
 import { QueueModule } from './queue/queue.module';
 import { HealthModule } from './modules/health/health.module';
+import { EmailModule } from './modules/email/email.module';
+import { AuthModule } from './modules/auth/auth.module';
+import { EmailsModule } from './modules/emails/emails.module';
+import { ClientsModule } from './modules/clients/clients.module';
+import { CrmModule } from './modules/crm/crm.module';
+import { AttachmentsModule } from './modules/attachments/attachments.module';
+import { KnowledgeBaseModule } from './modules/knowledge-base/knowledge-base.module';
 
 const isProd = process.env.NODE_ENV === 'production';
 
 @Module({
   imports: [
+    PrometheusModule.register({
+      path: '/metrics',
+    }),
     ConfigModule.forRoot({
       isGlobal: true,
       validate: validateEnv,
     }),
+    ScheduleModule.forRoot(),
+    EventEmitterModule.forRoot(),
     // Drain in-flight requests and close DB/Redis cleanly on SIGTERM/SIGINT.
     GracefulShutdownModule.forRoot({
       gracefulShutdownTimeout: 10_000,
@@ -32,11 +48,17 @@ const isProd = process.env.NODE_ENV === 'production';
         transport: isProd
           ? undefined
           : { target: 'pino-pretty', options: { singleLine: true } },
-        // Never leak credentials into logs.
+        // Keep credentials out of logs: strip the query string from req.url
+        // and redact known-sensitive fields.
+        serializers: { req: reqSerializer },
         redact: [
           'req.headers.authorization',
           'req.headers.cookie',
           'res.headers["set-cookie"]',
+          'req.query.code',
+          'req.query.access_token',
+          'req.query.refresh_token',
+          'req.query.state',
         ],
       },
     }),
@@ -74,6 +96,13 @@ const isProd = process.env.NODE_ENV === 'production';
     PrismaModule,
     QueueModule,
     HealthModule,
+    EmailModule,
+    AuthModule,
+    EmailsModule,
+    ClientsModule,
+    CrmModule,
+    AttachmentsModule,
+    KnowledgeBaseModule,
   ],
   providers: [
     // Apply rate limiting globally.
