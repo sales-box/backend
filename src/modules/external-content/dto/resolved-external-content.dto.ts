@@ -32,4 +32,11 @@ export class ResolvedExternalContentDto {
     ],
   })
   reason?: string;
+
+  @ApiPropertyOptional({
+    description: 'Human-readable explanation for the client',
+    example:
+      'This Google Drive link points to a folder, not a single file. Share a direct link to one file.',
+  })
+  detail?: string;
 }

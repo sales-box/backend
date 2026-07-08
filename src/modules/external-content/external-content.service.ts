@@ -70,16 +70,34 @@ export class ExternalContentService {
 
     try {
       if (!link.allowed) {
-        return {
-          ...base,
-          reason: link.parseFailed ? 'parse_error' : 'unrecognized_domain',
-        };
+        return link.parseFailed
+          ? {
+              ...base,
+              reason: 'parse_error',
+              detail: 'Malformed or unsafe URL — it was not fetched.',
+            }
+          : {
+              ...base,
+              reason: 'unrecognized_domain',
+              detail:
+                'This domain is not on the allowed list, so the link was not fetched.',
+            };
       }
       if (link.classification !== 'google_drive') {
-        return { ...base, reason: 'not_attempted' };
+        return {
+          ...base,
+          reason: 'not_attempted',
+          detail:
+            'Recognized domain, but this source type is not supported yet.',
+        };
       }
       if (auth === null) {
-        return { ...base, reason: 'fetch_failed' }; // systemic outage, logged once
+        return {
+          ...base,
+          reason: 'fetch_failed',
+          detail:
+            'The Drive connection is unavailable. Please try again later.',
+        };
       }
 
       const url = new URL(link.originalRef);
@@ -87,12 +105,24 @@ export class ExternalContentService {
       // has no file id → permanent parse_error, never attempt a fetch.
       const fileId = this.drive.extractFileId(url);
       if (fileId === null) {
-        return { ...base, reason: 'parse_error' };
+        const isFolder = url.pathname.includes('/folders/');
+        return {
+          ...base,
+          reason: 'parse_error',
+          detail: isFolder
+            ? 'This Google Drive link points to a folder, not a single file. Share a direct link to one file (document, sheet, slide, or PDF).'
+            : 'This Google Drive link is not a single downloadable file. Share a direct link to one file.',
+        };
       }
 
       const raw = await this.drive.fetchRaw(url, auth);
       if (raw === null) {
-        return { ...base, reason: 'fetch_failed' };
+        return {
+          ...base,
+          reason: 'fetch_failed',
+          detail:
+            'Could not fetch the file — it may be private (not shared with the system), larger than 10MB, or the access token expired.',
+        };
       }
 
       // fetched:true is locked in before storage; a store failure never resets
@@ -110,13 +140,23 @@ export class ExternalContentService {
       );
       const stored = await this.storage.store(raw.bytes, key, raw.contentType);
       return stored === undefined
-        ? { ...fetched, rawStorageKey: undefined, reason: 'fetch_failed' }
+        ? {
+            ...fetched,
+            rawStorageKey: undefined,
+            reason: 'fetch_failed',
+            detail:
+              'The file was fetched but could not be stored. Please retry.',
+          }
         : { ...fetched, rawStorageKey: stored };
     } catch (err) {
       // Never propagate — one bad link must not break the others. Host + name
       // only, never the raw URL or error message.
       this.logger.error(`Link failed host=${link.domain} err=${errName(err)}`);
-      return { ...base, reason: 'fetch_failed' };
+      return {
+        ...base,
+        reason: 'fetch_failed',
+        detail: 'An unexpected error occurred while processing this link.',
+      };
     }
   }
 }
