@@ -1,7 +1,12 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { ClientsService } from './clients.service';
-import { CreateClientDto, CreateInteractionDto } from './clients.dto';
+import {
+  CreateClientDto,
+  CreateInteractionDto,
+  GetClientsQueryDto,
+} from './clients.dto';
+import { PaginationQueryDto } from '@/common/dto/pagination-query.dto';
 
 @ApiTags('clients')
 @Controller('clients')
@@ -31,5 +36,26 @@ export class ClientsController {
   @ApiOkResponse({ description: 'Get client with latest 20 interactions' })
   async getClient(@Param('id') id: string) {
     return this.clientsService.getClient(id);
+  }
+
+  @Get()
+  @ApiOkResponse({ description: 'Get paginated list of clients' })
+  async getClients(@Query() query: GetClientsQueryDto) {
+    return this.clientsService.getClients(query.search, {
+      page: query.page,
+      limit: query.limit,
+    });
+  }
+
+  @Get(':clientId/interactions')
+  @ApiOkResponse({ description: 'Get interaction history for a client' })
+  async getInteractions(
+    @Param('clientId') clientId: string,
+    @Query() query: PaginationQueryDto,
+  ) {
+    return this.clientsService.getInteractions(clientId, {
+      page: query.page,
+      limit: query.limit,
+    });
   }
 }
