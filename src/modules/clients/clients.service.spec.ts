@@ -10,6 +10,8 @@ describe('ClientsService', () => {
   const mockClientUpsert = jest.fn();
   const mockInteractionCreate = jest.fn();
   const mockClientFindUnique = jest.fn();
+  const mockClientPaginate = jest.fn();
+  const mockInteractionPaginate = jest.fn();
 
   beforeEach(async () => {
     const mockPrismaService = {
@@ -19,6 +21,10 @@ describe('ClientsService', () => {
       },
       interaction: {
         create: mockInteractionCreate,
+      },
+      extended: {
+        client: { paginate: mockClientPaginate },
+        interaction: { paginate: mockInteractionPaginate },
       },
     };
 
@@ -203,6 +209,81 @@ describe('ClientsService', () => {
 
       await expect(service.getClient('non-existent')).rejects.toThrow(
         NotFoundException,
+      );
+    });
+  });
+
+  describe('getClients', () => {
+    it('should call extended.client.paginate with OR clause when searchQuery is provided', async () => {
+      const searchQuery = 'acme';
+      const options = { page: 1, limit: 10 };
+      const mockResult = { data: [], meta: { total: 0 } as any };
+      mockClientPaginate.mockResolvedValue(mockResult);
+
+      const result = await service.getClients(searchQuery, options);
+
+      expect(result).toEqual(mockResult);
+      expect(mockClientPaginate).toHaveBeenCalledWith(
+        {
+          where: {
+            OR: [
+              { name: { contains: searchQuery, mode: 'insensitive' } },
+              { email: { contains: searchQuery, mode: 'insensitive' } },
+              { company: { contains: searchQuery, mode: 'insensitive' } },
+            ],
+          },
+          orderBy: { createdAt: 'desc' },
+        },
+        options,
+      );
+    });
+
+    it('should call extended.client.paginate with empty where when no searchQuery is provided', async () => {
+      const mockResult = { data: [], meta: { total: 0 } as any };
+      mockClientPaginate.mockResolvedValue(mockResult);
+
+      const result = await service.getClients(undefined, {
+        page: 1,
+        limit: 10,
+      });
+
+      expect(result).toEqual(mockResult);
+      expect(mockClientPaginate).toHaveBeenCalledWith(
+        {
+          where: {},
+          orderBy: { createdAt: 'desc' },
+        },
+        { page: 1, limit: 10 },
+      );
+    });
+  });
+
+  describe('getInteractions', () => {
+    it('should throw NotFoundException if client does not exist', async () => {
+      mockClientFindUnique.mockResolvedValue(null);
+
+      await expect(
+        service.getInteractions('fake-id', { page: 1, limit: 10 }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('should call extended.interaction.paginate if client exists', async () => {
+      mockClientFindUnique.mockResolvedValue({ id: 'real-id' });
+      const mockResult = { data: [], meta: { total: 0 } as any };
+      mockInteractionPaginate.mockResolvedValue(mockResult);
+
+      const result = await service.getInteractions('real-id', {
+        page: 1,
+        limit: 10,
+      });
+
+      expect(result).toEqual(mockResult);
+      expect(mockInteractionPaginate).toHaveBeenCalledWith(
+        {
+          where: { clientId: 'real-id' },
+          orderBy: { date: 'desc' },
+        },
+        { page: 1, limit: 10 },
       );
     });
   });

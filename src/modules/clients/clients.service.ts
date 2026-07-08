@@ -3,6 +3,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { ClientRecord } from './clients.interface';
 import { CreateInteractionDto } from './clients.dto';
 import { Prisma } from '@prisma/client';
+import { PaginationOptions } from '@/database/pagination/pagination.types';
 
 @Injectable()
 export class ClientsService {
@@ -68,6 +69,46 @@ export class ClientsService {
     }
 
     return client;
+  }
+
+  async getClients(searchQuery?: string, options?: PaginationOptions) {
+    const whereClause = searchQuery
+      ? {
+          OR: [
+            { name: { contains: searchQuery, mode: 'insensitive' as const } },
+            { email: { contains: searchQuery, mode: 'insensitive' as const } },
+            {
+              company: { contains: searchQuery, mode: 'insensitive' as const },
+            },
+          ],
+        }
+      : {};
+
+    return this.prisma.extended.client.paginate(
+      {
+        where: whereClause,
+        orderBy: { createdAt: 'desc' },
+      },
+      options,
+    );
+  }
+
+  async getInteractions(clientId: string, options?: PaginationOptions) {
+    const clientExists = await this.prisma.client.findUnique({
+      where: { id: clientId },
+    });
+
+    if (!clientExists) {
+      throw new NotFoundException(`Client with ID ${clientId} not found`);
+    }
+
+    return this.prisma.extended.interaction.paginate(
+      {
+        where: { clientId },
+        orderBy: { date: 'desc' },
+      },
+      options,
+    );
   }
 
   inferCompanyFromEmail(email: string): string {

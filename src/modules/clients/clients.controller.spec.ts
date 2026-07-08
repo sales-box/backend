@@ -9,6 +9,8 @@ describe('ClientsController', () => {
     getOrCreateClient: jest.fn(),
     addInteraction: jest.fn(),
     getClient: jest.fn(),
+    getClients: jest.fn(),
+    getInteractions: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -96,6 +98,62 @@ describe('ClientsController', () => {
 
       expect(result).toEqual(mockResult);
       expect(mockClientsService.getClient).toHaveBeenCalledWith(clientId);
+    });
+  });
+
+  describe('getClients', () => {
+    it('should call service.getClients with search and pagination params', async () => {
+      const query = { search: 'acme', page: 1, limit: 10 };
+      const mockResult = {
+        data: [],
+        meta: {
+          total: 0,
+          lastPage: 1,
+          currentPage: 1,
+          limit: 10,
+          prev: null,
+          next: null,
+        },
+      };
+      mockClientsService.getClients.mockResolvedValue(mockResult);
+
+      const result = await controller.getClients(query);
+
+      expect(result).toEqual(mockResult);
+      expect(mockClientsService.getClients).toHaveBeenCalledWith(query.search, {
+        page: query.page,
+        limit: query.limit,
+      });
+    });
+  });
+
+  describe('getInteractions', () => {
+    it('should call service.getInteractions with pagination params', async () => {
+      const clientId = '1';
+      const query = { page: 2, limit: 5 };
+      const mockResult = {
+        data: [],
+        meta: {
+          total: 10,
+          lastPage: 2,
+          currentPage: 2,
+          limit: 5,
+          prev: 1,
+          next: null,
+        },
+      };
+      mockClientsService.getInteractions.mockResolvedValue(mockResult);
+
+      const result = await controller.getInteractions(clientId, query);
+
+      expect(result).toEqual(mockResult);
+      expect(mockClientsService.getInteractions).toHaveBeenCalledWith(
+        clientId,
+        {
+          page: query.page,
+          limit: query.limit,
+        },
+      );
     });
   });
 });

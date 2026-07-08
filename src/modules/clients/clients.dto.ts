@@ -1,3 +1,4 @@
+import { PaginationQueryDto } from '@/common/dto/pagination-query.dto';
 import {
   IsDateString,
   IsEmail,
@@ -49,4 +50,10 @@ export class CreateInteractionDto {
   @IsString()
   @IsOptional()
   recommendation?: string;
+}
+
+export class GetClientsQueryDto extends PaginationQueryDto {
+  @IsOptional()
+  @IsString()
+  search?: string;
 }

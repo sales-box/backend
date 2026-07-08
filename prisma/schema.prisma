@@ -20,6 +20,7 @@ model Client {
   name         String?
   company      String?
   status       String        @default("new_inquiry")
+  crmId        String?       @map("crm_id")
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   interactions Interaction[]
