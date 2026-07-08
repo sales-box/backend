@@ -126,6 +126,30 @@ export class EnvironmentVariables {
   @IsString()
   @MinLength(1)
   HUBSPOT_API_KEY!: string;
+
+  // ----- Google Drive OAuth (US-043) -----
+  // Defaulted so it is never missing; read-only scope for the admin connection.
+  @IsString()
+  @MinLength(1)
+  GOOGLE_DRIVE_SCOPES: string =
+    'https://www.googleapis.com/auth/drive.readonly';
+
+  // ----- AWS S3 (US-043 external content storage) -----
+  // Required at boot so a missing bucket/region fails fast instead of surfacing
+  // as a silent per-link fetch_failed later. AWS credentials come from the
+  // default provider chain (env/role), never validated or hardcoded here.
+  @IsString()
+  @MinLength(1)
+  AWS_REGION!: string;
+
+  @IsString()
+  @MinLength(1)
+  S3_BUCKET!: string;
+
+  // Optional S3-compatible endpoint (e.g. LocalStack) for local dev.
+  @IsOptional()
+  @IsString()
+  S3_ENDPOINT?: string;
 }
 
 export function validateEnv(
