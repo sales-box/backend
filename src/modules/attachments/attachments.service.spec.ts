@@ -19,20 +19,23 @@ jest.mock('mammoth', () => ({
   extractRawText: jest.fn().mockResolvedValue({ value: 'mocked docx text' }),
 }));
 
-jest.mock('xlsx', () => {
+jest.mock('exceljs', () => {
   return {
-    read: jest.fn().mockReturnValue({
-      SheetNames: ['Sheet1'],
-      Sheets: {
-        Sheet1: {},
+    Workbook: jest.fn().mockImplementation(() => ({
+      xlsx: {
+        load: jest.fn().mockResolvedValue(undefined),
       },
-    }),
-    utils: {
-      sheet_to_json: jest.fn().mockReturnValue([
-        ['Name', 'Age'],
-        ['Ahmed', 25],
-      ]),
-    },
+      eachSheet: jest.fn((callback: (ws: any) => void) => {
+        const mockWorksheet = {
+          name: 'Sheet1',
+          eachRow: jest.fn((rowCallback: (row: any) => void) => {
+            rowCallback({ values: [null, 'Name', 'Age'] });
+            rowCallback({ values: [null, 'Ahmed', 25] });
+          }),
+        };
+        callback(mockWorksheet);
+      }),
+    })),
   };
 });
 
@@ -120,9 +123,9 @@ describe('AttachmentsService', () => {
       expect(text).toBe('mocked docx text');
     });
 
-    it('should extract structured json from xlsx', () => {
+    it('should extract structured json from xlsx', async () => {
       const buffer = Buffer.from('dummy xlsx');
-      const jsonStr = service.parseXlsx(buffer);
+      const jsonStr = await service.parseXlsx(buffer);
       expect(JSON.parse(jsonStr)).toEqual({
         Sheet1: [
           ['Name', 'Age'],
