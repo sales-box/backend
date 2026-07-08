@@ -2,7 +2,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ClientsService } from './clients.service';
 import { PrismaService } from '../../database/prisma.service';
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 
 describe('ClientsService', () => {
   let service: ClientsService;
@@ -285,6 +285,114 @@ describe('ClientsService', () => {
         },
         { page: 1, limit: 10 },
       );
+    });
+  });
+
+  describe('getClientContext', () => {
+    it('should throw BadRequestException if email is invalid or empty', async () => {
+      await expect(service.getClientContext('')).rejects.toThrow(
+        BadRequestException,
+      );
+      await expect(service.getClientContext('not-an-email')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('should return default context if client is not found in database', async () => {
+      mockClientFindUnique.mockResolvedValue(null);
+
+      const result = await service.getClientContext('new-user@example.com');
+
+      expect(result).toEqual({
+        isNewClient: true,
+        clientId: null,
+        status: 'unknown',
+        company: '',
+        crmId: null,
+        history: [],
+      });
+      expect(mockClientFindUnique).toHaveBeenCalledWith({
+        where: { email: 'new-user@example.com' },
+        include: {
+          interactions: {
+            orderBy: { date: 'desc' },
+            take: 5,
+          },
+        },
+      });
+    });
+
+    it('should return mapped client context with up to 5 interactions if client exists', async () => {
+      const mockInteractions = Array.from({ length: 7 }, (_, i) => ({
+        id: `int-${i}`,
+        date: new Date(`2026-07-08T10:0${i}:00.000Z`),
+        type: 'email',
+        subject: `Subject ${i}`,
+        aiSummary: `Summary ${i}`,
+        classification: `class-${i}`,
+        recommendation: `rec-${i}`,
+      }));
+
+      const mockClient = {
+        id: 'client-123',
+        email: 'client@example.com',
+        name: 'John Doe',
+        company: 'Stark Industries',
+        status: 'active',
+        crmId: 'crm-789',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        // Mocking the database slice of 5 interactions
+        interactions: mockInteractions.slice(0, 5),
+      };
+
+      mockClientFindUnique.mockResolvedValue(mockClient);
+
+      const result = await service.getClientContext('client@example.com');
+
+      expect(result).toEqual({
+        isNewClient: false,
+        clientId: 'client-123',
+        status: 'active',
+        company: 'Stark Industries',
+        crmId: 'crm-789',
+        history: mockInteractions.slice(0, 5).map((item) => ({
+          date: item.date.toISOString(),
+          type: item.type,
+          subject: item.subject,
+          summary: item.aiSummary,
+          classification: item.classification,
+          recommendation: item.recommendation,
+        })),
+      });
+
+      expect(mockClientFindUnique).toHaveBeenCalledWith({
+        where: { email: 'client@example.com' },
+        include: {
+          interactions: {
+            orderBy: { date: 'desc' },
+            take: 5,
+          },
+        },
+      });
+    });
+
+    it('should return default context safely and log the error if database throws', async () => {
+      const logSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      mockClientFindUnique.mockRejectedValue(new Error('DB Timeout'));
+
+      const result = await service.getClientContext('test@example.com');
+
+      expect(result).toEqual({
+        isNewClient: true,
+        clientId: null,
+        status: 'unknown',
+        company: '',
+        crmId: null,
+        history: [],
+      });
+      expect(logSpy).toHaveBeenCalled();
+      logSpy.mockRestore();
     });
   });
 });

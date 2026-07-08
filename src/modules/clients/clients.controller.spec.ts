@@ -11,6 +11,7 @@ describe('ClientsController', () => {
     getClient: jest.fn(),
     getClients: jest.fn(),
     getInteractions: jest.fn(),
+    getClientContext: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -154,6 +155,26 @@ describe('ClientsController', () => {
           limit: query.limit,
         },
       );
+    });
+  });
+
+  describe('getClientContext', () => {
+    it('should call service.getClientContext with query email parameter', async () => {
+      const email = 'test@example.com';
+      const expectedResult = {
+        isNewClient: false,
+        clientId: 'client-1',
+        status: 'active',
+        company: 'Stark Industries',
+        crmId: 'crm-123',
+        history: [],
+      };
+      mockClientsService.getClientContext.mockResolvedValue(expectedResult);
+
+      const result = await controller.getClientContext(email);
+
+      expect(result).toEqual(expectedResult);
+      expect(mockClientsService.getClientContext).toHaveBeenCalledWith(email);
     });
   });
 });
