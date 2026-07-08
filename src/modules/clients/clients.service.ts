@@ -1,6 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
-import { ClientRecord } from './clients.interface';
+import { ClientRecord, ClientContext } from './clients.interface';
 import { CreateInteractionDto } from './clients.dto';
 import { Prisma } from '@prisma/client';
 import { PaginationOptions } from '@/database/pagination/pagination.types';
@@ -45,7 +49,7 @@ export class ClientsService {
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2003' // Foreign key constraint failed.
+        error.code === 'P2003'
       ) {
         throw new NotFoundException(`Client with ID ${clientId} not found`);
       }
@@ -69,6 +73,62 @@ export class ClientsService {
     }
 
     return client;
+  }
+
+  async getClientContext(email: string): Promise<ClientContext> {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!email || !emailRegex.test(email)) {
+      throw new BadRequestException('Client email is invalid or not provided');
+    }
+
+    try {
+      const client = await this.prisma.client.findUnique({
+        where: { email },
+        include: {
+          interactions: {
+            orderBy: { date: 'desc' },
+            take: 5,
+          },
+        },
+      });
+
+      if (!client) {
+        return {
+          isNewClient: true,
+          clientId: null,
+          status: 'unknown',
+          company: '',
+          crmId: null,
+          history: [],
+        };
+      }
+
+      return {
+        isNewClient: false,
+        clientId: client.id,
+        status: client.status,
+        company: client.company || '',
+        crmId: client.crmId,
+        history: client.interactions.map((interaction) => ({
+          date: interaction.date.toISOString(),
+          type: interaction.type,
+          subject: interaction.subject,
+          summary: interaction.aiSummary,
+          classification: interaction.classification,
+          recommendation: interaction.recommendation,
+        })),
+      };
+    } catch (error) {
+      console.error(error);
+      return {
+        isNewClient: true,
+        clientId: null,
+        status: 'unknown',
+        company: '',
+        crmId: null,
+        history: [],
+      };
+    }
   }
 
   async getClients(searchQuery?: string, options?: PaginationOptions) {
