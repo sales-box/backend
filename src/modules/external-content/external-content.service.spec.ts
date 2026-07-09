@@ -205,6 +205,7 @@ describe('ExternalContentService', () => {
     const [r] = await service.resolveExternalContent('body', 'int');
 
     expect(r).toMatchObject({ reason: 'parse_error', fetched: false });
+    expect(r.detail).toMatch(/folder/i);
     expect(fetchRaw).not.toHaveBeenCalled();
   });
 

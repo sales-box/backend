@@ -17,6 +17,8 @@ export interface ResolvedExternalContent {
   summary?: undefined;
   skipped: boolean;
   reason?: ExternalContentReason;
+  /** Human-readable explanation for the client (e.g. why a link was skipped). */
+  detail?: string;
 }
 
 const MIME_EXT: Record<string, string> = {
