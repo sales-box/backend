@@ -109,3 +109,23 @@ docker-compose.override.yml
 openapi.json
 generated/
 prisma/ERD.md
+
+# =========================
+# Repomix
+# =========================
+repomix-output.xml
+repomix-output.txt
+repomix-output.md
+repomix.config.json
+repomix.config.js
+
+# =========================
+# Scratch files
+# =========================
+test-pdf*.ts
+# =========================
+# Guides and Designs
+# =========================
+*-guide.md
+*-design.md
+

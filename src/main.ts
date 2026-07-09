@@ -7,6 +7,7 @@ import {
 import helmet from '@fastify/helmet';
 import fastifyCookie from '@fastify/cookie';
 import fastifyCsrf from '@fastify/csrf-protection';
+import fastifyMultipart from '@fastify/multipart';
 import { Logger } from 'nestjs-pino';
 import { setupGracefulShutdown } from 'nestjs-graceful-shutdown';
 import { AppModule } from './app.module';
@@ -36,6 +37,12 @@ async function bootstrap() {
   // CSRF token issuance. Enforcement is applied per-route in feature modules,
   // NOT globally: external webhooks (Gmail, HubSpot) cannot carry a CSRF token.
   await app.register(fastifyCsrf);
+
+  // Multipart uploads for the knowledge base. 25MB per-file cap; the
+  // controller catches the limit error and returns 400.
+  await app.register(fastifyMultipart, {
+    limits: { fileSize: 25 * 1024 * 1024, files: 1 },
+  });
 
   // CORS for the admin dashboard SPA and Gmail add-on, with cookie credentials.
   app.enableCors({

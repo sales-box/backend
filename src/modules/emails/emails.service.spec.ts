@@ -1,15 +1,17 @@
-/* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
+/* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment */
 import { Test, TestingModule } from '@nestjs/testing';
 import { EmailsService } from './emails.service';
+import { EmailService } from '@/modules/email/email.service';
 import { google } from 'googleapis';
+import { EmailThread } from '@/modules/email/email.types';
 
+// Mock googleapis for profile email resolution
 jest.mock('googleapis', () => {
   const mockGmail = {
     users: {
-      threads: {
-        list: jest.fn(),
-        get: jest.fn(),
-      },
+      getProfile: jest.fn().mockResolvedValue({
+        data: { emailAddress: 'seller@example.com' },
+      }),
     },
   };
   return {
@@ -26,11 +28,22 @@ jest.mock('googleapis', () => {
 
 describe('EmailsService', () => {
   let service: EmailsService;
+  let mockEmailService: any;
   let mockGmail: any;
 
   beforeEach(async () => {
+    mockEmailService = {
+      fetchThreads: jest.fn(),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
-      providers: [EmailsService],
+      providers: [
+        EmailsService,
+        {
+          provide: EmailService,
+          useValue: mockEmailService,
+        },
+      ],
     }).compile();
 
     service = module.get<EmailsService>(EmailsService);
@@ -46,107 +59,91 @@ describe('EmailsService', () => {
     const clientEmail = 'client@example.com';
     const token = 'mock-access-token';
 
-    it('should return empty array if no threads found for new client', async () => {
-      mockGmail.users.threads.list.mockResolvedValue({
-        data: { threads: [] },
-      });
+    it('returns [] when EmailService returns no threads', async () => {
+      mockEmailService.fetchThreads.mockResolvedValue([]);
 
       const result = await service.fetchThreadsForClient(clientEmail, token);
       expect(result).toEqual([]);
-      expect(mockGmail.users.threads.list).toHaveBeenCalledWith({
-        userId: 'me',
-        q: clientEmail,
-      });
-      expect(mockGmail.users.threads.get).not.toHaveBeenCalled();
+      expect(mockEmailService.fetchThreads).toHaveBeenCalledWith(
+        'seller@example.com',
+        clientEmail,
+      );
     });
 
-    it('should fetch thread details, format fields, determine direction and sort descending by date', async () => {
-      // Setup mocked thread list response
-      mockGmail.users.threads.list.mockResolvedValue({
-        data: {
-          threads: [{ id: 'thread1' }, { id: 'thread2' }],
+    it('formats fields, determines direction and sorts newest-first', async () => {
+      const mockThreads: EmailThread[] = [
+        {
+          id: 'thread1',
+          snippet: 'snippet1',
+          messages: [
+            {
+              id: 'msg1',
+              threadId: 'thread1',
+              subject: 'Project Update',
+              from: 'Client <client@example.com>',
+              to: 'me@company.com',
+              date: '2023-06-30T12:00:00.000Z',
+              textPlain: 'Hello from thread 1',
+              textHtml: '',
+              attachments: [],
+            },
+          ],
         },
-      });
+        {
+          id: 'thread2',
+          snippet: 'snippet2',
+          messages: [
+            {
+              id: 'msg2',
+              threadId: 'thread2',
+              subject: 'Review',
+              from: 'me <user@company.com>',
+              to: 'client@example.com',
+              date: '2023-07-01T12:00:00.000Z',
+              textPlain: 'Draft copy for review',
+              textHtml: '',
+              attachments: [],
+            },
+          ],
+        },
+      ];
 
-      // Setup mock thread details. We want thread2 to be newer than thread1.
-      // thread1: date 2023-06-30T12:00:00Z, from client (inbound)
-      // thread2: date 2023-07-01T12:00:00Z, from me (outbound)
-      mockGmail.users.threads.get.mockImplementation(({ id }) => {
-        if (id === 'thread1') {
-          return Promise.resolve({
-            data: {
-              id: 'thread1',
-              snippet: 'Hello, this is thread 1 snippet',
-              messages: [
-                {
-                  internalDate: '1688126400000', // 2023-06-30T12:00:00Z
-                  payload: {
-                    headers: [
-                      { name: 'Subject', value: 'Project Update' },
-                      { name: 'From', value: 'Client <client@example.com>' },
-                    ],
-                  },
-                },
-              ],
-            },
-          });
-        }
-        if (id === 'thread2') {
-          return Promise.resolve({
-            data: {
-              id: 'thread2',
-              snippet: 'Draft copy for review',
-              messages: [
-                {
-                  internalDate: '1688212800000', // 2023-07-01T12:00:00Z
-                  payload: {
-                    headers: [
-                      { name: 'Subject', value: 'Review' },
-                      { name: 'From', value: 'me <user@company.com>' },
-                    ],
-                  },
-                },
-              ],
-            },
-          });
-        }
-        return Promise.reject(new Error('Unknown thread ID'));
-      });
+      mockEmailService.fetchThreads.mockResolvedValue(mockThreads);
 
       const result = await service.fetchThreadsForClient(clientEmail, token);
 
       expect(result).toHaveLength(2);
-
-      // Verify sorting descending by date (thread2 is newest, so it must be first)
+      // Newest first (thread2 has date 2023-07-01, thread1 has date 2023-06-30)
       expect(result[0]).toEqual({
-        date: new Date(1688212800000).toISOString(),
+        date: '2023-07-01T12:00:00.000Z',
         subject: 'Review',
         snippet: 'Draft copy for review',
         direction: 'outbound',
       });
-
       expect(result[1]).toEqual({
-        date: new Date(1688126400000).toISOString(),
+        date: '2023-06-30T12:00:00.000Z',
         subject: 'Project Update',
-        snippet: 'Hello, this is thread 1 snippet',
+        snippet: 'Hello from thread 1',
         direction: 'inbound',
       });
-
-      expect(mockGmail.users.threads.list).toHaveBeenCalledWith({
-        userId: 'me',
-        q: clientEmail,
-      });
-      expect(mockGmail.users.threads.get).toHaveBeenCalledTimes(2);
     });
 
-    it('should throw an error if list threads API call fails', async () => {
-      mockGmail.users.threads.list.mockRejectedValue(
-        new Error('Gmail API Error'),
+    it('returns [] when EmailService throws an error', async () => {
+      mockEmailService.fetchThreads.mockRejectedValue(
+        new Error('Provider failure'),
       );
 
-      await expect(
-        service.fetchThreadsForClient(clientEmail, token),
-      ).rejects.toThrow('Gmail API Error');
+      const result = await service.fetchThreadsForClient(clientEmail, token);
+      expect(result).toEqual([]);
+    });
+
+    it('returns [] when Gmail profile lookup fails', async () => {
+      mockGmail.users.getProfile.mockRejectedValueOnce(
+        new Error('Profile API down'),
+      );
+
+      const result = await service.fetchThreadsForClient(clientEmail, token);
+      expect(result).toEqual([]);
     });
   });
 });
