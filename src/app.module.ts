@@ -14,6 +14,11 @@ import { QueueModule } from './queue/queue.module';
 import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { EmailsModule } from './modules/emails/emails.module';
+import { ClientsModule } from './modules/clients/clients.module';
+import { CrmModule } from './modules/crm/crm.module';
+import { AttachmentsModule } from './modules/attachments/attachments.module';
+import { KnowledgeBaseModule } from './modules/knowledge-base/knowledge-base.module';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
 
 const isProd = process.env.NODE_ENV === 'production';
 
@@ -78,6 +83,11 @@ const isProd = process.env.NODE_ENV === 'production';
     HealthModule,
     AuthModule,
     EmailsModule,
+    ClientsModule,
+    CrmModule,
+    AttachmentsModule,
+    KnowledgeBaseModule,
+    AnalyticsModule,
   ],
   providers: [
     // Apply rate limiting globally.

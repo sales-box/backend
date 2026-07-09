@@ -19,3 +19,117 @@ datasource db {
   url        = env("DATABASE_URL")
   extensions = [vector]
 }
+model Client {
+  id           String        @id @default(uuid())
+  email        String        @unique
+  name         String?
+  company      String?
+  status       String        @default("new_inquiry")
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  interactions Interaction[]
+
+  @@map("clients")
+}
+
+model Interaction {
+  id             String   @id @default(uuid())
+  clientId       String   @map("client_id")
+  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  date           DateTime @default(now())
+  type           String
+  subject        String
+  aiSummary      String   @map("ai_summary")
+  classification String?
+  confidence     Float?
+  recommendation String?
+  createdAt      DateTime @default(now())
+
+  @@map("interactions")
+}
+
+model ConnectedAccount {
+  id                  String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email               String               @unique
+  accessToken         String               @map("access_token")
+  refreshToken        String?              @map("refresh_token")
+  scope               String?
+  tokenExpiresAt      DateTime?            @map("token_expires_at") @db.Timestamptz(6)
+  status              String               @default("connected")
+  createdAt           DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  webhookSubscription WebhookSubscription?
+
+  @@map("connected_accounts")
+}
+
+model ProcessedGmailMessage {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  messageId    String   @unique @map("message_id")
+  threadId     String?  @map("thread_id")
+  accountEmail String   @map("account_email")
+  processedAt  DateTime @default(now()) @map("processed_at") @db.Timestamptz(6)
+
+  @@map("processed_gmail_messages")
+}
+
+model WebhookSubscription {
+  id                 String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  connectedAccountId String           @unique @map("connected_account_id") @db.Uuid
+  provider           String           @default("GMAIL")
+  expirationDate     DateTime         @map("expiration_date") @db.Timestamptz(6)
+  subscriptionId     String?          @map("subscription_id")
+  connectedAccount   ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+
+  @@map("webhook_subscriptions")
+}
+
+enum DocumentStatus {
+  processing
+  completed
+  failed
+
+  @@map("document_status")
+}
+
+model Document {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  filename        String          @db.VarChar
+  productName     String?         @map("product_name") @db.VarChar
+  fileType        String?         @map("file_type") @db.VarChar
+  status          DocumentStatus  @default(processing)
+  chunkCount      Int             @default(0) @map("chunk_count")
+  processingError String?         @map("processing_error")
+  uploadedBy      String?         @map("uploaded_by") @db.VarChar
+  uploadDate      DateTime        @default(now()) @map("upload_date") @db.Timestamptz(6)
+  processedAt     DateTime?       @map("processed_at") @db.Timestamptz(6)
+  chunks          DocumentChunk[]
+
+  @@unique([filename, productName], map: "uq_documents_file")
+  @@map("documents")
+}
+
+model DocumentChunk {
+  id         String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  documentId String                       @map("document_id") @db.Uuid
+  document   Document                     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  chunkIndex Int?                         @map("chunk_index")
+  content    String?
+  embedding  Unsupported("vector(1536)")?
+  tokenCount Int?                         @map("token_count")
+  metadata   Json?
+
+  @@index([documentId], map: "idx_chunks_doc")
+  @@map("document_chunks")
+}
+
+model KnowledgeGap {
+  id          String   @id @default(cuid())
+  topic       String   @unique
+  occurrences Int      @default(1)
+  resolved    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("knowledge_gaps")
+}
