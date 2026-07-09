@@ -145,3 +145,14 @@ model DriveConnection {
 
   @@map("drive_connections")
 }
+
+model KnowledgeGap {
+  id          String   @id @default(cuid())
+  topic       String   @unique
+  occurrences Int      @default(1)
+  resolved    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("knowledge_gaps")
+}
