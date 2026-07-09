@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ClientRecord } from '../clients/clients.interface';
-import { ICrmAdapter } from './crm.interface';
+import type { ICrmAdapter, NotePayload } from './crm.interface';
 
 @Injectable()
 export class MockCrmAdapter implements ICrmAdapter {
@@ -12,8 +12,23 @@ export class MockCrmAdapter implements ICrmAdapter {
     return Promise.resolve(contactId);
   }
 
-  logNote(contactId: string, note: string): Promise<void> {
-    this.logger.log(`[mock] logNote(${contactId}): ${note}`);
+  createOrUpdateDeal(
+    contactId: string,
+    classification: string,
+    subject: string,
+    company: string,
+  ): Promise<string> {
+    const dealId = `mock-deal-${contactId}`;
+    this.logger.log(
+      `[mock] createOrUpdateDeal(${contactId}, ${classification}, "${subject}", "${company}") -> ${dealId}`,
+    );
+    return Promise.resolve(dealId);
+  }
+
+  logEngagementNote(contactId: string, note: NotePayload): Promise<void> {
+    this.logger.log(
+      `[mock] logEngagementNote(${contactId}): ${note.subject} [${note.classification}]`,
+    );
     return Promise.resolve();
   }
 }
