@@ -4,6 +4,7 @@ export interface ClientRecord {
   name: string | null;
   company: string | null;
   status: string;
+  crmId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
