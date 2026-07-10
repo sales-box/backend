@@ -1,8 +1,26 @@
-import { BadRequestException, Controller, Post, Req } from '@nestjs/common';
-import { ApiBody, ApiConsumes, ApiOkResponse, ApiTags } from '@nestjs/swagger';
+import {
+  BadRequestException,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Query,
+  Req,
+} from '@nestjs/common';
+import {
+  ApiBody,
+  ApiConsumes,
+  ApiNoContentResponse,
+  ApiOkResponse,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { KnowledgeBaseService } from './knowledge-base.service';
 import { UploadResponseDto } from './dto/upload-response.dto';
+import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { Throttle } from '@nestjs/throttler';
 
 @ApiTags('knowledge-base')
@@ -44,5 +62,26 @@ export class KnowledgeBaseController {
       mimetype: file.mimetype,
       buffer,
     });
+  }
+
+  // TODO(Admin Auth): guard with tenant scope once C2/C3 land.
+  @Get('documents')
+  @ApiOkResponse({
+    description: 'Paginated list of knowledge-base documents (newest first)',
+  })
+  listDocuments(@Query() query: PaginationQueryDto) {
+    return this.knowledgeBaseService.listDocuments({
+      page: query.page,
+      limit: query.limit,
+    });
+  }
+
+  // TODO(Admin Auth): guard with tenant scope once C2/C3 land.
+  @Delete('documents/:id')
+  @HttpCode(204)
+  @ApiParam({ name: 'id', description: 'Document id (uuid)' })
+  @ApiNoContentResponse({ description: 'Document deleted' })
+  async deleteDocument(@Param('id') id: string): Promise<void> {
+    await this.knowledgeBaseService.deleteDocument(id);
   }
 }

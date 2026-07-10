@@ -1,10 +1,15 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { extname } from 'node:path';
 import { DocumentStatus } from '@prisma/client';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { getEncoding, type Tiktoken } from 'js-tiktoken';
 import { PDFParse } from 'pdf-parse';
 import { PrismaService } from '../../database/prisma.service';
+import type { PaginationOptions } from '../../database/pagination/pagination.types';
 import { UploadResponseDto } from './dto/upload-response.dto';
 
 const MAX_TOKENS_PER_CHUNK = 1000;
@@ -60,9 +65,14 @@ export class KnowledgeBaseService {
     fileType: FileType,
   ): Promise<string> {
     if (fileType === 'pdf') {
-      const parser = new PDFParse({ data: buffer });
-      const { text } = await parser.getText();
-      return text ?? '';
+      try {
+        const parser = new PDFParse({ data: buffer });
+        const { text } = await parser.getText();
+        return text ?? '';
+      } catch {
+        // Corrupt or mislabelled PDFs are a client error, not a server crash.
+        throw new BadRequestException('Invalid or corrupted PDF file');
+      }
     }
     // txt / md are plain UTF-8.
     return buffer.toString('utf-8');
@@ -127,5 +137,39 @@ export class KnowledgeBaseService {
     });
 
     return { filename, chunksCreated: chunks.length, status };
+  }
+
+  /**
+   * Paginated list of uploaded documents, newest first (dashboard).
+   * TODO(DEP-1): add `tenantId` to the where clause once tenants land.
+   */
+  listDocuments(options?: PaginationOptions) {
+    return this.prisma.extended.document.paginate(
+      {
+        select: {
+          id: true,
+          filename: true,
+          fileType: true,
+          status: true,
+          chunkCount: true,
+          uploadDate: true,
+          processingError: true,
+        },
+        orderBy: { uploadDate: 'desc' },
+      },
+      options,
+    );
+  }
+
+  /**
+   * Deletes a document by id. Its chunks are removed by the ON DELETE CASCADE
+   * FK on DocumentChunk, so no manual chunk cleanup is needed.
+   * TODO(DEP-1): add `tenantId` to the where clause once tenants land.
+   */
+  async deleteDocument(id: string): Promise<void> {
+    const { count } = await this.prisma.document.deleteMany({ where: { id } });
+    if (count === 0) {
+      throw new NotFoundException(`Document ${id} not found`);
+    }
   }
 }

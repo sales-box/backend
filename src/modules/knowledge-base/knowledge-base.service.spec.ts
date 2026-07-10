@@ -1,7 +1,14 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { DocumentStatus } from '@prisma/client';
 import { KnowledgeBaseService } from './knowledge-base.service';
 import { PrismaService } from '../../database/prisma.service';
+
+// The PDF path is only exercised by the corrupt-PDF test below.
+jest.mock('pdf-parse', () => ({
+  PDFParse: jest.fn().mockImplementation(() => ({
+    getText: jest.fn().mockRejectedValue(new Error('bad xref table')),
+  })),
+}));
 
 describe('KnowledgeBaseService', () => {
   let service: KnowledgeBaseService;
@@ -9,7 +16,13 @@ describe('KnowledgeBaseService', () => {
     document: { deleteMany: jest.Mock; create: jest.Mock };
     documentChunk: { createMany: jest.Mock };
   };
-  let prisma: { $transaction: jest.Mock };
+  let paginate: jest.Mock;
+  let deleteDocMany: jest.Mock;
+  let prisma: {
+    $transaction: jest.Mock;
+    document: { deleteMany: jest.Mock };
+    extended: { document: { paginate: jest.Mock } };
+  };
 
   beforeEach(() => {
     tx = {
@@ -19,10 +32,14 @@ describe('KnowledgeBaseService', () => {
       },
       documentChunk: { createMany: jest.fn().mockResolvedValue({ count: 0 }) },
     };
+    paginate = jest.fn();
+    deleteDocMany = jest.fn();
     prisma = {
       $transaction: jest
         .fn()
         .mockImplementation((cb: (t: typeof tx) => unknown) => cb(tx)),
+      document: { deleteMany: deleteDocMany },
+      extended: { document: { paginate } },
     };
     service = new KnowledgeBaseService(prisma as unknown as PrismaService);
   });
@@ -80,6 +97,17 @@ describe('KnowledgeBaseService', () => {
     });
   });
 
+  it('rejects a corrupt PDF with 400 and writes nothing', async () => {
+    await expect(
+      service.ingest({
+        filename: 'broken.pdf',
+        mimetype: 'application/pdf',
+        buffer: Buffer.from('not really a pdf'),
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
   it('marks empty content as failed with zero chunks', async () => {
     const res = await service.ingest({
       filename: 'empty.md',
@@ -89,5 +117,69 @@ describe('KnowledgeBaseService', () => {
     expect(res.chunksCreated).toBe(0);
     expect(res.status).toBe(DocumentStatus.failed);
     expect(tx.documentChunk.createMany).not.toHaveBeenCalled();
+  });
+
+  describe('listDocuments', () => {
+    it('returns the paginated result, newest first, selecting only list fields', async () => {
+      const page = {
+        data: [
+          {
+            id: 'doc-1',
+            filename: 'pricing.pdf',
+            fileType: 'pdf',
+            status: DocumentStatus.completed,
+            chunkCount: 12,
+            uploadDate: new Date('2026-07-01T00:00:00.000Z'),
+            processingError: null,
+          },
+        ],
+        meta: {
+          total: 1,
+          lastPage: 1,
+          currentPage: 2,
+          limit: 5,
+          prev: 1,
+          next: null,
+        },
+      };
+      paginate.mockResolvedValue(page);
+
+      const res = await service.listDocuments({ page: 2, limit: 5 });
+
+      expect(res).toBe(page);
+      expect(paginate).toHaveBeenCalledTimes(1);
+      const [args, options] = paginate.mock.calls[0] as [
+        { select: Record<string, boolean>; orderBy: unknown },
+        unknown,
+      ];
+      expect(args.orderBy).toEqual({ uploadDate: 'desc' });
+      expect(args.select).toEqual({
+        id: true,
+        filename: true,
+        fileType: true,
+        status: true,
+        chunkCount: true,
+        uploadDate: true,
+        processingError: true,
+      });
+      expect(options).toEqual({ page: 2, limit: 5 });
+    });
+  });
+
+  describe('deleteDocument', () => {
+    it('deletes by id and resolves; chunks are removed by the FK cascade', async () => {
+      deleteDocMany.mockResolvedValue({ count: 1 });
+
+      await expect(service.deleteDocument('doc-1')).resolves.toBeUndefined();
+      expect(deleteDocMany).toHaveBeenCalledWith({ where: { id: 'doc-1' } });
+    });
+
+    it('throws NotFoundException when no document matches the id', async () => {
+      deleteDocMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.deleteDocument('missing')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
   });
 });
