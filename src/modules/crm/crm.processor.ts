@@ -52,10 +52,17 @@ export class CrmProcessor extends WorkerHost {
         const { client } = job.data as SyncContactJobData;
         const contactId = await this.adapter.syncContact(client);
 
-        await this.prisma.client.update({
+        // await this.prisma.client.update({
+        //   where: { email: client.email },
+        //   data: { crmId: contactId },
+        // });
+
+        // TODO (Role 3 - Mohamed): Temporary fix for DEP-1. Revert updateMany to update using composite unique key [tenantId, email] once the CRM processor receives tenant context.
+        await this.prisma.client.updateMany({
           where: { email: client.email },
           data: { crmId: contactId },
         });
+
         this.logger.log(`Persisted crmId=${contactId} for ${client.email}`);
 
         return { contactId };
@@ -70,10 +77,17 @@ export class CrmProcessor extends WorkerHost {
           data.company,
         );
 
-        await this.prisma.client.update({
+        // await this.prisma.client.update({
+        //   where: { email: data.email },
+        //   data: { dealId },
+        // });
+
+        // TODO (Role 3 - Mohamed): Temporary fix for DEP-1. Revert updateMany to update using composite unique key [tenantId, email] once the CRM processor receives tenant context.
+        await this.prisma.client.updateMany({
           where: { email: data.email },
           data: { dealId },
         });
+
         this.logger.log(`Persisted dealId=${dealId} for ${data.email}`);
 
         return { dealId };

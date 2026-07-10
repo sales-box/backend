@@ -16,16 +16,19 @@ datasource db {
 
 model Client {
   id           String        @id @default(uuid())
-  email        String        @unique
+  email        String
   name         String?
   company      String?
   status       String        @default("new_inquiry")
   crmId        String?       @map("crm_id")
   dealId       String?       @map("deal_id")
+  tenantId     String?       @map("tenant_id") @db.Uuid
+  tenant       Tenant?       @relation(fields: [tenantId], references: [id])
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   interactions Interaction[]
 
+  @@unique([tenantId, email])
   @@map("clients")
 }
 
@@ -45,18 +48,22 @@ model Interaction {
   @@map("interactions")
 }
 
-
 model ConnectedAccount {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  email          String    @unique
-  accessToken    String    @map("access_token")
-  refreshToken   String?   @map("refresh_token")
-  scope          String?
-  tokenExpiresAt DateTime? @map("token_expires_at") @db.Timestamptz(6)
-  status         String    @default("connected")
-  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id                  String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email               String
+  isAdmin             Boolean              @default(false) @map("is_admin")
+  accessToken         String               @map("access_token")
+  refreshToken        String?              @map("refresh_token")
+  scope               String?
+  tokenExpiresAt      DateTime?            @map("token_expires_at") @db.Timestamptz(6)
+  status              String               @default("connected")
+  tenantId            String?              @map("tenant_id") @db.Uuid
+  tenant              Tenant?              @relation(fields: [tenantId], references: [id])
+  createdAt           DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
   webhookSubscription WebhookSubscription?
+
+  @@unique([tenantId, email])
   @@map("connected_accounts")
 }
 
@@ -71,12 +78,12 @@ model ProcessedGmailMessage {
 }
 
 model WebhookSubscription {
-  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  connectedAccountId  String    @unique @map("connected_account_id") @db.Uuid
-  provider            String    @default("GMAIL")
-  expirationDate      DateTime  @map("expiration_date") @db.Timestamptz(6)
-  subscriptionId      String?   @map("subscription_id")
-  connectedAccount    ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+  id                 String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  connectedAccountId String           @unique @map("connected_account_id") @db.Uuid
+  provider           String           @default("GMAIL")
+  expirationDate     DateTime         @map("expiration_date") @db.Timestamptz(6)
+  subscriptionId     String?          @map("subscription_id")
+  connectedAccount   ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
 
   @@map("webhook_subscriptions")
 }
@@ -90,17 +97,19 @@ enum DocumentStatus {
 }
 
 model Document {
-  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  filename        String         @db.VarChar
-  productName     String?        @map("product_name") @db.VarChar
-  fileType        String?        @map("file_type") @db.VarChar
-  status          DocumentStatus @default(processing)
-  chunkCount      Int            @default(0) @map("chunk_count")
-  processingError String?        @map("processing_error")
-  uploadedBy      String?        @map("uploaded_by") @db.VarChar
-  uploadDate      DateTime       @default(now()) @map("upload_date") @db.Timestamptz(6)
-  processedAt     DateTime?      @map("processed_at") @db.Timestamptz(6)
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  filename        String          @db.VarChar
+  productName     String?         @map("product_name") @db.VarChar
+  fileType        String?         @map("file_type") @db.VarChar
+  status          DocumentStatus  @default(processing)
+  chunkCount      Int             @default(0) @map("chunk_count")
+  processingError String?         @map("processing_error")
+  uploadedBy      String?         @map("uploaded_by") @db.VarChar
+  uploadDate      DateTime        @default(now()) @map("upload_date") @db.Timestamptz(6)
+  processedAt     DateTime?       @map("processed_at") @db.Timestamptz(6)
   chunks          DocumentChunk[]
+  tenantId        String?         @map("tenant_id") @db.Uuid
+  tenant          Tenant?         @relation(fields: [tenantId], references: [id])
 
   @@unique([filename, productName], map: "uq_documents_file")
   @@map("documents")
@@ -126,6 +135,8 @@ model AllowedDomain {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   domain    String   @unique
   addedBy   String   @map("added_by")
+  tenantId  String?  @map("tenant_id") @db.Uuid
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id])
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@map("allowed_domains")
@@ -141,6 +152,8 @@ model DriveConnection {
   scope          String?
   tokenExpiresAt DateTime? @map("token_expires_at") @db.Timestamptz(6)
   status         String    @default("connected")
+  tenantId       String?   @map("tenant_id") @db.Uuid
+  tenant         Tenant?   @relation(fields: [tenantId], references: [id])
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -152,8 +165,39 @@ model KnowledgeGap {
   topic       String   @unique
   occurrences Int      @default(1)
   resolved    Boolean  @default(false)
+  tenantId    String?  @map("tenant_id") @db.Uuid
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id])
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   @@map("knowledge_gaps")
+}
+
+enum TenantStatus {
+  pending
+  active
+  abandoned
+
+  @@map("tenant_status")
+}
+
+model Tenant {
+  id                         String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyName                String       @map("company_name")
+  status                     TenantStatus @default(pending)
+  tier                       Int          @default(1)
+  emailVerifiedAt            DateTime?    @map("email_verified_at")
+  emailVerificationToken     String?      @unique @map("email_verification_token")
+  emailVerificationExpiresAt DateTime?    @map("email_verification_expires_at")
+  createdAt                  DateTime     @default(now()) @map("created_at")
+  updatedAt                  DateTime     @updatedAt @map("updated_at")
+
+  clients           Client[]
+  connectedAccounts ConnectedAccount[]
+  documents         Document[]
+  allowedDomains    AllowedDomain[]
+  driveConnections  DriveConnection[]
+  knowledgeGaps     KnowledgeGap[]
+
+  @@map("tenants")
 }
