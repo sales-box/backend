@@ -25,6 +25,7 @@ import { AttachmentsModule } from './modules/attachments/attachments.module';
 import { KnowledgeBaseModule } from './modules/knowledge-base/knowledge-base.module';
 import { ExternalContentModule } from './modules/external-content/external-content.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { AiModule } from './modules/ai/ai.module';
 
 const isProd = process.env.NODE_ENV === 'production';
 
@@ -107,6 +108,7 @@ const isProd = process.env.NODE_ENV === 'production';
     KnowledgeBaseModule,
     ExternalContentModule,
     AnalyticsModule,
+    AiModule,
   ],
   providers: [
     // Apply rate limiting globally.

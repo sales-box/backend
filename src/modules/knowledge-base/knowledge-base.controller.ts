@@ -3,12 +3,14 @@ import { ApiBody, ApiConsumes, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { KnowledgeBaseService } from './knowledge-base.service';
 import { UploadResponseDto } from './dto/upload-response.dto';
+import { Throttle } from '@nestjs/throttler';
 
 @ApiTags('knowledge-base')
 @Controller('knowledge-base')
 export class KnowledgeBaseController {
   constructor(private readonly knowledgeBaseService: KnowledgeBaseService) {}
 
+  @Throttle({ default: { limit: 5, ttl: 60000 } }) // 5 uploads per minute per IP
   @Post('upload')
   @ApiConsumes('multipart/form-data')
   @ApiBody({
