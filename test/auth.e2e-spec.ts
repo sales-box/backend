@@ -6,6 +6,7 @@ import {
   FastifyAdapter,
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
+import fastifyCookie from '@fastify/cookie';
 import * as googleapis from 'googleapis';
 import request from 'supertest';
 import { AuthController } from './../src/modules/auth/auth.controller';
@@ -85,6 +86,10 @@ describe('Auth (e2e)', () => {
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
     );
+    // Mirror main.ts cookie support (signed OAuth state cookie).
+    await app.register(fastifyCookie, {
+      secret: 'test-cookie-secret-0123456789ab',
+    });
     // Mirror main.ts global validation so the 400 path is exercised.
     app.useGlobalPipes(
       new ValidationPipe({
@@ -97,6 +102,18 @@ describe('Auth (e2e)', () => {
     await app.init();
     await app.getHttpAdapter().getInstance().ready();
   });
+
+  /** Runs the login step and returns the state cookie + state value. */
+  async function startOAuthFlow(): Promise<{ cookie: string; state: string }> {
+    const res = await request(app.getHttpServer())
+      .get('/auth/google')
+      .expect(302);
+    const setCookie = res.headers['set-cookie'] as unknown as string[];
+    const cookie = setCookie[0].split(';')[0]; // "oauth_state=<signed value>"
+    const state = new URL(res.headers.location).searchParams.get('state');
+    if (!state) throw new Error('auth URL is missing the state param');
+    return { cookie, state };
+  }
 
   afterEach(async () => {
     await app.close();
@@ -112,6 +129,9 @@ describe('Auth (e2e)', () => {
       'https://accounts.google.com/o/oauth2/v2/auth',
     );
     expect(location.searchParams.get('client_id')).toBe(env.GOOGLE_CLIENT_ID);
+    // CSRF: state present in the URL and mirrored in the state cookie.
+    expect(location.searchParams.get('state')).toMatch(/^[0-9a-f]{32}$/);
+    expect(res.headers['set-cookie'][0]).toContain('oauth_state=');
   });
 
   it('/auth/google/callback?code=good -> 302 dashboard ?status=connected', async () => {
@@ -127,8 +147,10 @@ describe('Auth (e2e)', () => {
       data: { emailAddress: 'seller@example.com' },
     });
 
+    const { cookie, state } = await startOAuthFlow();
     const res = await request(app.getHttpServer())
-      .get('/auth/google/callback?code=good-code')
+      .get(`/auth/google/callback?code=good-code&state=${state}`)
+      .set('Cookie', cookie)
       .expect(302);
 
     const location = new URL(res.headers.location);
@@ -139,14 +161,41 @@ describe('Auth (e2e)', () => {
   it('/auth/google/callback?code=bad -> 302 dashboard ?status=error&retry=1', async () => {
     gmocks.getToken.mockRejectedValue(new Error('invalid_grant'));
 
+    const { cookie, state } = await startOAuthFlow();
     const res = await request(app.getHttpServer())
-      .get('/auth/google/callback?code=bad-code')
+      .get(`/auth/google/callback?code=bad-code&state=${state}`)
+      .set('Cookie', cookie)
       .expect(302);
 
     const location = new URL(res.headers.location);
     expect(`${location.origin}${location.pathname}`).toBe(DASHBOARD);
     expect(location.searchParams.get('status')).toBe('error');
     expect(location.searchParams.get('retry')).toBe('1');
+  });
+
+  it('callback with a forged state -> 302 error, code never exchanged', async () => {
+    const { cookie } = await startOAuthFlow();
+    const res = await request(app.getHttpServer())
+      .get(`/auth/google/callback?code=good-code&state=${'b'.repeat(32)}`)
+      .set('Cookie', cookie)
+      .expect(302);
+
+    expect(new URL(res.headers.location).searchParams.get('status')).toBe(
+      'error',
+    );
+    expect(gmocks.getToken).not.toHaveBeenCalled();
+  });
+
+  it('callback without the state cookie -> 302 error, code never exchanged', async () => {
+    const { state } = await startOAuthFlow();
+    const res = await request(app.getHttpServer())
+      .get(`/auth/google/callback?code=good-code&state=${state}`)
+      .expect(302);
+
+    expect(new URL(res.headers.location).searchParams.get('status')).toBe(
+      'error',
+    );
+    expect(gmocks.getToken).not.toHaveBeenCalled();
   });
 
   it('/auth/google/callback?error=access_denied -> 302 error redirect', async () => {
@@ -173,8 +222,10 @@ describe('Auth (e2e)', () => {
       data: { emailAddress: 'seller@example.com' },
     });
 
+    const { cookie, state } = await startOAuthFlow();
     const query =
       'code=good' +
+      `&state=${state}` +
       '&scope=' +
       encodeURIComponent(env.GOOGLE_SCOPES) +
       '&iss=' +
@@ -183,6 +234,7 @@ describe('Auth (e2e)', () => {
 
     const res = await request(app.getHttpServer())
       .get(`/auth/google/callback?${query}`)
+      .set('Cookie', cookie)
       .expect(302);
 
     expect(new URL(res.headers.location).searchParams.get('status')).toBe(
