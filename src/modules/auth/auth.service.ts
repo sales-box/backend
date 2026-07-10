@@ -28,7 +28,7 @@ export class AuthService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
-  buildGoogleAuthUrl(): string {
+  buildGoogleAuthUrl(state?: string): string {
     const url = new URL(GOOGLE_AUTH_ENDPOINT);
 
     url.search = new URLSearchParams({
@@ -38,6 +38,8 @@ export class AuthService {
       scope: this.config.getOrThrow<string>('GOOGLE_SCOPES'),
       access_type: 'offline',
       prompt: 'consent',
+      // CSRF protection: echoed back by Google and verified on the callback.
+      ...(state ? { state } : {}),
     }).toString();
 
     return url.toString();
