@@ -47,14 +47,14 @@ const env = {
 };
 
 describe('AuthService buildGoogleAuthUrl', () => {
-  function build(): URL {
+  function build(state?: string): URL {
     const service = new AuthService(
       makeConfig(env),
       {} as PrismaService,
       {} as CryptoService,
       { emit: jest.fn() } as any,
     );
-    return new URL(service.buildGoogleAuthUrl());
+    return new URL(service.buildGoogleAuthUrl(state));
   }
 
   it('targets the Google OAuth consent endpoint', () => {
@@ -76,6 +76,13 @@ describe('AuthService buildGoogleAuthUrl', () => {
     expect(params.get('response_type')).toBe('code');
     expect(params.get('access_type')).toBe('offline');
     expect(params.get('prompt')).toBe('consent');
+  });
+
+  it('carries the CSRF state param when provided, omits it otherwise', () => {
+    expect(build('csrf-state-123').searchParams.get('state')).toBe(
+      'csrf-state-123',
+    );
+    expect(build().searchParams.has('state')).toBe(false);
   });
 
   it('throws when a required OAuth env var is missing', () => {

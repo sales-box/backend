@@ -1,8 +1,22 @@
-import { Controller, Get, HttpStatus, Query, Redirect } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  HttpStatus,
+  Query,
+  Redirect,
+  Req,
+  Res,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ApiFoundResponse, ApiTags } from '@nestjs/swagger';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import { AuthService } from './auth.service';
 import { GoogleCallbackDto } from './dto/google-callback.dto';
+
+/** Cookie carrying the OAuth CSRF state between /auth/google and the callback. */
+const OAUTH_STATE_COOKIE = 'oauth_state';
+const OAUTH_STATE_TTL_SECONDS = 600; // 10 minutes to finish the consent screen
 
 @ApiTags('auth')
 @Controller('auth')
@@ -17,9 +31,24 @@ export class AuthController {
   @ApiFoundResponse({
     description: 'Redirect to the Google OAuth consent screen',
   })
-  googleAuth(): { url: string; statusCode: number } {
+  googleAuth(@Res({ passthrough: true }) reply: FastifyReply): {
+    url: string;
+    statusCode: number;
+  } {
+    // CSRF protection: random state stored in a signed HttpOnly cookie and
+    // verified against the ?state Google echoes back on the callback.
+    const state = randomBytes(16).toString('hex');
+    reply.setCookie(OAUTH_STATE_COOKIE, state, {
+      httpOnly: true,
+      sameSite: 'lax',
+      signed: true,
+      path: '/auth',
+      maxAge: OAUTH_STATE_TTL_SECONDS,
+      secure: process.env.NODE_ENV === 'production',
+    });
+
     return {
-      url: this.authService.buildGoogleAuthUrl(),
+      url: this.authService.buildGoogleAuthUrl(state),
       statusCode: HttpStatus.FOUND,
     };
   }
@@ -32,10 +61,20 @@ export class AuthController {
   })
   async googleCallback(
     @Query() query: GoogleCallbackDto,
+    @Req() req: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<{ url: string; statusCode: number }> {
     const dashboard = this.config.getOrThrow<string>('FRONTEND_DASHBOARD_URL');
 
+    // One-shot: the state cookie is consumed whether the flow succeeds or not.
+    const cookieState = this.consumeStateCookie(req, reply);
+
     if (query.error || !query.code) {
+      return this.redirect(dashboard, 'error');
+    }
+
+    // Reject forged callbacks before exchanging the code (login CSRF).
+    if (!this.statesMatch(cookieState, query.state)) {
       return this.redirect(dashboard, 'error');
     }
 
@@ -45,6 +84,27 @@ export class AuthController {
     } catch {
       return this.redirect(dashboard, 'error');
     }
+  }
+
+  /** Unsigns and clears the state cookie; returns its value when intact. */
+  private consumeStateCookie(
+    req: FastifyRequest,
+    reply: FastifyReply,
+  ): string | undefined {
+    const raw = req.cookies[OAUTH_STATE_COOKIE];
+    reply.clearCookie(OAUTH_STATE_COOKIE, { path: '/auth' });
+    if (!raw) {
+      return undefined;
+    }
+    const unsigned = req.unsignCookie(raw);
+    return unsigned.valid && unsigned.value ? unsigned.value : undefined;
+  }
+
+  private statesMatch(expected?: string, received?: string): boolean {
+    if (!expected || !received || expected.length !== received.length) {
+      return false;
+    }
+    return timingSafeEqual(Buffer.from(expected), Buffer.from(received));
   }
 
   private redirect(
