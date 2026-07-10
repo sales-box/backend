@@ -97,6 +97,65 @@ describe('KnowledgeBaseService', () => {
     });
   });
 
+  describe('assessDocumentQuality (quality gate, S3-V20)', () => {
+    it('flags zero chunks as low confidence', () => {
+      const q = service.assessDocumentQuality(0, 1024, 0);
+      expect(q).toEqual({
+        isLowConfidence: true,
+        qualityReason: 'No extractable text found',
+      });
+    });
+
+    it('flags very little extracted text', () => {
+      const q = service.assessDocumentQuality(42, 1024, 1);
+      expect(q.isLowConfidence).toBe(true);
+      expect(q.qualityReason).toContain('42 characters');
+    });
+
+    it('flags a scanned-PDF profile: big file, tiny text ratio', () => {
+      // 5MB file, 300 chars of text → ratio far below threshold.
+      const q = service.assessDocumentQuality(300, 5 * 1024 * 1024, 1);
+      expect(q.isLowConfidence).toBe(true);
+      expect(q.qualityReason).toContain('scanned');
+    });
+
+    it('passes a healthy text document', () => {
+      const q = service.assessDocumentQuality(10_000, 20_000, 12);
+      expect(q).toEqual({ isLowConfidence: false, qualityReason: null });
+    });
+  });
+
+  it('upload response carries the quality warning immediately (S3-V20)', async () => {
+    const res = await service.ingest({
+      filename: 'tiny.txt',
+      mimetype: 'text/plain',
+      buffer: Buffer.from('barely any text here', 'utf-8'),
+    });
+
+    expect(res.isLowConfidence).toBe(true);
+    expect(res.qualityReason).toContain('characters');
+    const createArg = (
+      tx.document.create.mock.calls as Array<[unknown]>
+    )[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(createArg.data.isLowConfidence).toBe(true);
+  });
+
+  it('healthy upload is not flagged by the quality gate', async () => {
+    const content = 'Sales pricing details for the enterprise plan. '.repeat(
+      500,
+    );
+    const res = await service.ingest({
+      filename: 'pricing.txt',
+      mimetype: 'text/plain',
+      buffer: Buffer.from(content, 'utf-8'),
+    });
+
+    expect(res.isLowConfidence).toBe(false);
+    expect(res.qualityReason).toBeUndefined();
+  });
+
   it('rejects a corrupt PDF with 400 and writes nothing', async () => {
     await expect(
       service.ingest({
@@ -161,6 +220,8 @@ describe('KnowledgeBaseService', () => {
         chunkCount: true,
         uploadDate: true,
         processingError: true,
+        isLowConfidence: true,
+        qualityReason: true,
       });
       expect(options).toEqual({ page: 2, limit: 5 });
     });
