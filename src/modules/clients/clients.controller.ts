@@ -38,6 +38,12 @@ export class ClientsController {
     return this.clientsService.getClient(id);
   }
 
+  @Get('context')
+  @ApiOkResponse({ description: 'Get client context for CRM' })
+  async getClientContext(@Query('email') email: string) {
+    return this.clientsService.getClientContext(email);
+  }
+
   @Get()
   @ApiOkResponse({ description: 'Get paginated list of clients' })
   async getClients(@Query() query: GetClientsQueryDto) {

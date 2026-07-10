@@ -2,11 +2,17 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AssociationTypes, Client } from '@hubspot/api-client';
 import { FilterOperatorEnum } from '@hubspot/api-client/lib/codegen/crm/contacts';
+import { FilterOperatorEnum as DealFilterEnum } from '@hubspot/api-client/lib/codegen/crm/deals';
 import { AssociationSpecAssociationCategoryEnum } from '@hubspot/api-client/lib/codegen/crm/objects/notes';
 import { ClientRecord } from '../clients/clients.interface';
-import { ICrmAdapter } from './crm.interface';
+import type { ICrmAdapter, NotePayload } from './crm.interface';
 
 const CONTACT_PROPERTIES = ['email', 'firstname', 'lastname', 'company'];
+
+const STAGE_MAP: Record<string, string> = {
+  product_inquiry: 'presentationscheduled',
+  meeting_request: 'appointmentscheduled',
+};
 
 @Injectable()
 export class HubSpotAdapter implements ICrmAdapter {
@@ -56,11 +62,70 @@ export class HubSpotAdapter implements ICrmAdapter {
     }
   }
 
-  async logNote(contactId: string, note: string): Promise<void> {
+  async createOrUpdateDeal(
+    contactId: string,
+    classification: string,
+    subject: string,
+    company: string,
+  ): Promise<string> {
     try {
+      const dealName = `${company || 'Unknown'} — ${subject}`;
+      const stage = STAGE_MAP[classification] ?? 'qualifiedtobuy';
+
+      const existingDealId = await this.findDealByName(dealName);
+
+      if (existingDealId) {
+        await this.client.crm.deals.basicApi.update(existingDealId, {
+          properties: { dealstage: stage },
+        });
+        this.logger.log(
+          `Updated HubSpot deal ${existingDealId} stage → ${stage}`,
+        );
+        return existingDealId;
+      }
+
+      const created = await this.client.crm.deals.basicApi.create({
+        properties: {
+          dealname: dealName,
+          dealstage: stage,
+          pipeline: 'default',
+        },
+        associations: [
+          {
+            to: { id: contactId },
+            types: [
+              {
+                associationCategory:
+                  AssociationSpecAssociationCategoryEnum.HubspotDefined,
+                associationTypeId: AssociationTypes.dealToContact,
+              },
+            ],
+          },
+        ],
+      });
+      this.logger.log(`Created HubSpot deal ${created.id} ("${dealName}")`);
+      return created.id;
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `createOrUpdateDeal failed for contact ${contactId}: ${msg}`,
+      );
+      throw error;
+    }
+  }
+
+  async logEngagementNote(contactId: string, note: NotePayload): Promise<void> {
+    try {
+      const body = [
+        `Subject: ${note.subject}`,
+        `Classification: ${note.classification}`,
+        `Summary: ${note.summary}`,
+        `Sent at: ${note.sentAt}`,
+      ].join('\n');
+
       await this.client.crm.objects.notes.basicApi.create({
         properties: {
-          hs_note_body: note,
+          hs_note_body: body,
           hs_timestamp: new Date().toISOString(),
         },
         associations: [
@@ -79,12 +144,35 @@ export class HubSpotAdapter implements ICrmAdapter {
       this.logger.log(`Logged note on HubSpot contact ${contactId}`);
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
-      this.logger.error(`logNote failed for contact ${contactId}: ${msg}`);
+      this.logger.error(
+        `logEngagementNote failed for contact ${contactId}: ${msg}`,
+      );
       throw error;
     }
   }
 
-  /** Returns the contact ID for an email, or null if none exists. */
+  private async findDealByName(dealName: string): Promise<string | null> {
+    const result = await this.client.crm.deals.searchApi.doSearch({
+      filterGroups: [
+        {
+          filters: [
+            {
+              propertyName: 'dealname',
+              operator: DealFilterEnum.Eq,
+              value: dealName,
+            },
+          ],
+        },
+      ],
+      properties: ['dealname', 'dealstage'],
+      limit: 1,
+      after: '0',
+      sorts: [],
+    });
+
+    return result.results[0]?.id ?? null;
+  }
+
   private async findContactIdByEmail(email: string): Promise<string | null> {
     const result = await this.client.crm.contacts.searchApi.doSearch({
       filterGroups: [
@@ -107,7 +195,6 @@ export class HubSpotAdapter implements ICrmAdapter {
     return result.results[0]?.id ?? null;
   }
 
-  /** HubSpot stores firstname/lastname separately ,ClientRecord has one name. */
   private splitName(name: string | null): {
     firstName: string;
     lastName: string;

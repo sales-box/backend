@@ -12,7 +12,7 @@ import { LoggerModule } from 'nestjs-pino';
 import { GracefulShutdownModule } from 'nestjs-graceful-shutdown';
 import { PrometheusModule } from '@willsoto/nestjs-prometheus';
 import { validateEnv } from './config/env.validation';
-import { reqSerializer } from './config/log-serializers';
+import { reqSerializer, maskLogMethod } from './config/log-serializers';
 import { PrismaModule } from './database/prisma.module';
 import { QueueModule } from './queue/queue.module';
 import { HealthModule } from './modules/health/health.module';
@@ -23,6 +23,9 @@ import { ClientsModule } from './modules/clients/clients.module';
 import { CrmModule } from './modules/crm/crm.module';
 import { AttachmentsModule } from './modules/attachments/attachments.module';
 import { KnowledgeBaseModule } from './modules/knowledge-base/knowledge-base.module';
+import { ExternalContentModule } from './modules/external-content/external-content.module';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { AiModule } from './modules/ai/ai.module';
 
 const isProd = process.env.NODE_ENV === 'production';
 
@@ -51,6 +54,10 @@ const isProd = process.env.NODE_ENV === 'production';
         // Keep credentials out of logs: strip the query string from req.url
         // and redact known-sensitive fields.
         serializers: { req: reqSerializer },
+        // Mask PII (emails, phones, IDs, cards, IBANs) in every log message
+        // automatically — serializers can't see the message string, so this hook
+        // runs sanitizeForLog on every string argument of every log call.
+        hooks: { logMethod: maskLogMethod },
         redact: [
           'req.headers.authorization',
           'req.headers.cookie',
@@ -103,6 +110,9 @@ const isProd = process.env.NODE_ENV === 'production';
     CrmModule,
     AttachmentsModule,
     KnowledgeBaseModule,
+    ExternalContentModule,
+    AnalyticsModule,
+    AiModule,
   ],
   providers: [
     // Apply rate limiting globally.

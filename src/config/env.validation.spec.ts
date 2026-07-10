@@ -14,6 +14,8 @@ const validEnv = {
   FRONTEND_DASHBOARD_URL: 'http://localhost:5173/dashboard',
   GOOGLE_PUBSUB_VERIFICATION_TOKEN: 'token',
   GOOGLE_PUBSUB_TOPIC_NAME: 'topic',
+  AWS_REGION: 'eu-north-1',
+  S3_BUCKET: 'salesbox-iti',
 };
 
 describe('validateEnv', () => {
@@ -30,6 +32,8 @@ describe('validateEnv', () => {
     'FRONTEND_DASHBOARD_URL',
     'GOOGLE_PUBSUB_VERIFICATION_TOKEN',
     'GOOGLE_PUBSUB_TOPIC_NAME',
+    'AWS_REGION',
+    'S3_BUCKET',
   ])('throws at startup when %s is missing', (key) => {
     const env = { ...validEnv };
     delete (env as Record<string, unknown>)[key];
