@@ -10,6 +10,8 @@ describe('ClientsService', () => {
   const mockClientUpsert = jest.fn();
   const mockInteractionCreate = jest.fn();
   const mockClientFindUnique = jest.fn();
+  const mockClientFindFirst = jest.fn();
+  const mockClientCreate = jest.fn();
   const mockClientPaginate = jest.fn();
   const mockInteractionPaginate = jest.fn();
 
@@ -18,6 +20,8 @@ describe('ClientsService', () => {
       client: {
         upsert: mockClientUpsert,
         findUnique: mockClientFindUnique,
+        findFirst: mockClientFindFirst,
+        create: mockClientCreate,
       },
       interaction: {
         create: mockInteractionCreate,
@@ -77,15 +81,15 @@ describe('ClientsService', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      mockClientUpsert.mockResolvedValue(mockResult);
+      mockClientFindFirst.mockResolvedValue(null);
+      mockClientCreate.mockResolvedValue(mockResult);
 
       const result = await service.getOrCreateClient(email, name);
 
       expect(result).toEqual(mockResult);
-      expect(mockClientUpsert).toHaveBeenCalledWith({
-        where: { email },
-        update: {},
-        create: {
+      expect(mockClientFindFirst).toHaveBeenCalledWith({ where: { email } });
+      expect(mockClientCreate).toHaveBeenCalledWith({
+        data: {
           email,
           name,
           company: 'Acme',
@@ -107,7 +111,8 @@ describe('ClientsService', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      mockClientUpsert.mockResolvedValue(mockResult);
+      mockClientFindFirst.mockResolvedValue(null);
+      mockClientCreate.mockResolvedValue(mockResult);
 
       const result = await service.getOrCreateClient(
         email,
@@ -116,10 +121,9 @@ describe('ClientsService', () => {
       );
 
       expect(result).toEqual(mockResult);
-      expect(mockClientUpsert).toHaveBeenCalledWith({
-        where: { email },
-        update: {},
-        create: {
+      expect(mockClientFindFirst).toHaveBeenCalledWith({ where: { email } });
+      expect(mockClientCreate).toHaveBeenCalledWith({
+        data: {
           email,
           name,
           company: passedCompany,
@@ -299,7 +303,7 @@ describe('ClientsService', () => {
     });
 
     it('should return default context if client is not found in database', async () => {
-      mockClientFindUnique.mockResolvedValue(null);
+      mockClientFindFirst.mockResolvedValue(null);
 
       const result = await service.getClientContext('new-user@example.com');
 
@@ -311,7 +315,7 @@ describe('ClientsService', () => {
         crmId: null,
         history: [],
       });
-      expect(mockClientFindUnique).toHaveBeenCalledWith({
+      expect(mockClientFindFirst).toHaveBeenCalledWith({
         where: { email: 'new-user@example.com' },
         include: {
           interactions: {
@@ -346,7 +350,7 @@ describe('ClientsService', () => {
         interactions: mockInteractions.slice(0, 5),
       };
 
-      mockClientFindUnique.mockResolvedValue(mockClient);
+      mockClientFindFirst.mockResolvedValue(mockClient);
 
       const result = await service.getClientContext('client@example.com');
 
@@ -366,7 +370,7 @@ describe('ClientsService', () => {
         })),
       });
 
-      expect(mockClientFindUnique).toHaveBeenCalledWith({
+      expect(mockClientFindFirst).toHaveBeenCalledWith({
         where: { email: 'client@example.com' },
         include: {
           interactions: {
@@ -379,7 +383,7 @@ describe('ClientsService', () => {
 
     it('should return default context safely and log the error if database throws', async () => {
       const logSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-      mockClientFindUnique.mockRejectedValue(new Error('DB Timeout'));
+      mockClientFindFirst.mockRejectedValue(new Error('DB Timeout'));
 
       const result = await service.getClientContext('test@example.com');
 

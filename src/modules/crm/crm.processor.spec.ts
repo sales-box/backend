@@ -20,10 +20,13 @@ function makeAdapter(overrides: Partial<ICrmAdapter> = {}): ICrmAdapter {
 }
 
 function makePrisma(
-  overrides: Partial<{ client: { update: jest.Mock } }> = {},
+  overrides: Partial<{ client: { updateMany: jest.Mock } }> = {},
 ) {
   return {
-    client: { update: jest.fn().mockResolvedValue({}), ...overrides.client },
+    client: {
+      updateMany: jest.fn().mockResolvedValue({}),
+      ...overrides.client,
+    },
   } as unknown as PrismaService;
 }
 
@@ -54,7 +57,7 @@ describe('CrmProcessor', () => {
       );
 
       expect(adapter.syncContact).toHaveBeenCalledWith(client);
-      expect(prisma.client.update).toHaveBeenCalledWith({
+      expect(prisma.client.updateMany).toHaveBeenCalledWith({
         where: { email: client.email },
         data: { crmId: 'contact-42' },
       });
@@ -95,7 +98,7 @@ describe('CrmProcessor', () => {
         'Pricing',
         'Acme',
       );
-      expect(prisma.client.update).toHaveBeenCalledWith({
+      expect(prisma.client.updateMany).toHaveBeenCalledWith({
         where: { email: 'jane@acme.com' },
         data: { dealId: 'deal-99' },
       });

@@ -1,16 +1,13 @@
-/* eslint-disable @typescript-eslint/unbound-method */
 import { Test, TestingModule } from '@nestjs/testing';
 import { TenantsController } from './tenants.controller';
 import { TenantsService } from './tenants.service';
 
-// Mock UUID to fix the Jest ESM SyntaxError during import resolution
 jest.mock('uuid', () => ({
   v4: jest.fn().mockReturnValue('mocked-uuid-token'),
 }));
 
 describe('TenantsController', () => {
   let controller: TenantsController;
-  let service: TenantsService;
 
   const mockTenantsService = {
     signup: jest.fn(),
@@ -30,7 +27,6 @@ describe('TenantsController', () => {
     }).compile();
 
     controller = module.get<TenantsController>(TenantsController);
-    service = module.get<TenantsService>(TenantsService);
     jest.clearAllMocks();
   });
 
@@ -40,7 +36,7 @@ describe('TenantsController', () => {
       mockTenantsService.signup.mockResolvedValue({ message: 'Success' });
 
       const result = await controller.signup(dto);
-      expect(service.signup).toHaveBeenCalledWith(dto);
+      expect(mockTenantsService.signup).toHaveBeenCalledWith(dto);
       expect(result).toEqual({ message: 'Success' });
     });
   });
@@ -51,7 +47,10 @@ describe('TenantsController', () => {
       mockTenantsService.verify.mockResolvedValue({ tenantId: 'abc' });
 
       const result = await controller.verify(dto);
-      expect(service.verify).toHaveBeenCalledWith('123', 'admin@acme.com');
+      expect(mockTenantsService.verify).toHaveBeenCalledWith(
+        '123',
+        'admin@acme.com',
+      );
       expect(result).toEqual({ tenantId: 'abc' });
     });
   });
@@ -61,7 +60,7 @@ describe('TenantsController', () => {
       mockTenantsService.getTenant.mockResolvedValue({ id: 'tenant-id' });
       const result = await controller.getTenant('tenant-id');
 
-      expect(service.getTenant).toHaveBeenCalledWith('tenant-id');
+      expect(mockTenantsService.getTenant).toHaveBeenCalledWith('tenant-id');
       expect(result).toEqual({ id: 'tenant-id' });
     });
   });
