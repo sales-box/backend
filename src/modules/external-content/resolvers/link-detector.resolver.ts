@@ -26,7 +26,7 @@ const URL_FINDER = /\bhttps?:\/\/[^\s<>"')\]]+/gi;
 export class LinkDetectorResolver {
   constructor(private readonly prisma: PrismaService) {}
 
-  async detect(emailBody: string): Promise<DetectedLink[]> {
+  async detect(emailBody: string, tenantId?: string): Promise<DetectedLink[]> {
     const results: DetectedLink[] = [];
 
     for (const raw of this.extractCandidates(emailBody)) {
@@ -45,8 +45,11 @@ export class LinkDetectorResolver {
       }
 
       // Exact-equality allow-list lookup — the SSRF gate. Never substring.
-      const row = await this.prisma.allowedDomain.findUnique({
-        where: { domain: host },
+      // Tenant-scoped: each company has its OWN list — a domain allowed for
+      // tenant A is not allowed for tenant B. Callers without a tenant only
+      // match the pre-tenant global rows (tenantId NULL).
+      const row = await this.prisma.allowedDomain.findFirst({
+        where: { domain: host, tenantId: tenantId ?? null },
         select: { id: true },
       });
 
