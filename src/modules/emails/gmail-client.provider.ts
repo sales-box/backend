@@ -18,7 +18,12 @@ export class GmailClientProvider {
   ) {}
 
   async getClientForAccount(email: string): Promise<gmail_v1.Gmail> {
-    const account = await this.prisma.connectedAccount.findUnique({
+    // const account = await this.prisma.connectedAccount.findUnique({
+    //   where: { email },
+    // });
+
+    // TODO (Role 3 - Mohamed): Temporary fix for DEP-1. Replace findFirst with findUnique using composite key [tenantId, email].
+    const account = await this.prisma.connectedAccount.findFirst({
       where: { email },
     });
 

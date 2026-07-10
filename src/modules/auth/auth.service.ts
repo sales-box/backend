@@ -94,16 +94,41 @@ export class AuthService {
         ...(tokens.scope ? { scope: tokens.scope } : {}),
       };
 
-      const connectedAccount = await this.prisma.connectedAccount.upsert({
+      // const connectedAccount = await this.prisma.connectedAccount.upsert({
+      //   where: { email },
+      //   create: {
+      //     email,
+      //     scope:
+      //       tokens.scope ?? this.config.getOrThrow<string>('GOOGLE_SCOPES'),
+      //     ...account,
+      //   },
+      //   update: account,
+      // });
+
+      // TODO (Role 3 - Mohamed):
+      // 1. DEP-1 Fix: Update this findFirst to findUnique([tenantId, email]) once OAuth state provides tenantId.
+      // 2. Admin Enforcement: When creating a ConnectedAccount, check if an admin already exists for this tenantId.
+      //    If count === 0, set isAdmin = true.
+      //    If count > 0 and incoming payload requests isAdmin = true, throw BadRequestException.
+      let connectedAccount = await this.prisma.connectedAccount.findFirst({
         where: { email },
-        create: {
-          email,
-          scope:
-            tokens.scope ?? this.config.getOrThrow<string>('GOOGLE_SCOPES'),
-          ...account,
-        },
-        update: account,
       });
+
+      if (connectedAccount) {
+        connectedAccount = await this.prisma.connectedAccount.update({
+          where: { id: connectedAccount.id },
+          data: account,
+        });
+      } else {
+        connectedAccount = await this.prisma.connectedAccount.create({
+          data: {
+            email,
+            scope:
+              tokens.scope ?? this.config.getOrThrow<string>('GOOGLE_SCOPES'),
+            ...account,
+          },
+        });
+      }
 
       this.eventEmitter.emit('google.account.connected', {
         id: connectedAccount.id,
@@ -128,9 +153,15 @@ export class AuthService {
     refresh_token?: string;
     expiry_date?: number;
   }> {
-    const account = await this.prisma.connectedAccount.findUnique({
+    // const account = await this.prisma.connectedAccount.findUnique({
+    //   where: { email },
+    // });
+
+    // TODO (Role 3 - Mohamed): Temporary fix for DEP-1. Replace findFirst with findUnique using composite key [tenantId, email].
+    const account = await this.prisma.connectedAccount.findFirst({
       where: { email },
     });
+
     if (!account) {
       throw new NotFoundException('No connected account found for user');
     }

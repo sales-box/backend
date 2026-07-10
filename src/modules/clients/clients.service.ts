@@ -20,16 +20,34 @@ export class ClientsService {
   ): Promise<ClientRecord> {
     const inferredCompany = company || this.inferCompanyFromEmail(email);
 
-    return this.prisma.client.upsert({
-      where: { email },
-      update: {},
-      create: {
-        email,
-        name: name || null,
-        company: inferredCompany || null,
-        status: 'new_inquiry',
-      },
-    });
+    // return this.prisma.client.upsert({
+    //   where: { email },
+    //   update: {},
+    //   create: {
+    //     email,
+    //     name: name || null,
+    //     company: inferredCompany || null,
+    //     status: 'new_inquiry',
+    //   },
+    // });
+
+    // TODO (Role 3 - Mohamed): Temporary fix for DEP-1.
+    // Upsert was split because 'email' is no longer unique.
+    // Update to use findUnique({ where: { tenantId_email: { tenantId, email } } }) and handle tenant scoping.
+    let client = await this.prisma.client.findFirst({ where: { email } });
+
+    if (!client) {
+      client = await this.prisma.client.create({
+        data: {
+          email,
+          name: name || null,
+          company: inferredCompany || null,
+          status: 'new_inquiry',
+        },
+      });
+    }
+
+    return client;
   }
 
   async addInteraction(clientId: string, data: CreateInteractionDto) {
@@ -82,7 +100,18 @@ export class ClientsService {
     }
 
     try {
-      const client = await this.prisma.client.findUnique({
+      // const client = await this.prisma.client.findUnique({
+      //   where: { email },
+      //   include: {
+      //     interactions: {
+      //       orderBy: { date: 'desc' },
+      //       take: 5,
+      //     },
+      //   },
+      // });
+
+      // TODO (Role 3 - Mohamed): Temporary fix for DEP-1. Replace findFirst with findUnique using composite key [tenantId, email].
+      const client = await this.prisma.client.findFirst({
         where: { email },
         include: {
           interactions: {
