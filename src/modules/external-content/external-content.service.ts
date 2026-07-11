@@ -30,10 +30,14 @@ export class ExternalContentService {
   async resolveExternalContent(
     emailBody: string,
     interactionId: string,
+    tenantId?: string,
   ): Promise<ResolvedExternalContent[]> {
-    const links = await this.detector.detect(emailBody);
+    // Tenant-scoped: both the allow-list and the Drive connection belong to
+    // the calling tenant. TODO(admin-auth): derive tenantId from the JWT
+    // claim instead of trusting the caller.
+    const links = await this.detector.detect(emailBody, tenantId);
 
-    // Admin creds fetched ONCE per call. If unavailable it is a systemic
+    // Tenant creds fetched ONCE per call. If unavailable it is a systemic
     // failure (one log), and every Drive link short-circuits to fetch_failed —
     // never N per-link warnings hiding an outage.
     let auth: AdminAuth = null;
@@ -41,10 +45,10 @@ export class ExternalContentService {
       (link) => link.allowed && link.classification === 'google_drive',
     );
     if (needsDrive) {
-      auth = await this.drive.getAdminAuth();
+      auth = await this.drive.getAdminAuth(tenantId);
       if (auth === null) {
         this.logger.error(
-          'Admin Drive connection unavailable — all Drive links this batch resolve to fetch_failed',
+          'Drive connection unavailable for this tenant — all Drive links this batch resolve to fetch_failed',
         );
       }
     }

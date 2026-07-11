@@ -43,6 +43,9 @@ model Interaction {
   classification String?
   confidence     Float?
   recommendation String?
+  // Which KB document the AI answer was based on ("Based on: X.pdf").
+  // Filled by the AI Phase — this column only prepares the slot.
+  sourceSnapshot String?  @map("source_snapshot")
   createdAt      DateTime @default(now())
 
   @@map("interactions")
@@ -104,6 +107,10 @@ model Document {
   status          DocumentStatus  @default(processing)
   chunkCount      Int             @default(0) @map("chunk_count")
   processingError String?         @map("processing_error")
+  // Quality gate: flagged at upload time when extraction looks unreliable
+  // (e.g. a scanned PDF with almost no extractable text).
+  isLowConfidence Boolean         @default(false) @map("is_low_confidence")
+  qualityReason   String?         @map("quality_reason")
   uploadedBy      String?         @map("uploaded_by") @db.VarChar
   uploadDate      DateTime        @default(now()) @map("upload_date") @db.Timestamptz(6)
   processedAt     DateTime?       @map("processed_at") @db.Timestamptz(6)
@@ -133,12 +140,15 @@ model DocumentChunk {
 // A domain NOT present here is never fetched. Karim inserts rows directly.
 model AllowedDomain {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  domain    String   @unique
+  domain    String
   addedBy   String   @map("added_by")
   tenantId  String?  @map("tenant_id") @db.Uuid
   tenant    Tenant?  @relation(fields: [tenantId], references: [id])
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
+  // Each tenant maintains its OWN allow-list; two tenants may both allow
+  // the same domain without colliding.
+  @@unique([tenantId, domain])
   @@map("allowed_domains")
 }
 
@@ -162,7 +172,7 @@ model DriveConnection {
 
 model KnowledgeGap {
   id          String   @id @default(cuid())
-  topic       String   @unique
+  topic       String
   occurrences Int      @default(1)
   resolved    Boolean  @default(false)
   tenantId    String?  @map("tenant_id") @db.Uuid
@@ -170,6 +180,9 @@ model KnowledgeGap {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  // Same topic exists once PER TENANT — occurrence counts never mix
+  // between two companies.
+  @@unique([tenantId, topic])
   @@map("knowledge_gaps")
 }
 

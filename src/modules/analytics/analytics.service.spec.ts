@@ -27,7 +27,9 @@ describe('AnalyticsService', () => {
             },
             knowledgeGap: {
               upsert: jest.fn(),
+              findFirst: jest.fn(),
               findMany: jest.fn(),
+              create: jest.fn(),
               update: jest.fn(),
             },
           },
@@ -87,6 +89,30 @@ describe('AnalyticsService', () => {
       expect(prisma.interaction.count).not.toHaveBeenCalled();
     });
 
+    it('scopes every query to the tenant through the client relation (S3-V11)', async () => {
+      (prisma.interaction.count as jest.Mock).mockResolvedValue(0);
+      (prisma.interaction.groupBy as jest.Mock).mockResolvedValue([]);
+      (prisma.interaction.aggregate as jest.Mock).mockResolvedValue({
+        _avg: { confidence: null },
+      });
+
+      await service.getAnalyticsSummary(7, 'tenant-a');
+
+      type WhereArg = [{ where: { client?: { tenantId: string } } }];
+      const countWhere = (
+        (prisma.interaction.count as jest.Mock).mock.calls as WhereArg[]
+      )[0][0].where;
+      const groupWhere = (
+        (prisma.interaction.groupBy as jest.Mock).mock.calls as WhereArg[]
+      )[0][0].where;
+      const aggWhere = (
+        (prisma.interaction.aggregate as jest.Mock).mock.calls as WhereArg[]
+      )[0][0].where;
+      expect(countWhere.client).toEqual({ tenantId: 'tenant-a' });
+      expect(groupWhere.client).toEqual({ tenantId: 'tenant-a' });
+      expect(aggWhere.client).toEqual({ tenantId: 'tenant-a' });
+    });
+
     it('throws InternalServerErrorException on DB error', async () => {
       (prisma.interaction.count as jest.Mock).mockRejectedValue(
         new Error('DB Error'),
@@ -106,7 +132,7 @@ describe('AnalyticsService', () => {
       expect(prisma.knowledgeGap.upsert).not.toHaveBeenCalled();
     });
 
-    it('normalizes topic (lowercase + trim) and calls prisma upsert', async () => {
+    it('upserts per (tenantId, topic) when a tenant is given — normalized topic', async () => {
       const mockResult = {
         id: '1',
         topic: 'test topic',
@@ -115,14 +141,74 @@ describe('AnalyticsService', () => {
       };
       (prisma.knowledgeGap.upsert as jest.Mock).mockResolvedValue(mockResult);
 
-      const result = await service.upsertKnowledgeGap('  TEST ToPiC  ');
+      const result = await service.upsertKnowledgeGap(
+        '  TEST ToPiC  ',
+        'tenant-a',
+      );
 
       expect(prisma.knowledgeGap.upsert).toHaveBeenCalledWith({
-        where: { topic: 'test topic' },
+        where: {
+          tenantId_topic: { tenantId: 'tenant-a', topic: 'test topic' },
+        },
         update: { occurrences: { increment: 1 }, resolved: false },
-        create: { topic: 'test topic', occurrences: 1, resolved: false },
+        create: {
+          topic: 'test topic',
+          tenantId: 'tenant-a',
+          occurrences: 1,
+          resolved: false,
+        },
       });
       expect(result).toEqual(mockResult);
+    });
+
+    it('same topic for two different tenants targets two separate rows (S3-V12)', async () => {
+      (prisma.knowledgeGap.upsert as jest.Mock).mockResolvedValue({});
+
+      await service.upsertKnowledgeGap('pricing', 'tenant-a');
+      await service.upsertKnowledgeGap('pricing', 'tenant-b');
+
+      const wheres = (prisma.knowledgeGap.upsert as jest.Mock).mock.calls.map(
+        (c: [{ where: unknown }]) => c[0].where,
+      );
+      expect(wheres).toEqual([
+        { tenantId_topic: { tenantId: 'tenant-a', topic: 'pricing' } },
+        { tenantId_topic: { tenantId: 'tenant-b', topic: 'pricing' } },
+      ]);
+    });
+
+    it('without a tenant, emulates the upsert against the NULL-tenant row', async () => {
+      (prisma.knowledgeGap.findFirst as jest.Mock).mockResolvedValue(null);
+      (prisma.knowledgeGap.create as jest.Mock).mockResolvedValue({
+        id: '1',
+        topic: 'test topic',
+      });
+
+      await service.upsertKnowledgeGap('  TEST ToPiC  ');
+
+      expect(prisma.knowledgeGap.upsert).not.toHaveBeenCalled();
+      expect(prisma.knowledgeGap.findFirst).toHaveBeenCalledWith({
+        where: { topic: 'test topic', tenantId: null },
+      });
+      expect(prisma.knowledgeGap.create).toHaveBeenCalledWith({
+        data: { topic: 'test topic', occurrences: 1, resolved: false },
+      });
+    });
+
+    it('without a tenant, increments the existing NULL-tenant row', async () => {
+      (prisma.knowledgeGap.findFirst as jest.Mock).mockResolvedValue({
+        id: 'gap-1',
+      });
+      (prisma.knowledgeGap.update as jest.Mock).mockResolvedValue({
+        id: 'gap-1',
+      });
+
+      await service.upsertKnowledgeGap('pricing');
+
+      expect(prisma.knowledgeGap.update).toHaveBeenCalledWith({
+        where: { id: 'gap-1' },
+        data: { occurrences: { increment: 1 }, resolved: false },
+      });
+      expect(prisma.knowledgeGap.create).not.toHaveBeenCalled();
     });
   });
 
@@ -143,6 +229,21 @@ describe('AnalyticsService', () => {
         orderBy: { occurrences: 'desc' },
       });
       expect(result).toEqual(mockGaps);
+    });
+
+    it('scopes alerts to the tenant when one is given', async () => {
+      (prisma.knowledgeGap.findMany as jest.Mock).mockResolvedValue([]);
+
+      await service.getKnowledgeGapAlerts(3, 'tenant-a');
+
+      expect(prisma.knowledgeGap.findMany).toHaveBeenCalledWith({
+        where: {
+          resolved: false,
+          occurrences: { gte: 3 },
+          tenantId: 'tenant-a',
+        },
+        orderBy: { occurrences: 'desc' },
+      });
     });
   });
 
