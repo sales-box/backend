@@ -15,7 +15,11 @@ getClientContext(tenantId: string, email: string): Promise<ClientContext>
 ## External Content Module
 
 // ── Role 3 · Salma (External Content) ─────────────────────────────────────
-resolveExternalContent(emailBody: string, interactionId: string): Promise<ResolvedExternalContent[]>
+// BREAKING (tenant isolation): optional tenantId param added. The allow-list
+// and the Drive connection are scoped to that tenant; a tenant can never use
+// another tenant's Drive connection. Until Admin Auth lands, tenantId comes
+// from the request body; afterwards it is derived from the admin JWT claim.
+resolveExternalContent(emailBody: string, interactionId: string, tenantId?: string): Promise<ResolvedExternalContent[]>
 // summary field is ALWAYS undefined this sprint — filled in later by the AI Phase
 //
 // type ResolvedExternalContent = {
@@ -32,6 +36,25 @@ resolveExternalContent(emailBody: string, interactionId: string): Promise<Resolv
 //
 // Guarantees: never throws — one bad link never blocks the others (per-link try/catch).
 // Domains not on the AllowedDomain table are never fetched (SSRF boundary).
+
+## Knowledge Base Module
+
+// ── Role 4 · Salma (KB Quality Gate) ──────────────────────────────────────
+assessDocumentQuality(extractedTextLength: number, fileSizeBytes: number, chunkCount: number): { isLowConfidence: boolean; qualityReason: string | null }
+// Pure threshold check run at upload time. POST /knowledge-base/upload returns
+// isLowConfidence/qualityReason immediately so the admin sees the warning at
+// the door (e.g. scanned PDFs with almost no extractable text).
+
+## Analytics Module
+
+// ── Role 4 · Salma (baseline tenant isolation) ────────────────────────────
+// BREAKING (tenant isolation): optional tenantId params added. With a tenant,
+// numbers are filtered through the client relation so two companies never mix.
+// The caller-is-admin-of-this-tenant guard is Karim's Analytics Guard.
+getAnalyticsSummary(days?: number, tenantId?: string): Promise<AnalyticsSummary>
+upsertKnowledgeGap(topic: string, tenantId?: string): Promise<KnowledgeGap>
+// gaps are unique per (tenantId, topic) — same topic for two tenants = 2 rows
+getKnowledgeGapAlerts(threshold?: number, tenantId?: string): Promise<KnowledgeGap[]>
 
 ## Security Module
 

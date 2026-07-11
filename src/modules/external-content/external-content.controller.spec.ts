@@ -30,6 +30,27 @@ describe('ExternalContentController', () => {
     expect(resolveExternalContent).toHaveBeenCalledWith(
       'see https://evil.com/x',
       'test-1',
+      undefined,
+    );
+  });
+
+  it('forwards the tenantId to the service when provided', async () => {
+    const resolveExternalContent = jest.fn().mockResolvedValue([]);
+    const service = {
+      resolveExternalContent,
+    } as unknown as ExternalContentService;
+    const controller = new ExternalContentController(service);
+
+    await controller.resolve({
+      emailBody: 'see https://evil.com/x',
+      interactionId: 'test-1',
+      tenantId: 'b3f8a1d2-4c5e-4f6a-9b7c-8d9e0f1a2b3c',
+    });
+
+    expect(resolveExternalContent).toHaveBeenCalledWith(
+      'see https://evil.com/x',
+      'test-1',
+      'b3f8a1d2-4c5e-4f6a-9b7c-8d9e0f1a2b3c',
     );
   });
 });

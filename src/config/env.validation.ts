@@ -150,6 +150,28 @@ export class EnvironmentVariables {
   @IsOptional()
   @IsString()
   S3_ENDPOINT?: string;
+
+  // ----- Email Verification (Nodemailer) -----
+
+  @IsString()
+  @MinLength(1)
+  SMTP_HOST: string = 'smtp.gmail.com';
+
+  @IsInt()
+  @Min(1)
+  @Max(65535)
+  SMTP_PORT: number = 587;
+
+  @IsString()
+  @MinLength(1)
+  SMTP_USER!: string;
+
+  @IsString()
+  @MinLength(1)
+  SMTP_PASS!: string;
+
+  @IsUrl({ require_tld: false })
+  API_URL: string = 'http://localhost:3000';
 }
 
 export function validateEnv(

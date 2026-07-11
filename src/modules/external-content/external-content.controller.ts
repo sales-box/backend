@@ -20,9 +20,11 @@ export class ExternalContentController {
   resolve(
     @Body() dto: ResolveExternalContentDto,
   ): Promise<ResolvedExternalContent[]> {
+    // TODO(admin-auth): take tenantId from the JWT claim, not the body.
     return this.service.resolveExternalContent(
       dto.emailBody,
       dto.interactionId,
+      dto.tenantId,
     );
   }
 }

@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { DocumentStatus } from '@prisma/client';
 
 export class UploadResponseDto {
@@ -13,4 +13,17 @@ export class UploadResponseDto {
 
   @ApiProperty({ enum: DocumentStatus, example: DocumentStatus.completed })
   status!: DocumentStatus;
+
+  @ApiProperty({
+    example: false,
+    description:
+      'Quality gate: true when extraction looks unreliable (e.g. a scanned PDF with almost no text)',
+  })
+  isLowConfidence!: boolean;
+
+  @ApiPropertyOptional({
+    example: 'Very little extractable text (42 characters)',
+    description: 'Why the document was flagged (present when isLowConfidence)',
+  })
+  qualityReason?: string;
 }

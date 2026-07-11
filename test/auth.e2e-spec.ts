@@ -62,7 +62,12 @@ describe('Auth (e2e)', () => {
           provide: PrismaService,
           useValue: {
             connectedAccount: {
-              upsert: jest.fn().mockResolvedValue({
+              findFirst: jest.fn().mockResolvedValue(null),
+              create: jest.fn().mockResolvedValue({
+                id: 'mock-id',
+                email: 'mock@example.com',
+              }),
+              update: jest.fn().mockResolvedValue({
                 id: 'mock-id',
                 email: 'mock@example.com',
               }),

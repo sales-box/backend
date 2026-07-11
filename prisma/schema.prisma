@@ -21,6 +21,8 @@ model Client {
   status       String        @default("new_inquiry")
   crmId        String?       @map("crm_id")
   dealId       String?       @map("deal_id")
+  tenantId     String?       @map("tenant_id") @db.Uuid
+  tenant       Tenant?       @relation(fields: [tenantId], references: [id])
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   interactions Interaction[]
@@ -40,6 +42,9 @@ model Interaction {
   aiSummary      String   @map("ai_summary")
   classification String?
   recommendation String?
+  // Which KB document the AI answer was based on ("Based on: X.pdf").
+  // Filled by the AI Phase — this column only prepares the slot.
+  sourceSnapshot String?  @map("source_snapshot")
   createdAt      DateTime @default(now())
   productConfidence Float?  @map("product_confidence")
   clientHistoryConfidence Float?  @map("client_history_confidence")
@@ -61,16 +66,21 @@ model CrmConnection {
 
 
 model ConnectedAccount {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  email          String    @unique
-  accessToken    String    @map("access_token")
-  refreshToken   String?   @map("refresh_token")
-  scope          String?
-  tokenExpiresAt DateTime? @map("token_expires_at") @db.Timestamptz(6)
-  status         String    @default("connected")
-  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id                  String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email               String
+  isAdmin             Boolean              @default(false) @map("is_admin")
+  accessToken         String               @map("access_token")
+  refreshToken        String?              @map("refresh_token")
+  scope               String?
+  tokenExpiresAt      DateTime?            @map("token_expires_at") @db.Timestamptz(6)
+  status              String               @default("connected")
+  tenantId            String?              @map("tenant_id") @db.Uuid
+  tenant              Tenant?              @relation(fields: [tenantId], references: [id])
+  createdAt           DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
   webhookSubscription WebhookSubscription?
+
+  @@unique([tenantId, email])
   @@map("connected_accounts")
 }
 
@@ -85,12 +95,12 @@ model ProcessedGmailMessage {
 }
 
 model WebhookSubscription {
-  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  connectedAccountId  String    @unique @map("connected_account_id") @db.Uuid
-  provider            String    @default("GMAIL")
-  expirationDate      DateTime  @map("expiration_date") @db.Timestamptz(6)
-  subscriptionId      String?   @map("subscription_id")
-  connectedAccount    ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+  id                 String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  connectedAccountId String           @unique @map("connected_account_id") @db.Uuid
+  provider           String           @default("GMAIL")
+  expirationDate     DateTime         @map("expiration_date") @db.Timestamptz(6)
+  subscriptionId     String?          @map("subscription_id")
+  connectedAccount   ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
 
   @@map("webhook_subscriptions")
 }
@@ -104,17 +114,23 @@ enum DocumentStatus {
 }
 
 model Document {
-  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  filename        String         @db.VarChar
-  productName     String?        @map("product_name") @db.VarChar
-  fileType        String?        @map("file_type") @db.VarChar
-  status          DocumentStatus @default(processing)
-  chunkCount      Int            @default(0) @map("chunk_count")
-  processingError String?        @map("processing_error")
-  uploadedBy      String?        @map("uploaded_by") @db.VarChar
-  uploadDate      DateTime       @default(now()) @map("upload_date") @db.Timestamptz(6)
-  processedAt     DateTime?      @map("processed_at") @db.Timestamptz(6)
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  filename        String          @db.VarChar
+  productName     String?         @map("product_name") @db.VarChar
+  fileType        String?         @map("file_type") @db.VarChar
+  status          DocumentStatus  @default(processing)
+  chunkCount      Int             @default(0) @map("chunk_count")
+  processingError String?         @map("processing_error")
+  // Quality gate: flagged at upload time when extraction looks unreliable
+  // (e.g. a scanned PDF with almost no extractable text).
+  isLowConfidence Boolean         @default(false) @map("is_low_confidence")
+  qualityReason   String?         @map("quality_reason")
+  uploadedBy      String?         @map("uploaded_by") @db.VarChar
+  uploadDate      DateTime        @default(now()) @map("upload_date") @db.Timestamptz(6)
+  processedAt     DateTime?       @map("processed_at") @db.Timestamptz(6)
   chunks          DocumentChunk[]
+  tenantId        String?         @map("tenant_id") @db.Uuid
+  tenant          Tenant?         @relation(fields: [tenantId], references: [id])
 
   @@unique([filename, productName], map: "uq_documents_file")
   @@map("documents")
@@ -138,10 +154,15 @@ model DocumentChunk {
 // A domain NOT present here is never fetched. Karim inserts rows directly.
 model AllowedDomain {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  domain    String   @unique
+  domain    String
   addedBy   String   @map("added_by")
+  tenantId  String?  @map("tenant_id") @db.Uuid
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id])
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
+  // Each tenant maintains its OWN allow-list; two tenants may both allow
+  // the same domain without colliding.
+  @@unique([tenantId, domain])
   @@map("allowed_domains")
 }
 
@@ -155,6 +176,8 @@ model DriveConnection {
   scope          String?
   tokenExpiresAt DateTime? @map("token_expires_at") @db.Timestamptz(6)
   status         String    @default("connected")
+  tenantId       String?   @map("tenant_id") @db.Uuid
+  tenant         Tenant?   @relation(fields: [tenantId], references: [id])
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -163,11 +186,45 @@ model DriveConnection {
 
 model KnowledgeGap {
   id          String   @id @default(cuid())
-  topic       String   @unique
+  topic       String
   occurrences Int      @default(1)
   resolved    Boolean  @default(false)
+  tenantId    String?  @map("tenant_id") @db.Uuid
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id])
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  // Same topic exists once PER TENANT — occurrence counts never mix
+  // between two companies.
+  @@unique([tenantId, topic])
   @@map("knowledge_gaps")
+}
+
+enum TenantStatus {
+  pending
+  active
+  abandoned
+
+  @@map("tenant_status")
+}
+
+model Tenant {
+  id                         String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyName                String       @map("company_name")
+  status                     TenantStatus @default(pending)
+  tier                       Int          @default(1)
+  emailVerifiedAt            DateTime?    @map("email_verified_at")
+  emailVerificationToken     String?      @unique @map("email_verification_token")
+  emailVerificationExpiresAt DateTime?    @map("email_verification_expires_at")
+  createdAt                  DateTime     @default(now()) @map("created_at")
+  updatedAt                  DateTime     @updatedAt @map("updated_at")
+
+  clients           Client[]
+  connectedAccounts ConnectedAccount[]
+  documents         Document[]
+  allowedDomains    AllowedDomain[]
+  driveConnections  DriveConnection[]
+  knowledgeGaps     KnowledgeGap[]
+
+  @@map("tenants")
 }

@@ -5,6 +5,7 @@ import {
   Get,
   HttpCode,
   Param,
+  ParseUUIDPipe,
   Post,
   Query,
   Req,
@@ -81,7 +82,7 @@ export class KnowledgeBaseController {
   @HttpCode(204)
   @ApiParam({ name: 'id', description: 'Document id (uuid)' })
   @ApiNoContentResponse({ description: 'Document deleted' })
-  async deleteDocument(@Param('id') id: string): Promise<void> {
+  async deleteDocument(@Param('id', ParseUUIDPipe) id: string): Promise<void> {
     await this.knowledgeBaseService.deleteDocument(id);
   }
 }

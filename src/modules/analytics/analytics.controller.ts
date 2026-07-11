@@ -18,16 +18,20 @@ export class AnalyticsController {
   @Get('summary')
   async getSummary(
     @Query('days', new DefaultValuePipe(30), ParseIntPipe) days: number,
+    // TODO(admin-auth): derive tenantId from the JWT claim, not the query.
+    @Query('tenantId') tenantId?: string,
   ): Promise<AnalyticsSummary> {
-    return this.analyticsService.getAnalyticsSummary(days);
+    return this.analyticsService.getAnalyticsSummary(days, tenantId);
   }
 
   @Get('gaps/alerts')
   async getAlerts(
     @Query('threshold', new DefaultValuePipe(3), ParseIntPipe)
     threshold: number,
+    // TODO(admin-auth): derive tenantId from the JWT claim, not the query.
+    @Query('tenantId') tenantId?: string,
   ): Promise<KnowledgeGap[]> {
-    return this.analyticsService.getKnowledgeGapAlerts(threshold);
+    return this.analyticsService.getKnowledgeGapAlerts(threshold, tenantId);
   }
 
   @Patch('gaps/:id/resolve')

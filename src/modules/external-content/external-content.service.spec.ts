@@ -242,4 +242,56 @@ describe('ExternalContentService', () => {
     const res = await service.resolveExternalContent('body', 'int');
     expect(res.every((r) => r.summary === undefined)).toBe(true);
   });
+
+  // ── Sprint 3 baseline: tenant isolation flows through the orchestrator ──
+
+  it('S3-V10: threads the tenantId into the allow-list lookup', async () => {
+    detect.mockResolvedValue([unlisted]);
+
+    await service.resolveExternalContent('body', 'int', 'tenant-a');
+
+    expect(detect).toHaveBeenCalledWith('body', 'tenant-a');
+  });
+
+  it('S3-V10: requests the Drive connection for the calling tenant only', async () => {
+    detect.mockResolvedValue([driveLink()]);
+    fetchRaw.mockResolvedValue({
+      bytes: Buffer.from('x'),
+      contentType: 'application/pdf',
+    });
+    store.mockResolvedValue('k');
+
+    await service.resolveExternalContent('body', 'int', 'tenant-a');
+
+    expect(getAdminAuth).toHaveBeenCalledWith('tenant-a');
+  });
+
+  it('S3-V10: tenant without a Drive connection → fetch_failed, never a fallback', async () => {
+    detect.mockResolvedValue([driveLink()]);
+    getAdminAuth.mockResolvedValue(null); // no connection for THIS tenant
+
+    const res = await service.resolveExternalContent('body', 'int', 'tenant-b');
+
+    expect(res[0]).toMatchObject({
+      fetched: false,
+      skipped: true,
+      reason: 'fetch_failed',
+    });
+    expect(getAdminAuth).toHaveBeenCalledWith('tenant-b');
+    expect(fetchRaw).not.toHaveBeenCalled();
+  });
+
+  it('legacy call without a tenant passes undefined through both lookups', async () => {
+    detect.mockResolvedValue([driveLink()]);
+    fetchRaw.mockResolvedValue({
+      bytes: Buffer.from('x'),
+      contentType: 'application/pdf',
+    });
+    store.mockResolvedValue('k');
+
+    await service.resolveExternalContent('body', 'int');
+
+    expect(detect).toHaveBeenCalledWith('body', undefined);
+    expect(getAdminAuth).toHaveBeenCalledWith(undefined);
+  });
 });

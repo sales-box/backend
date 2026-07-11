@@ -3,17 +3,17 @@ import { LinkDetectorResolver } from './link-detector.resolver';
 
 describe('LinkDetectorResolver', () => {
   const ALLOWED = new Set(['drive.google.com', 'docs.google.com']);
-  let findUnique: jest.Mock;
+  let findFirst: jest.Mock;
   let resolver: LinkDetectorResolver;
 
   beforeEach(() => {
-    findUnique = jest
+    findFirst = jest
       .fn()
       .mockImplementation(({ where }: { where: { domain: string } }) =>
         Promise.resolve(ALLOWED.has(where.domain) ? { id: 'x' } : null),
       );
     const prisma = {
-      allowedDomain: { findUnique },
+      allowedDomain: { findFirst },
     } as unknown as PrismaService;
     resolver = new LinkDetectorResolver(prisma);
   });
@@ -30,8 +30,19 @@ describe('LinkDetectorResolver', () => {
       allowed: true,
       parseFailed: false,
     });
-    expect(findUnique).toHaveBeenCalledWith({
-      where: { domain: 'drive.google.com' },
+    expect(findFirst).toHaveBeenCalledWith({
+      where: { domain: 'drive.google.com', tenantId: null },
+      select: { id: true },
+    });
+  });
+
+  it('scopes the allow-list lookup to the calling tenant (S3-V10)', async () => {
+    await resolver.detect(
+      'https://drive.google.com/file/d/ABC123DEF456/view',
+      'tenant-a',
+    );
+    expect(findFirst).toHaveBeenCalledWith({
+      where: { domain: 'drive.google.com', tenantId: 'tenant-a' },
       select: { id: true },
     });
   });
@@ -46,14 +57,14 @@ describe('LinkDetectorResolver', () => {
   });
 
   // ---- SSRF bypass matrix: each must NOT be allowed, and the dangerous forms
-  // must never even reach the DB (findUnique not called). ----
+  // must never even reach the DB (findFirst not called). ----
 
   it('rejects suffix-confusion drive.google.com.evil.com (exact match only)', async () => {
     const r = await one('https://drive.google.com.evil.com/x');
     expect(r.allowed).toBe(false);
     expect(r.classification).toBe('unknown_link');
-    expect(findUnique).toHaveBeenCalledWith({
-      where: { domain: 'drive.google.com.evil.com' },
+    expect(findFirst).toHaveBeenCalledWith({
+      where: { domain: 'drive.google.com.evil.com', tenantId: null },
       select: { id: true },
     });
   });
@@ -81,7 +92,7 @@ describe('LinkDetectorResolver', () => {
     expect(r.allowed).toBe(false);
     expect(r.classification).toBe('unknown_link');
     expect(r.parseFailed).toBe(true);
-    expect(findUnique).not.toHaveBeenCalled();
+    expect(findFirst).not.toHaveBeenCalled();
   });
 
   it('ignores non-http(s) schemes entirely (ftp/mailto/htp not detected)', async () => {
@@ -89,7 +100,7 @@ describe('LinkDetectorResolver', () => {
       'ftp://drive.google.com/x mailto:a@b.com htp:/broken',
     );
     expect(links).toEqual([]);
-    expect(findUnique).not.toHaveBeenCalled();
+    expect(findFirst).not.toHaveBeenCalled();
   });
 
   it('lowercases the host before the exact lookup', async () => {
@@ -124,7 +135,7 @@ describe('LinkDetectorResolver', () => {
       expect(r.allowed).toBe(false);
       expect(r.classification).toBe('unknown_link');
       expect(r.parseFailed).toBe(true);
-      expect(findUnique).not.toHaveBeenCalled();
+      expect(findFirst).not.toHaveBeenCalled();
     },
   );
 
@@ -135,7 +146,7 @@ describe('LinkDetectorResolver', () => {
     ).join(' ');
     const links = await resolver.detect(body);
     expect(links).toHaveLength(10);
-    expect(findUnique.mock.calls.length).toBeLessThanOrEqual(10);
+    expect(findFirst.mock.calls.length).toBeLessThanOrEqual(10);
   });
 
   it('decodes &amp; in the query string so the URL is not corrupted', async () => {
@@ -165,7 +176,7 @@ describe('LinkDetectorResolver', () => {
 
   it('returns [] for an empty body', async () => {
     expect(await resolver.detect('')).toEqual([]);
-    expect(findUnique).not.toHaveBeenCalled();
+    expect(findFirst).not.toHaveBeenCalled();
   });
 
   it('handles a 3-link mixed body (ok / unlisted / malformed)', async () => {
