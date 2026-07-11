@@ -201,6 +201,7 @@ enum TenantStatus {
   pending
   active
   abandoned
+  offboarded
 
   @@map("tenant_status")
 }
@@ -222,6 +223,21 @@ model Tenant {
   allowedDomains    AllowedDomain[]
   driveConnections  DriveConnection[]
   knowledgeGaps     KnowledgeGap[]
+  allowlistEntries  AllowlistEntry[]
 
   @@map("tenants")
+}
+
+model AllowlistEntry {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  tenant     Tenant    @relation(fields: [tenantId], references: [id])
+  email      String
+  status     String    @default("granted") // granted | verified | revoked
+  grantedAt  DateTime  @default(now()) @map("granted_at")
+  verifiedAt DateTime? @map("verified_at")
+  revokedAt  DateTime? @map("revoked_at")
+
+  @@unique([tenantId, email])
+  @@map("allowlist_entries")
 }
