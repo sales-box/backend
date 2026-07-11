@@ -42,13 +42,21 @@ describe('AnalyticsController', () => {
       (service.getAnalyticsSummary as jest.Mock).mockResolvedValue(mockResult);
 
       const result = await controller.getSummary(7);
-      expect(service.getAnalyticsSummary).toHaveBeenCalledWith(7);
+      expect(service.getAnalyticsSummary).toHaveBeenCalledWith(7, undefined);
       expect(result).toEqual(mockResult);
     });
 
     it('should default to 30 days if no query param provided', async () => {
       await controller.getSummary(undefined as unknown as number);
-      expect(service.getAnalyticsSummary).toHaveBeenCalledWith(undefined);
+      expect(service.getAnalyticsSummary).toHaveBeenCalledWith(
+        undefined,
+        undefined,
+      );
+    });
+
+    it('should forward tenantId to the service', async () => {
+      await controller.getSummary(7, 'tenant-a');
+      expect(service.getAnalyticsSummary).toHaveBeenCalledWith(7, 'tenant-a');
     });
   });
 
@@ -62,13 +70,21 @@ describe('AnalyticsController', () => {
       );
 
       const result = await controller.getAlerts(5);
-      expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(5);
+      expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(5, undefined);
       expect(result).toEqual(mockAlerts);
     });
 
     it('should default to threshold 3 if no query param provided', async () => {
       await controller.getAlerts(undefined as unknown as number);
-      expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(undefined);
+      expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(
+        undefined,
+        undefined,
+      );
+    });
+
+    it('should forward tenantId to the service', async () => {
+      await controller.getAlerts(3, 'tenant-a');
+      expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(3, 'tenant-a');
     });
   });
 

@@ -104,14 +104,20 @@ describe('AuthService handleGoogleCallback', () => {
   const EXPIRY = 1893456000000;
 
   let prisma: PrismaService;
-  let upsert: jest.Mock;
+  let findFirst: jest.Mock;
+  let update: jest.Mock;
+  let create: jest.Mock;
   let crypto: CryptoService;
   let service: AuthService;
 
   beforeEach(() => {
     jest.clearAllMocks();
-    upsert = jest.fn().mockResolvedValue({ id: 'mock-id', email: EMAIL });
-    prisma = { connectedAccount: { upsert } } as unknown as PrismaService;
+    findFirst = jest.fn().mockResolvedValue(null);
+    update = jest.fn().mockResolvedValue({ id: 'mock-id', email: EMAIL });
+    create = jest.fn().mockResolvedValue({ id: 'mock-id', email: EMAIL });
+    prisma = {
+      connectedAccount: { findFirst, update, create },
+    } as unknown as PrismaService;
     crypto = new CryptoService(makeConfig({ TOKEN_ENCRYPTION_KEY: KEY }));
     service = new AuthService(makeConfig(env), prisma, crypto, {
       emit: jest.fn(),
@@ -131,7 +137,7 @@ describe('AuthService handleGoogleCallback', () => {
     gmocks.getProfile.mockResolvedValue({ data: { emailAddress: EMAIL } });
   }
 
-  it('exchanges the code and upserts an encrypted account, returning the email', async () => {
+  it('exchanges the code and creates an encrypted account if it does not exist', async () => {
     happyTokens();
 
     const result = await service.handleGoogleCallback(CODE);
@@ -143,37 +149,39 @@ describe('AuthService handleGoogleCallback', () => {
       env.GOOGLE_CLIENT_SECRET,
       env.GOOGLE_REDIRECT_URI,
     );
-    expect(upsert).toHaveBeenCalledTimes(1);
+    expect(findFirst).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalled();
 
-    const arg = upsert.mock.calls[0][0];
-    expect(arg.where).toEqual({ email: EMAIL });
-    expect(arg.create.status).toBe('connected');
-    expect(arg.create.scope).toBe(env.GOOGLE_SCOPES);
-    expect(arg.create.tokenExpiresAt).toEqual(new Date(EXPIRY));
+    const arg = create.mock.calls[0][0];
+    expect(arg.data.email).toEqual(EMAIL);
+    expect(arg.data.status).toBe('connected');
+    expect(arg.data.scope).toBe(env.GOOGLE_SCOPES);
+    expect(arg.data.tokenExpiresAt).toEqual(new Date(EXPIRY));
   });
 
   it('stores tokens as ciphertext that decrypts back to the originals', async () => {
     happyTokens();
 
     await service.handleGoogleCallback(CODE);
-    const arg = upsert.mock.calls[0][0];
+    const arg = create.mock.calls[0][0];
 
-    expect(arg.create.accessToken).not.toBe(ACCESS);
-    expect(arg.create.refreshToken).not.toBe(REFRESH);
-    expect(crypto.decrypt(arg.create.accessToken)).toBe(ACCESS);
-    expect(crypto.decrypt(arg.create.refreshToken)).toBe(REFRESH);
+    expect(arg.data.accessToken).not.toBe(ACCESS);
+    expect(arg.data.refreshToken).not.toBe(REFRESH);
+    expect(crypto.decrypt(arg.data.accessToken)).toBe(ACCESS);
+    expect(crypto.decrypt(arg.data.refreshToken)).toBe(REFRESH);
   });
 
-  it('throws BadRequestException and skips upsert when the code is invalid', async () => {
+  it('throws BadRequestException and skips DB calls when the code is invalid', async () => {
     gmocks.getToken.mockRejectedValue(new Error('invalid_grant'));
 
     await expect(service.handleGoogleCallback(CODE)).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    expect(upsert).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
   });
 
-  it('throws and skips upsert when the profile lookup fails', async () => {
+  it('throws and skips DB calls when the profile lookup fails', async () => {
     gmocks.getToken.mockResolvedValue({ tokens: { access_token: ACCESS } });
     gmocks.getProfile.mockRejectedValue({
       response: {
@@ -185,7 +193,7 @@ describe('AuthService handleGoogleCallback', () => {
     await expect(service.handleGoogleCallback(CODE)).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    expect(upsert).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
   });
 
   it('throws BadRequestException for a missing code without calling Google', async () => {
@@ -193,7 +201,7 @@ describe('AuthService handleGoogleCallback', () => {
       BadRequestException,
     );
     expect(gmocks.getToken).not.toHaveBeenCalled();
-    expect(upsert).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
   });
 
   it('stores null expiry when Google omits expiry_date', async () => {
@@ -201,30 +209,35 @@ describe('AuthService handleGoogleCallback', () => {
 
     await service.handleGoogleCallback(CODE);
 
-    expect(upsert.mock.calls[0][0].create.tokenExpiresAt).toBeNull();
+    expect(create.mock.calls[0][0].data.tokenExpiresAt).toBeNull();
   });
 
-  it('does not overwrite a stored refresh token when re-consent omits it', async () => {
+  it('does not overwrite a stored refresh token when re-consent omits it (update scenario)', async () => {
+    findFirst.mockResolvedValue({ id: 'mock-id', email: EMAIL });
     happyTokens({ refresh_token: undefined });
 
     await service.handleGoogleCallback(CODE);
-    const arg = upsert.mock.calls[0][0];
 
-    expect('refreshToken' in arg.update).toBe(false);
-    expect(arg.update.accessToken).toBeDefined();
+    expect(update).toHaveBeenCalledTimes(1);
+    const arg = update.mock.calls[0][0];
+
+    expect('refreshToken' in arg.data).toBe(false);
+    expect(arg.data.accessToken).toBeDefined();
   });
 
-  it('does not overwrite a stored scope when re-consent omits it', async () => {
+  it('does not overwrite a stored scope when re-consent omits it (update scenario)', async () => {
+    findFirst.mockResolvedValue({ id: 'mock-id', email: EMAIL });
     happyTokens({ scope: undefined });
 
     await service.handleGoogleCallback(CODE);
-    const arg = upsert.mock.calls[0][0];
 
-    expect('scope' in arg.update).toBe(false);
-    expect(arg.create.scope).toBe(env.GOOGLE_SCOPES);
+    expect(update).toHaveBeenCalledTimes(1);
+    const arg = update.mock.calls[0][0];
+
+    expect('scope' in arg.data).toBe(false);
   });
 
-  it('throws and skips upsert when the account email cannot be resolved', async () => {
+  it('throws and skips DB calls when the account email cannot be resolved', async () => {
     gmocks.getToken.mockResolvedValue({
       tokens: { access_token: ACCESS, refresh_token: REFRESH },
     });
@@ -233,7 +246,7 @@ describe('AuthService handleGoogleCallback', () => {
     await expect(service.handleGoogleCallback(CODE)).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    expect(upsert).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
   });
 
   it('never leaks tokens or the auth code to logs', async () => {

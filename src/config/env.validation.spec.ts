@@ -16,6 +16,8 @@ const validEnv = {
   GOOGLE_PUBSUB_TOPIC_NAME: 'topic',
   AWS_REGION: 'eu-north-1',
   S3_BUCKET: 'salesbox-iti',
+  SMTP_USER: 'test@gmail.com',
+  SMTP_PASS: 'testpass123',
 };
 
 describe('validateEnv', () => {

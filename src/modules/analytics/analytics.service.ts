@@ -15,7 +15,10 @@ export class AnalyticsService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async getAnalyticsSummary(days: number = 7): Promise<AnalyticsSummary> {
+  async getAnalyticsSummary(
+    days: number = 7,
+    tenantId?: string,
+  ): Promise<AnalyticsSummary> {
     if (!Number.isFinite(days) || days <= 0) {
       throw new BadRequestException('days must be a positive number');
     }
@@ -24,23 +27,31 @@ export class AnalyticsService {
       const since = new Date();
       since.setDate(since.getDate() - days);
 
+      // Baseline tenant isolation: interactions are scoped through their
+      // client. Two companies with the same email volume keep separate
+      // numbers. The full caller-is-admin-of-this-tenant guard is the
+      // Analytics Guard's job — this filter only stops cross-tenant mixing.
+      // TODO(admin-auth): derive tenantId from the JWT claim.
+      const where = {
+        date: { gte: since },
+        ...(tenantId ? { client: { tenantId } } : {}),
+      };
+
       const [total, byClassificationRaw, confidenceStats, lowConfidenceCount] =
         await Promise.all([
-          this.prisma.interaction.count({
-            where: { date: { gte: since } },
-          }),
+          this.prisma.interaction.count({ where }),
           this.prisma.interaction.groupBy({
             by: ['classification'],
-            where: { date: { gte: since } },
+            where,
             _count: { classification: true },
           }),
           this.prisma.interaction.aggregate({
-            where: { date: { gte: since } },
+            where,
             _avg: { productConfidence: true, clientHistoryConfidence: true },
           }),
           this.prisma.interaction.count({
             where: {
-              date: { gte: since },
+              ...where,
               OR: [
                 { productConfidence: { lt: 0.6 } },
                 { clientHistoryConfidence: { lt: 0.6 } },
@@ -81,7 +92,10 @@ export class AnalyticsService {
     }
   }
 
-  async upsertKnowledgeGap(topic: string): Promise<KnowledgeGap> {
+  async upsertKnowledgeGap(
+    topic: string,
+    tenantId?: string,
+  ): Promise<KnowledgeGap> {
     const normalizedTopic = topic.trim().toLowerCase();
 
     if (!normalizedTopic) {
@@ -89,10 +103,34 @@ export class AnalyticsService {
     }
 
     try {
-      return await this.prisma.knowledgeGap.upsert({
-        where: { topic: normalizedTopic },
-        update: { occurrences: { increment: 1 }, resolved: false },
-        create: { topic: normalizedTopic, occurrences: 1, resolved: false },
+      // Gaps are unique per (tenantId, topic): the same topic for two
+      // different companies stays two separate rows with separate counts.
+      if (tenantId) {
+        return await this.prisma.knowledgeGap.upsert({
+          where: { tenantId_topic: { tenantId, topic: normalizedTopic } },
+          update: { occurrences: { increment: 1 }, resolved: false },
+          create: {
+            topic: normalizedTopic,
+            tenantId,
+            occurrences: 1,
+            resolved: false,
+          },
+        });
+      }
+
+      // Legacy rows have tenantId NULL, which a compound unique cannot
+      // address in Prisma — emulate the upsert for that case.
+      const existing = await this.prisma.knowledgeGap.findFirst({
+        where: { topic: normalizedTopic, tenantId: null },
+      });
+      if (existing) {
+        return await this.prisma.knowledgeGap.update({
+          where: { id: existing.id },
+          data: { occurrences: { increment: 1 }, resolved: false },
+        });
+      }
+      return await this.prisma.knowledgeGap.create({
+        data: { topic: normalizedTopic, occurrences: 1, resolved: false },
       });
     } catch (error) {
       this.logger.error(
@@ -103,12 +141,16 @@ export class AnalyticsService {
     }
   }
 
-  async getKnowledgeGapAlerts(threshold: number = 3): Promise<KnowledgeGap[]> {
+  async getKnowledgeGapAlerts(
+    threshold: number = 3,
+    tenantId?: string,
+  ): Promise<KnowledgeGap[]> {
     try {
       return await this.prisma.knowledgeGap.findMany({
         where: {
           resolved: false,
           occurrences: { gte: threshold },
+          ...(tenantId ? { tenantId } : {}),
         },
         orderBy: { occurrences: 'desc' },
       });

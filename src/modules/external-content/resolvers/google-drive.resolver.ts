@@ -94,16 +94,24 @@ export class GoogleDriveResolver {
     }
   }
 
-  /** Builds the admin OAuth2 client once per resolve, or null if unusable. */
-  async getAdminAuth(): Promise<InstanceType<
-    typeof google.auth.OAuth2
-  > | null> {
+  /**
+   * Builds the tenant's OAuth2 client once per resolve, or null if unusable.
+   * Tenant-scoped: a tenant only ever gets ITS OWN DriveConnection — never
+   * another tenant's and never a silent fallback to the shared legacy row.
+   * Callers without a tenant (legacy) match only the pre-tenant row
+   * (tenantId NULL).
+   */
+  async getAdminAuth(
+    tenantId?: string,
+  ): Promise<InstanceType<typeof google.auth.OAuth2> | null> {
     const conn = await this.prisma.driveConnection.findFirst({
-      where: { status: 'connected' },
+      where: { status: 'connected', tenantId: tenantId ?? null },
       orderBy: { createdAt: 'asc' },
     });
     if (conn === null) {
-      this.logger.warn('No admin Drive connection configured');
+      this.logger.warn(
+        `No Drive connection configured for this tenant (tenant=${tenantId ?? 'none'})`,
+      );
       return null;
     }
 

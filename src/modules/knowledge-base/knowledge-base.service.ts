@@ -15,6 +15,16 @@ import { UploadResponseDto } from './dto/upload-response.dto';
 const MAX_TOKENS_PER_CHUNK = 1000;
 const CHUNK_OVERLAP_TOKENS = 150; // ~15% of chunk size
 
+// Quality gate thresholds — a scanned/image PDF yields almost no text
+// relative to its byte size; the admin must see that at upload time.
+const MIN_EXTRACTED_TEXT_CHARS = 200;
+const MIN_TEXT_TO_SIZE_RATIO = 0.001; // extracted chars per file byte
+
+export interface DocumentQuality {
+  isLowConfidence: boolean;
+  qualityReason: string | null;
+}
+
 type FileType = 'pdf' | 'txt' | 'md';
 
 const ALLOWED_TYPES: Record<string, FileType> = {
@@ -46,7 +56,47 @@ export class KnowledgeBaseService {
     const fileType = this.resolveFileType(filename);
     const text = await this.extractText(buffer, fileType);
     const chunks = await this.chunk(text);
-    return this.persist(filename, fileType, chunks);
+    const quality = this.assessDocumentQuality(
+      (text ?? '').trim().length,
+      buffer.length,
+      chunks.length,
+    );
+    return this.persist(filename, fileType, chunks, quality);
+  }
+
+  /**
+   * Quality gate: flags uploads whose extraction looks unreliable so the
+   * admin sees the warning immediately in the upload response — not months
+   * later when the AI keeps guessing on a topic with no real content.
+   */
+  assessDocumentQuality(
+    extractedTextLength: number,
+    fileSizeBytes: number,
+    chunkCount: number,
+  ): DocumentQuality {
+    if (chunkCount === 0) {
+      return {
+        isLowConfidence: true,
+        qualityReason: 'No extractable text found',
+      };
+    }
+    if (extractedTextLength < MIN_EXTRACTED_TEXT_CHARS) {
+      return {
+        isLowConfidence: true,
+        qualityReason: `Very little extractable text (${extractedTextLength} characters)`,
+      };
+    }
+    if (
+      fileSizeBytes > 0 &&
+      extractedTextLength / fileSizeBytes < MIN_TEXT_TO_SIZE_RATIO
+    ) {
+      return {
+        isLowConfidence: true,
+        qualityReason:
+          'Extracted text is tiny relative to the file size — this may be a scanned or image-based document',
+      };
+    }
+    return { isLowConfidence: false, qualityReason: null };
   }
 
   private resolveFileType(filename: string): FileType {
@@ -103,6 +153,7 @@ export class KnowledgeBaseService {
     filename: string,
     fileType: FileType,
     chunks: Chunk[],
+    quality: DocumentQuality,
   ): Promise<UploadResponseDto> {
     const status = chunks.length
       ? DocumentStatus.completed
@@ -120,6 +171,9 @@ export class KnowledgeBaseService {
           chunkCount: chunks.length,
           processedAt: new Date(),
           processingError: chunks.length ? null : 'No extractable text found',
+          isLowConfidence: quality.isLowConfidence,
+          qualityReason: quality.qualityReason,
+          // TODO(admin-auth): set tenantId + uploadedBy from the JWT claim.
         },
       });
 
@@ -136,7 +190,13 @@ export class KnowledgeBaseService {
       }
     });
 
-    return { filename, chunksCreated: chunks.length, status };
+    return {
+      filename,
+      chunksCreated: chunks.length,
+      status,
+      isLowConfidence: quality.isLowConfidence,
+      qualityReason: quality.qualityReason ?? undefined,
+    };
   }
 
   /**
@@ -154,6 +214,8 @@ export class KnowledgeBaseService {
           chunkCount: true,
           uploadDate: true,
           processingError: true,
+          isLowConfidence: true,
+          qualityReason: true,
         },
         orderBy: { uploadDate: 'desc' },
       },
