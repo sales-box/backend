@@ -36,10 +36,16 @@ export class AnalyticsService {
           }),
           this.prisma.interaction.aggregate({
             where: { date: { gte: since } },
-            _avg: { confidence: true },
+            _avg: { productConfidence: true, clientHistoryConfidence: true },
           }),
           this.prisma.interaction.count({
-            where: { date: { gte: since }, confidence: { lt: 0.6 } },
+            where: {
+              date: { gte: since },
+              OR: [
+                { productConfidence: { lt: 0.6 } },
+                { clientHistoryConfidence: { lt: 0.6 } },
+              ],
+            },
           }),
         ]);
 
@@ -50,10 +56,21 @@ export class AnalyticsService {
         }
       }
 
+      let averageConfidence = 0;
+      const avgProd = confidenceStats._avg.productConfidence;
+      const avgHist = confidenceStats._avg.clientHistoryConfidence;
+      if (avgProd !== null && avgHist !== null) {
+        averageConfidence = (avgProd + avgHist) / 2;
+      } else if (avgProd !== null) {
+        averageConfidence = avgProd;
+      } else if (avgHist !== null) {
+        averageConfidence = avgHist;
+      }
+
       return {
         totalEmailsProcessed: total,
         byClassification,
-        averageConfidence: confidenceStats._avg.confidence ?? 0,
+        averageConfidence,
         lowConfidenceCount,
       };
     } catch (error) {

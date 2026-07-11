@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ClientsController } from './clients.controller';
 import { ClientsService } from './clients.service';
+import { BadRequestException } from '@nestjs/common';
 
 describe('ClientsController', () => {
   let controller: ClientsController;
@@ -13,6 +14,8 @@ describe('ClientsController', () => {
     getInteractions: jest.fn(),
     getClientContext: jest.fn(),
   };
+
+  const tenantId = 'tenant-test-123';
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -35,14 +38,16 @@ describe('ClientsController', () => {
   });
 
   describe('createClient', () => {
-    it('should call service.getOrCreateClient', async () => {
-      const dto = {
-        email: 'test@example.com',
-        name: 'Test',
-        company: 'Company',
-      };
+    const dto = {
+      email: 'test@example.com',
+      name: 'Test',
+      company: 'Company',
+    };
+
+    it('should call service.getOrCreateClient with tenantId', async () => {
       const expectedResult = {
         id: '1',
+        tenantId,
         email: dto.email,
         name: dto.name,
         company: dto.company,
@@ -52,39 +57,56 @@ describe('ClientsController', () => {
       };
       mockClientsService.getOrCreateClient.mockResolvedValue(expectedResult);
 
-      const result = await controller.createClient(dto);
+      const result = await controller.createClient(tenantId, dto);
 
       expect(result).toEqual(expectedResult);
       expect(mockClientsService.getOrCreateClient).toHaveBeenCalledWith(
+        tenantId,
         dto.email,
         dto.name,
         dto.company,
       );
     });
-  });
 
-  describe('addInteraction', () => {
-    it('should call service.addInteraction', async () => {
-      const clientId = '1';
-      const dto = { type: 'email', subject: 'Subject', aiSummary: 'Summary' };
-      const expectedResult = { id: 'int-1', clientId, ...dto };
-      mockClientsService.addInteraction.mockResolvedValue(expectedResult);
-
-      const result = await controller.addInteraction(clientId, dto);
-
-      expect(result).toEqual(expectedResult);
-      expect(mockClientsService.addInteraction).toHaveBeenCalledWith(
-        clientId,
-        dto,
+    it('should throw BadRequestException if tenantId is missing', async () => {
+      await expect(controller.createClient('', dto)).rejects.toThrow(
+        BadRequestException,
       );
     });
   });
 
+  describe('addInteraction', () => {
+    const clientId = '1';
+    const dto = { type: 'email', subject: 'Subject', aiSummary: 'Summary' };
+
+    it('should call service.addInteraction with tenantId', async () => {
+      const expectedResult = { id: 'int-1', tenantId, clientId, ...dto };
+      mockClientsService.addInteraction.mockResolvedValue(expectedResult);
+
+      const result = await controller.addInteraction(tenantId, clientId, dto);
+
+      expect(result).toEqual(expectedResult);
+      expect(mockClientsService.addInteraction).toHaveBeenCalledWith(
+        tenantId,
+        clientId,
+        dto,
+      );
+    });
+
+    it('should throw BadRequestException if tenantId is missing', async () => {
+      await expect(
+        controller.addInteraction('', clientId, dto),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
   describe('getClient', () => {
-    it('should call service.getClient', async () => {
-      const clientId = '1';
+    const clientId = '1';
+
+    it('should call service.getClient with tenantId', async () => {
       const mockResult = {
         id: clientId,
+        tenantId,
         email: 'test@example.com',
         name: 'Test',
         company: 'Company',
@@ -95,16 +117,26 @@ describe('ClientsController', () => {
       };
       mockClientsService.getClient.mockResolvedValue(mockResult);
 
-      const result = await controller.getClient(clientId);
+      const result = await controller.getClient(tenantId, clientId);
 
       expect(result).toEqual(mockResult);
-      expect(mockClientsService.getClient).toHaveBeenCalledWith(clientId);
+      expect(mockClientsService.getClient).toHaveBeenCalledWith(
+        tenantId,
+        clientId,
+      );
+    });
+
+    it('should throw BadRequestException if tenantId is missing', async () => {
+      await expect(controller.getClient('', clientId)).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 
   describe('getClients', () => {
-    it('should call service.getClients with search and pagination params', async () => {
-      const query = { search: 'acme', page: 1, limit: 10 };
+    const query = { search: 'acme', page: 1, limit: 10 };
+
+    it('should call service.getClients with tenantId and pagination params', async () => {
       const mockResult = {
         data: [],
         meta: {
@@ -118,20 +150,31 @@ describe('ClientsController', () => {
       };
       mockClientsService.getClients.mockResolvedValue(mockResult);
 
-      const result = await controller.getClients(query);
+      const result = await controller.getClients(tenantId, query);
 
       expect(result).toEqual(mockResult);
-      expect(mockClientsService.getClients).toHaveBeenCalledWith(query.search, {
-        page: query.page,
-        limit: query.limit,
-      });
+      expect(mockClientsService.getClients).toHaveBeenCalledWith(
+        tenantId,
+        query.search,
+        {
+          page: query.page,
+          limit: query.limit,
+        },
+      );
+    });
+
+    it('should throw BadRequestException if tenantId is missing', async () => {
+      await expect(controller.getClients('', query)).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 
   describe('getInteractions', () => {
-    it('should call service.getInteractions with pagination params', async () => {
-      const clientId = '1';
-      const query = { page: 2, limit: 5 };
+    const clientId = '1';
+    const query = { page: 2, limit: 5 };
+
+    it('should call service.getInteractions with tenantId and pagination params', async () => {
       const mockResult = {
         data: [],
         meta: {
@@ -145,10 +188,15 @@ describe('ClientsController', () => {
       };
       mockClientsService.getInteractions.mockResolvedValue(mockResult);
 
-      const result = await controller.getInteractions(clientId, query);
+      const result = await controller.getInteractions(
+        tenantId,
+        clientId,
+        query,
+      );
 
       expect(result).toEqual(mockResult);
       expect(mockClientsService.getInteractions).toHaveBeenCalledWith(
+        tenantId,
         clientId,
         {
           page: query.page,
@@ -156,11 +204,18 @@ describe('ClientsController', () => {
         },
       );
     });
+
+    it('should throw BadRequestException if tenantId is missing', async () => {
+      await expect(
+        controller.getInteractions('', clientId, query),
+      ).rejects.toThrow(BadRequestException);
+    });
   });
 
   describe('getClientContext', () => {
-    it('should call service.getClientContext with query email parameter', async () => {
-      const email = 'test@example.com';
+    const email = 'test@example.com';
+
+    it('should call service.getClientContext with tenantId and email', async () => {
       const expectedResult = {
         isNewClient: false,
         clientId: 'client-1',
@@ -171,10 +226,19 @@ describe('ClientsController', () => {
       };
       mockClientsService.getClientContext.mockResolvedValue(expectedResult);
 
-      const result = await controller.getClientContext(email);
+      const result = await controller.getClientContext(tenantId, email);
 
       expect(result).toEqual(expectedResult);
-      expect(mockClientsService.getClientContext).toHaveBeenCalledWith(email);
+      expect(mockClientsService.getClientContext).toHaveBeenCalledWith(
+        tenantId,
+        email,
+      );
+    });
+
+    it('should throw BadRequestException if tenantId is missing', async () => {
+      await expect(controller.getClientContext('', email)).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 });
