@@ -51,7 +51,7 @@ describe('AnalyticsService', () => {
         { classification: 'meeting_request', _count: { classification: 4 } },
       ]);
       (prisma.interaction.aggregate as jest.Mock).mockResolvedValue({
-        _avg: { confidence: 0.78 },
+        _avg: { productConfidence: 0.78, clientHistoryConfidence: 0.78 },
       });
 
       const result = await service.getAnalyticsSummary(7);
@@ -69,7 +69,7 @@ describe('AnalyticsService', () => {
       (prisma.interaction.count as jest.Mock).mockResolvedValue(0);
       (prisma.interaction.groupBy as jest.Mock).mockResolvedValue([]);
       (prisma.interaction.aggregate as jest.Mock).mockResolvedValue({
-        _avg: { confidence: null },
+        _avg: { productConfidence: null, clientHistoryConfidence: null },
       });
 
       const result = await service.getAnalyticsSummary(7);

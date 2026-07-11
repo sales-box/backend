@@ -18,4 +18,15 @@ export interface ICrmAdapter {
   ): Promise<string>;
 
   logEngagementNote(contactId: string, note: NotePayload): Promise<void>;
+
+  getContactByEmail(email: string): Promise<{ id: string } | null>;
+
+  fetchContacts(): Promise<
+    Array<{
+      email: string;
+      name?: string;
+      company?: string;
+      crmId: string;
+    }>
+  >;
 }

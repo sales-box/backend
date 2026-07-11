@@ -4,9 +4,13 @@ This file documents the API contracts for the functions exposed by the backend l
 
 ## Clients Module
 
-// ── Role 1 · Nagy (Client Context) ──────────────────────────────────────
-getClientContext(email: string): Promise<ClientContext>
-// Returns: full context object | { isNewClient: true, history: [] } if unknown | never throws
+// ── Role 3 · Nagy (Client Identity) ───────────────────────────────────────
+resolveClientIdentity(tenantId: string, email: string, crmAdapter: ICrmAdapter): Promise<{ matchedBy: 'crm' | 'domain' | 'individual', existingClientId: string | null }>
+getOrCreateClient(tenantId: string, email: string, name?: string, company?: string): Promise<ClientRecord>
+getClientContext(tenantId: string, email: string): Promise<ClientContext>
+// Interaction.confidence split into two:
+// - productConfidence: number | null
+// - clientHistoryConfidence: number | null
 
 ## External Content Module
 
@@ -59,3 +63,8 @@ sanitizeForLog(text: string): string
 // Imported by any module before logging anything that might contain user-provided text
 // Masks emails, phone numbers, numeric national IDs, Luhn-valid cards, and IBANs.
 // Also wired into Pino's logMethod hook, so every log line is masked automatically.
+
+## CRM Module
+
+// ── Role 3 · Nagy (CRM Per-Tenant Factory) ────────────────────────────────
+getAdapterForTenant(tenantId: string): Promise<ICrmAdapter | null>

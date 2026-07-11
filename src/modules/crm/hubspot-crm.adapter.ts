@@ -19,9 +19,13 @@ export class HubSpotAdapter implements ICrmAdapter {
   private readonly logger = new Logger(HubSpotAdapter.name);
   private readonly client: Client;
 
-  constructor(config: ConfigService) {
+  constructor(configOrApiKey: ConfigService | string) {
+    const accessToken =
+      typeof configOrApiKey === 'string'
+        ? configOrApiKey
+        : configOrApiKey.getOrThrow<string>('HUBSPOT_API_KEY');
     this.client = new Client({
-      accessToken: config.getOrThrow<string>('HUBSPOT_API_KEY'),
+      accessToken,
     });
   }
 
@@ -203,5 +207,68 @@ export class HubSpotAdapter implements ICrmAdapter {
     if (!trimmed) return { firstName: '', lastName: '' };
     const [firstName, ...rest] = trimmed.split(/\s+/);
     return { firstName, lastName: rest.join(' ') };
+  }
+
+  async getContactByEmail(email: string): Promise<{ id: string } | null> {
+    try {
+      const id = await this.findContactIdByEmail(email);
+      return id ? { id } : null;
+    } catch (error) {
+      this.logger.error(
+        `getContactByEmail failed for ${email}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      throw error;
+    }
+  }
+
+  async fetchContacts(): Promise<
+    Array<{
+      email: string;
+      name?: string;
+      company?: string;
+      crmId: string;
+    }>
+  > {
+    try {
+      const response = await this.client.crm.contacts.basicApi.getPage(
+        100,
+        undefined,
+        CONTACT_PROPERTIES,
+      );
+      return response.results
+        .map((contact) => {
+          const email = contact.properties.email;
+          const firstname = contact.properties.firstname || '';
+          const lastname = contact.properties.lastname || '';
+          const company = contact.properties.company || undefined;
+          const name =
+            [firstname, lastname].filter(Boolean).join(' ') || undefined;
+          return {
+            email,
+            name,
+            company,
+            crmId: contact.id,
+          };
+        })
+        .filter(
+          (
+            c,
+          ): c is {
+            email: string;
+            name: string | undefined;
+            company: string | undefined;
+            crmId: string;
+          } => !!c.email,
+        );
+    } catch (error) {
+      this.logger.error(
+        `fetchContacts failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      throw error;
+    }
   }
 }

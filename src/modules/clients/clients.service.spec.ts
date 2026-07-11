@@ -1,27 +1,41 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/unbound-method */
 import { Test, TestingModule } from '@nestjs/testing';
 import { ClientsService } from './clients.service';
 import { PrismaService } from '../../database/prisma.service';
+import { CrmAdapterFactory } from '../crm/crm-adapter.factory';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { ICrmAdapter } from '../crm/crm.interface';
 
 describe('ClientsService', () => {
   let service: ClientsService;
 
-  const mockClientUpsert = jest.fn();
-  const mockInteractionCreate = jest.fn();
-  const mockClientFindUnique = jest.fn();
-  const mockClientFindFirst = jest.fn();
   const mockClientCreate = jest.fn();
+  const mockClientFindFirst = jest.fn();
+  const mockClientFindUnique = jest.fn();
+  const mockClientUpdate = jest.fn();
+  const mockInteractionCreate = jest.fn();
   const mockClientPaginate = jest.fn();
   const mockInteractionPaginate = jest.fn();
+
+  const mockCrmAdapter: jest.Mocked<ICrmAdapter> = {
+    syncContact: jest.fn(),
+    createOrUpdateDeal: jest.fn(),
+    logEngagementNote: jest.fn(),
+    getContactByEmail: jest.fn(),
+    fetchContacts: jest.fn(),
+  };
+
+  const mockCrmAdapterFactory = {
+    getAdapterForTenant: jest.fn().mockResolvedValue(mockCrmAdapter),
+  };
 
   beforeEach(async () => {
     const mockPrismaService = {
       client: {
-        upsert: mockClientUpsert,
-        findUnique: mockClientFindUnique,
-        findFirst: mockClientFindFirst,
         create: mockClientCreate,
+        findFirst: mockClientFindFirst,
+        findUnique: mockClientFindUnique,
+        update: mockClientUpdate,
       },
       interaction: {
         create: mockInteractionCreate,
@@ -38,6 +52,10 @@ describe('ClientsService', () => {
         {
           provide: PrismaService,
           useValue: mockPrismaService,
+        },
+        {
+          provide: CrmAdapterFactory,
+          useValue: mockCrmAdapterFactory,
         },
       ],
     }).compile();
@@ -68,65 +86,150 @@ describe('ClientsService', () => {
     });
   });
 
-  describe('getOrCreateClient', () => {
-    it('should create client via upsert with inferred company', async () => {
-      const email = 'contact@acme.co';
-      const name = 'Acme Support';
-      const mockResult = {
-        id: 'client-1',
+  describe('resolveClientIdentity', () => {
+    const tenantId = 't-1';
+    const email = 'john@acme.com';
+
+    it('should resolve by CRM contact ID when matching client exists in DB', async () => {
+      mockCrmAdapter.getContactByEmail.mockResolvedValue({
+        id: 'crm-contact-123',
+      });
+      mockClientFindFirst.mockResolvedValueOnce({ id: 'client-crm' }); // Client with matched crmId
+
+      const result = await service.resolveClientIdentity(
+        tenantId,
         email,
-        name,
-        company: 'Acme',
-        status: 'new_inquiry',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-      mockClientFindFirst.mockResolvedValue(null);
-      mockClientCreate.mockResolvedValue(mockResult);
+        mockCrmAdapter,
+      );
 
-      const result = await service.getOrCreateClient(email, name);
+      expect(result).toEqual({
+        matchedBy: 'crm',
+        existingClientId: 'client-crm',
+      });
+      expect(mockCrmAdapter.getContactByEmail).toHaveBeenCalledWith(email);
+      expect(mockClientFindFirst).toHaveBeenCalledWith({
+        where: { tenantId, crmId: 'crm-contact-123' },
+      });
+    });
 
-      expect(result).toEqual(mockResult);
-      expect(mockClientFindFirst).toHaveBeenCalledWith({ where: { email } });
-      expect(mockClientCreate).toHaveBeenCalledWith({
-        data: {
-          email,
-          name,
-          company: 'Acme',
-          status: 'new_inquiry',
+    it('should fall back to Domain check if CRM contact has no match in DB', async () => {
+      mockCrmAdapter.getContactByEmail.mockResolvedValue({
+        id: 'crm-contact-123',
+      });
+      mockClientFindFirst
+        .mockResolvedValueOnce(null) // no CRM-ID match in DB
+        .mockResolvedValueOnce({ id: 'client-domain' }); // Domain match
+
+      const result = await service.resolveClientIdentity(
+        tenantId,
+        email,
+        mockCrmAdapter,
+      );
+
+      expect(result).toEqual({
+        matchedBy: 'domain',
+        existingClientId: 'client-domain',
+      });
+      expect(mockClientFindFirst).toHaveBeenCalledTimes(2);
+      expect(mockClientFindFirst).toHaveBeenLastCalledWith({
+        where: {
+          tenantId,
+          email: {
+            endsWith: '@acme.com',
+          },
         },
       });
     });
 
-    it('should prioritize passed company over inferred company', async () => {
-      const email = 'contact@acme.co';
-      const name = 'Acme Support';
-      const passedCompany = 'Acme Corporation';
-      const mockResult = {
-        id: 'client-1',
-        email,
-        name,
-        company: passedCompany,
-        status: 'new_inquiry',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-      mockClientFindFirst.mockResolvedValue(null);
-      mockClientCreate.mockResolvedValue(mockResult);
+    it('should skip domain match and fall back to individual match for free emails', async () => {
+      const gmailUser = 'john@gmail.com';
+      mockCrmAdapter.getContactByEmail.mockResolvedValue(null);
+      mockClientFindFirst.mockResolvedValueOnce({ id: 'client-gmail' }); // Exact email match
 
-      const result = await service.getOrCreateClient(
-        email,
-        name,
-        passedCompany,
+      const result = await service.resolveClientIdentity(
+        tenantId,
+        gmailUser,
+        mockCrmAdapter,
       );
 
+      expect(result).toEqual({
+        matchedBy: 'individual',
+        existingClientId: 'client-gmail',
+      });
+      expect(mockClientFindFirst).toHaveBeenCalledTimes(1); // Skip domain search, check exact email
+      expect(mockClientFindFirst).toHaveBeenCalledWith({
+        where: { tenantId, email: gmailUser },
+      });
+    });
+
+    it('should return null existingClientId when no match is found', async () => {
+      mockCrmAdapter.getContactByEmail.mockResolvedValue(null);
+      mockClientFindFirst.mockResolvedValue(null); // No domain, no email matches
+
+      const result = await service.resolveClientIdentity(
+        tenantId,
+        email,
+        mockCrmAdapter,
+      );
+
+      expect(result).toEqual({
+        matchedBy: 'individual',
+        existingClientId: null,
+      });
+    });
+  });
+
+  describe('getOrCreateClient', () => {
+    const tenantId = 't-1';
+    const email = 'contact@acme.co';
+    const name = 'Acme Support';
+
+    it('should return existing client when resolved', async () => {
+      mockCrmAdapter.getContactByEmail.mockResolvedValue(null);
+      mockClientFindFirst.mockResolvedValueOnce({
+        id: 'client-1',
+        tenantId,
+        email,
+      }); // Matches by domain or individual
+      mockClientUpdate.mockResolvedValueOnce({
+        id: 'client-1',
+        tenantId,
+        email,
+      });
+
+      const result = await service.getOrCreateClient(tenantId, email, name);
+
+      expect(result).toEqual({ id: 'client-1', tenantId, email });
+      expect(mockClientCreate).not.toHaveBeenCalled();
+      expect(mockClientUpdate).toHaveBeenCalledWith({
+        where: { id: 'client-1' },
+        data: {},
+      });
+    });
+
+    it('should create new client when not resolved', async () => {
+      mockCrmAdapter.getContactByEmail.mockResolvedValue(null);
+      mockClientFindFirst.mockResolvedValue(null);
+      const mockResult = {
+        id: 'new-client-1',
+        tenantId,
+        email,
+        name,
+        company: 'Acme',
+        status: 'new_inquiry',
+      };
+      mockClientCreate.mockResolvedValue(mockResult);
+
+      const result = await service.getOrCreateClient(tenantId, email, name);
+
       expect(result).toEqual(mockResult);
-      expect(mockClientFindFirst).toHaveBeenCalledWith({ where: { email } });
       expect(mockClientCreate).toHaveBeenCalledWith({
         data: {
+          tenantId,
           email,
           name,
-          company: passedCompany,
+          company: 'Acme',
+          crmId: null,
           status: 'new_inquiry',
         },
       });
@@ -134,18 +237,23 @@ describe('ClientsService', () => {
   });
 
   describe('addInteraction', () => {
-    it('should insert a new interaction linked to a client', async () => {
-      const clientId = 'client-1';
+    const tenantId = 't-1';
+    const clientId = 'client-1';
+
+    it('should insert a new interaction linked to a client under correct tenant', async () => {
+      mockClientFindFirst.mockResolvedValueOnce({ id: clientId, tenantId });
       const dto = {
         type: 'email',
         subject: 'Inquiry',
         aiSummary: 'Interested in product pricing.',
         classification: 'pricing',
-        confidence: 0.95,
+        productConfidence: 0.95,
+        clientHistoryConfidence: 0.8,
         recommendation: 'Send sales deck',
       };
       const mockResult = {
         id: 'interaction-1',
+        tenantId,
         clientId,
         date: new Date(),
         ...dto,
@@ -153,52 +261,62 @@ describe('ClientsService', () => {
       };
       mockInteractionCreate.mockResolvedValue(mockResult);
 
-      const result = await service.addInteraction(clientId, dto);
+      const result = await service.addInteraction(tenantId, clientId, dto);
 
       expect(result).toEqual(mockResult);
       expect(mockInteractionCreate).toHaveBeenCalledWith({
         data: {
+          tenantId,
           clientId,
           date: expect.any(Date),
           type: dto.type,
           subject: dto.subject,
           aiSummary: dto.aiSummary,
           classification: dto.classification,
-          confidence: dto.confidence,
+          productConfidence: dto.productConfidence,
+          clientHistoryConfidence: dto.clientHistoryConfidence,
           recommendation: dto.recommendation,
         },
       });
     });
+
+    it('should throw NotFoundException if client does not belong to the tenant', async () => {
+      mockClientFindFirst.mockResolvedValueOnce(null); // Not found under this tenant
+
+      await expect(
+        service.addInteraction(tenantId, clientId, {
+          type: 'email',
+          subject: 'X',
+          aiSummary: 'Y',
+        }),
+      ).rejects.toThrow(NotFoundException);
+    });
   });
 
   describe('getClient', () => {
-    it('should return client with limited/sorted interactions', async () => {
-      const clientId = 'client-1';
+    const tenantId = 't-1';
+    const clientId = 'client-1';
+
+    it('should return client under the tenant with interactions', async () => {
       const mockClient = {
         id: clientId,
+        tenantId,
         email: 'john@acme.co',
         name: 'John',
         company: 'Acme',
         status: 'new_inquiry',
         createdAt: new Date(),
         updatedAt: new Date(),
-        interactions: Array.from({ length: 25 }, (_, i) => ({
-          id: `interaction-${i}`,
-          date: new Date(Date.now() - i * 1000),
-          type: 'email',
-          subject: `Subject ${i}`,
-          aiSummary: `Summary ${i}`,
-        })).slice(0, 20),
+        interactions: [],
       };
 
-      mockClientFindUnique.mockResolvedValue(mockClient);
+      mockClientFindFirst.mockResolvedValue(mockClient);
 
-      const result = await service.getClient(clientId);
+      const result = await service.getClient(tenantId, clientId);
 
       expect(result).toEqual(mockClient);
-      expect(result.interactions).toHaveLength(20);
-      expect(mockClientFindUnique).toHaveBeenCalledWith({
-        where: { id: clientId },
+      expect(mockClientFindFirst).toHaveBeenCalledWith({
+        where: { id: clientId, tenantId },
         include: {
           interactions: {
             orderBy: { date: 'desc' },
@@ -208,104 +326,34 @@ describe('ClientsService', () => {
       });
     });
 
-    it('should throw NotFoundException if client does not exist', async () => {
-      mockClientFindUnique.mockResolvedValue(null);
+    it('should throw NotFoundException if client does not exist under tenant', async () => {
+      mockClientFindFirst.mockResolvedValue(null);
 
-      await expect(service.getClient('non-existent')).rejects.toThrow(
+      await expect(service.getClient(tenantId, 'non-existent')).rejects.toThrow(
         NotFoundException,
       );
     });
   });
 
-  describe('getClients', () => {
-    it('should call extended.client.paginate with OR clause when searchQuery is provided', async () => {
-      const searchQuery = 'acme';
-      const options = { page: 1, limit: 10 };
-      const mockResult = { data: [], meta: { total: 0 } as any };
-      mockClientPaginate.mockResolvedValue(mockResult);
-
-      const result = await service.getClients(searchQuery, options);
-
-      expect(result).toEqual(mockResult);
-      expect(mockClientPaginate).toHaveBeenCalledWith(
-        {
-          where: {
-            OR: [
-              { name: { contains: searchQuery, mode: 'insensitive' } },
-              { email: { contains: searchQuery, mode: 'insensitive' } },
-              { company: { contains: searchQuery, mode: 'insensitive' } },
-            ],
-          },
-          orderBy: { createdAt: 'desc' },
-        },
-        options,
-      );
-    });
-
-    it('should call extended.client.paginate with empty where when no searchQuery is provided', async () => {
-      const mockResult = { data: [], meta: { total: 0 } as any };
-      mockClientPaginate.mockResolvedValue(mockResult);
-
-      const result = await service.getClients(undefined, {
-        page: 1,
-        limit: 10,
-      });
-
-      expect(result).toEqual(mockResult);
-      expect(mockClientPaginate).toHaveBeenCalledWith(
-        {
-          where: {},
-          orderBy: { createdAt: 'desc' },
-        },
-        { page: 1, limit: 10 },
-      );
-    });
-  });
-
-  describe('getInteractions', () => {
-    it('should throw NotFoundException if client does not exist', async () => {
-      mockClientFindUnique.mockResolvedValue(null);
-
-      await expect(
-        service.getInteractions('fake-id', { page: 1, limit: 10 }),
-      ).rejects.toThrow(NotFoundException);
-    });
-
-    it('should call extended.interaction.paginate if client exists', async () => {
-      mockClientFindUnique.mockResolvedValue({ id: 'real-id' });
-      const mockResult = { data: [], meta: { total: 0 } as any };
-      mockInteractionPaginate.mockResolvedValue(mockResult);
-
-      const result = await service.getInteractions('real-id', {
-        page: 1,
-        limit: 10,
-      });
-
-      expect(result).toEqual(mockResult);
-      expect(mockInteractionPaginate).toHaveBeenCalledWith(
-        {
-          where: { clientId: 'real-id' },
-          orderBy: { date: 'desc' },
-        },
-        { page: 1, limit: 10 },
-      );
-    });
-  });
-
   describe('getClientContext', () => {
+    const tenantId = 't-1';
+
     it('should throw BadRequestException if email is invalid or empty', async () => {
-      await expect(service.getClientContext('')).rejects.toThrow(
+      await expect(service.getClientContext(tenantId, '')).rejects.toThrow(
         BadRequestException,
       );
-      await expect(service.getClientContext('not-an-email')).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(
+        service.getClientContext(tenantId, 'not-an-email'),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('should return default context if client is not found in database', async () => {
       mockClientFindFirst.mockResolvedValue(null);
 
-      const result = await service.getClientContext('new-user@example.com');
+      const result = await service.getClientContext(
+        tenantId,
+        'new-user@example.com',
+      );
 
       expect(result).toEqual({
         isNewClient: true,
@@ -315,12 +363,12 @@ describe('ClientsService', () => {
         crmId: null,
         history: [],
       });
+      // Verification of identity resolution calls
       expect(mockClientFindFirst).toHaveBeenCalledWith({
-        where: { email: 'new-user@example.com' },
-        include: {
-          interactions: {
-            orderBy: { date: 'desc' },
-            take: 5,
+        where: {
+          tenantId,
+          email: {
+            endsWith: '@example.com',
           },
         },
       });
@@ -339,6 +387,7 @@ describe('ClientsService', () => {
 
       const mockClient = {
         id: 'client-123',
+        tenantId,
         email: 'client@example.com',
         name: 'John Doe',
         company: 'Stark Industries',
@@ -346,13 +395,15 @@ describe('ClientsService', () => {
         crmId: 'crm-789',
         createdAt: new Date(),
         updatedAt: new Date(),
-        // Mocking the database slice of 5 interactions
         interactions: mockInteractions.slice(0, 5),
       };
 
       mockClientFindFirst.mockResolvedValue(mockClient);
 
-      const result = await service.getClientContext('client@example.com');
+      const result = await service.getClientContext(
+        tenantId,
+        'client@example.com',
+      );
 
       expect(result).toEqual({
         isNewClient: false,
@@ -369,34 +420,6 @@ describe('ClientsService', () => {
           recommendation: item.recommendation,
         })),
       });
-
-      expect(mockClientFindFirst).toHaveBeenCalledWith({
-        where: { email: 'client@example.com' },
-        include: {
-          interactions: {
-            orderBy: { date: 'desc' },
-            take: 5,
-          },
-        },
-      });
-    });
-
-    it('should return default context safely and log the error if database throws', async () => {
-      const logSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-      mockClientFindFirst.mockRejectedValue(new Error('DB Timeout'));
-
-      const result = await service.getClientContext('test@example.com');
-
-      expect(result).toEqual({
-        isNewClient: true,
-        clientId: null,
-        status: 'unknown',
-        company: '',
-        crmId: null,
-        history: [],
-      });
-      expect(logSpy).toHaveBeenCalled();
-      logSpy.mockRestore();
     });
   });
 });

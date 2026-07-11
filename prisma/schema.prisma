@@ -1,6 +1,5 @@
 generator client {
-  provider        = "prisma-client-js"
-  previewFeatures = ["postgresqlExtensions"]
+  provider = "prisma-client-js"
 }
 
 generator erd {
@@ -9,9 +8,8 @@ generator erd {
 }
 
 datasource db {
-  provider   = "postgresql"
-  url        = env("DATABASE_URL")
-  extensions = [vector]
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model Client {
@@ -34,6 +32,7 @@ model Client {
 
 model Interaction {
   id             String   @id @default(uuid())
+  tenantId       String   @map("tenant_id")
   clientId       String   @map("client_id")
   client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
   date           DateTime @default(now())
@@ -41,16 +40,28 @@ model Interaction {
   subject        String
   aiSummary      String   @map("ai_summary")
   classification String?
-  confidence     Float?
   recommendation String?
   // Which KB document the AI answer was based on ("Based on: X.pdf").
   // Filled by the AI Phase — this column only prepares the slot.
   sourceSnapshot String?  @map("source_snapshot")
   createdAt      DateTime @default(now())
+  productConfidence Float?  @map("product_confidence")
+  clientHistoryConfidence Float?  @map("client_history_confidence")
 
   @@map("interactions")
 }
 
+model CrmConnection {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @unique @map("tenant_id")
+  provider  String
+  apiKey    String   @map("api_key")
+  status    String   @default("connected")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("crm_connections")
+}
 model ConnectedAccount {
   id                  String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   email               String

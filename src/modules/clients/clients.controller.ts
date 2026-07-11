@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  Headers,
+  BadRequestException,
+} from '@nestjs/common';
 import { ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { ClientsService } from './clients.service';
 import {
@@ -15,8 +24,15 @@ export class ClientsController {
 
   @Post()
   @ApiOkResponse({ description: 'Create or return existing client' })
-  async createClient(@Body() body: CreateClientDto) {
+  async createClient(
+    @Headers('x-tenant-id') tenantId: string,
+    @Body() body: CreateClientDto,
+  ) {
+    if (!tenantId) {
+      throw new BadRequestException('x-tenant-id header is required');
+    }
     return this.clientsService.getOrCreateClient(
+      tenantId,
       body.email,
       body.name,
       body.company,
@@ -26,28 +42,50 @@ export class ClientsController {
   @Post(':id/interactions')
   @ApiOkResponse({ description: 'Add interaction history to client' })
   async addInteraction(
+    @Headers('x-tenant-id') tenantId: string,
     @Param('id') id: string,
     @Body() body: CreateInteractionDto,
   ) {
-    return this.clientsService.addInteraction(id, body);
+    if (!tenantId) {
+      throw new BadRequestException('x-tenant-id header is required');
+    }
+    return this.clientsService.addInteraction(tenantId, id, body);
   }
 
   @Get(':id')
   @ApiOkResponse({ description: 'Get client with latest 20 interactions' })
-  async getClient(@Param('id') id: string) {
-    return this.clientsService.getClient(id);
+  async getClient(
+    @Headers('x-tenant-id') tenantId: string,
+    @Param('id') id: string,
+  ) {
+    if (!tenantId) {
+      throw new BadRequestException('x-tenant-id header is required');
+    }
+    return this.clientsService.getClient(tenantId, id);
   }
 
   @Get('context')
   @ApiOkResponse({ description: 'Get client context for CRM' })
-  async getClientContext(@Query('email') email: string) {
-    return this.clientsService.getClientContext(email);
+  async getClientContext(
+    @Headers('x-tenant-id') tenantId: string,
+    @Query('email') email: string,
+  ) {
+    if (!tenantId) {
+      throw new BadRequestException('x-tenant-id header is required');
+    }
+    return this.clientsService.getClientContext(tenantId, email);
   }
 
   @Get()
   @ApiOkResponse({ description: 'Get paginated list of clients' })
-  async getClients(@Query() query: GetClientsQueryDto) {
-    return this.clientsService.getClients(query.search, {
+  async getClients(
+    @Headers('x-tenant-id') tenantId: string,
+    @Query() query: GetClientsQueryDto,
+  ) {
+    if (!tenantId) {
+      throw new BadRequestException('x-tenant-id header is required');
+    }
+    return this.clientsService.getClients(tenantId, query.search, {
       page: query.page,
       limit: query.limit,
     });
@@ -56,10 +94,14 @@ export class ClientsController {
   @Get(':clientId/interactions')
   @ApiOkResponse({ description: 'Get interaction history for a client' })
   async getInteractions(
+    @Headers('x-tenant-id') tenantId: string,
     @Param('clientId') clientId: string,
     @Query() query: PaginationQueryDto,
   ) {
-    return this.clientsService.getInteractions(clientId, {
+    if (!tenantId) {
+      throw new BadRequestException('x-tenant-id header is required');
+    }
+    return this.clientsService.getInteractions(tenantId, clientId, {
       page: query.page,
       limit: query.limit,
     });
