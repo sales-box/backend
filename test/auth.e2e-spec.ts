@@ -9,9 +9,13 @@ import {
 import fastifyCookie from '@fastify/cookie';
 import * as googleapis from 'googleapis';
 import request from 'supertest';
+import { JwtService } from '@nestjs/jwt';
 import { AuthController } from './../src/modules/auth/auth.controller';
 import { AuthService } from './../src/modules/auth/auth.service';
 import { CryptoService } from './../src/modules/auth/crypto.service';
+import { JwtAuthGuard } from './../src/modules/auth/jwt-auth.guard';
+import { AllowlistService } from './../src/modules/allowlist/allowlist.service';
+import { TenantAllowlistGuard } from './../src/modules/allowlist/tenant-allowlist.guard';
 import { PrismaService } from './../src/database/prisma.service';
 
 jest.mock('googleapis', () => {
@@ -58,6 +62,22 @@ describe('Auth (e2e)', () => {
           provide: EventEmitter2,
           useValue: { emit: jest.fn() },
         },
+        {
+          // Admin login is allowlisted in this flow, so verifyAccess resolves.
+          provide: AllowlistService,
+          useValue: { verifyAccess: jest.fn().mockResolvedValue(undefined) },
+        },
+        {
+          provide: JwtService,
+          useValue: {
+            signAsync: jest.fn().mockResolvedValue('test.jwt.token'),
+            verifyAsync: jest.fn(),
+          },
+        },
+        // Guards on /auth/me and /auth/se/session must be resolvable at
+        // app.init(); their deps (JwtService, PrismaService) are mocked above.
+        JwtAuthGuard,
+        TenantAllowlistGuard,
         {
           provide: PrismaService,
           useValue: {
