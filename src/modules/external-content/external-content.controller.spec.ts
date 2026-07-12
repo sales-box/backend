@@ -1,9 +1,15 @@
 import { ExternalContentController } from './external-content.controller';
 import type { ExternalContentService } from './external-content.service';
 import type { ResolvedExternalContent } from './external-content.types';
+import type { AuthenticatedRequest } from '../auth/jwt-auth.guard';
+
+const reqFor = (tenantId: string | null): AuthenticatedRequest =>
+  ({
+    user: { sub: 'acc-1', tenantId, isAdmin: true, email: 'admin@acme.com' },
+  }) as unknown as AuthenticatedRequest;
 
 describe('ExternalContentController', () => {
-  it('delegates to the service and returns its result', async () => {
+  it('resolves using the tenantId from the JWT claim, not the body', async () => {
     const result: ResolvedExternalContent[] = [
       {
         sourceType: 'unknown_link',
@@ -21,36 +27,31 @@ describe('ExternalContentController', () => {
     } as unknown as ExternalContentService;
     const controller = new ExternalContentController(service);
 
-    const out = await controller.resolve({
-      emailBody: 'see https://evil.com/x',
-      interactionId: 'test-1',
-    });
+    const out = await controller.resolve(
+      { emailBody: 'see https://evil.com/x', interactionId: 'test-1' },
+      reqFor('tenant-a'),
+    );
 
     expect(out).toBe(result);
     expect(resolveExternalContent).toHaveBeenCalledWith(
       'see https://evil.com/x',
       'test-1',
-      undefined,
+      'tenant-a',
     );
   });
 
-  it('forwards the tenantId to the service when provided', async () => {
+  it('passes undefined for a legacy admin token with no tenant', async () => {
     const resolveExternalContent = jest.fn().mockResolvedValue([]);
     const service = {
       resolveExternalContent,
     } as unknown as ExternalContentService;
     const controller = new ExternalContentController(service);
 
-    await controller.resolve({
-      emailBody: 'see https://evil.com/x',
-      interactionId: 'test-1',
-      tenantId: 'b3f8a1d2-4c5e-4f6a-9b7c-8d9e0f1a2b3c',
-    });
-
-    expect(resolveExternalContent).toHaveBeenCalledWith(
-      'see https://evil.com/x',
-      'test-1',
-      'b3f8a1d2-4c5e-4f6a-9b7c-8d9e0f1a2b3c',
+    await controller.resolve(
+      { emailBody: 'x', interactionId: 't' },
+      reqFor(null),
     );
+
+    expect(resolveExternalContent).toHaveBeenCalledWith('x', 't', undefined);
   });
 });
