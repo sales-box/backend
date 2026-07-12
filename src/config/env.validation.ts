@@ -107,6 +107,17 @@ export class EnvironmentVariables {
   @MinLength(1)
   GOOGLE_SCOPES!: string;
 
+  // ----- Admin auth (JWT) -----
+
+  // Dev fallback mirrors the COOKIE_SECRET pattern; production MUST override.
+  @IsString()
+  @MinLength(32)
+  JWT_SECRET: string = 'dev-jwt-secret-change-me-0123456789abcdef';
+
+  @IsString()
+  @MinLength(2)
+  JWT_EXPIRES_IN: string = '1h';
+
   // ----- Token encryption / frontend -----
 
   @Validate(Is32ByteKeyConstraint)
