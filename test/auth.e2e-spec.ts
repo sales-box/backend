@@ -12,6 +12,8 @@ import request from 'supertest';
 import { AuthController } from './../src/modules/auth/auth.controller';
 import { AuthService } from './../src/modules/auth/auth.service';
 import { CryptoService } from './../src/modules/auth/crypto.service';
+import { TokenService } from './../src/modules/auth/token.service';
+import { AllowlistService } from './../src/modules/allowlist/allowlist.service';
 import { PrismaService } from './../src/database/prisma.service';
 
 jest.mock('googleapis', () => {
@@ -57,6 +59,17 @@ describe('Auth (e2e)', () => {
         {
           provide: EventEmitter2,
           useValue: { emit: jest.fn() },
+        },
+        {
+          // Admin login is allowlisted in this flow, so verifyAccess resolves.
+          provide: AllowlistService,
+          useValue: { verifyAccess: jest.fn().mockResolvedValue(undefined) },
+        },
+        {
+          provide: TokenService,
+          useValue: {
+            issueSeToken: jest.fn().mockReturnValue('test.jwt.token'),
+          },
         },
         {
           provide: PrismaService,

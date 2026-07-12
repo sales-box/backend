@@ -68,6 +68,11 @@ export class EnvironmentVariables {
   @MinLength(16)
   COOKIE_SECRET!: string;
 
+  // Secret used to sign Sales-Engineer JWTs issued by /auth/se/login.
+  @IsString()
+  @MinLength(16)
+  JWT_SECRET!: string;
+
   @IsOptional()
   @IsString()
   CORS_ORIGINS?: string;

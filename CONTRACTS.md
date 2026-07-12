@@ -2,6 +2,31 @@
 
 This file documents the API contracts for the functions exposed by the backend layer of the Inbox Sales Copilot.
 
+## Access Control Module
+
+// ── Role 2 · Karim (Access Control) ───────────────────────────────────────
+grantAccess(tenantId: string, email: string, tx?: Prisma.TransactionClient): Promise<void>
+// Checks the tenant's plan-tier SE cap, records the entry as granted, emails
+// the SE the extension install link. Optional tx so it can run inside another
+// transaction (e.g. tenant activation grants the admin's own email).
+verifyAccess(email: string): Promise<void> // called inside AuthService.handleGoogleCallback
+// Throws ForbiddenException if the email is on no allowlist; else marks verified.
+revokeAccess(tenantId: string, email: string): Promise<void>
+// One transaction: allowlist entry -> revoked AND ConnectedAccount -> revoked.
+offboardTenant(tenantId: string): Promise<void>
+// Revokes every entry + account for the tenant and sets Tenant.status=offboarded.
+// No client data is deleted; it just becomes unreachable.
+listAllowlist(tenantId: string): Promise<AllowlistEntry[]> // email/status/dates for the dashboard
+seLoginWithGoogle(code: string): Promise<{ token: string } | { error: 'invalid_allowlist' }>
+// Confirms AllowlistEntry status verified/granted before returning a JWT.
+//
+// Endpoints: POST /tenants/:id/allowlist · DELETE /tenants/:id/allowlist/:email
+// GET /tenants/:id/allowlist · POST /tenants/:id/offboard · POST /auth/se/login
+// Guards: AdminTenantGuard (admin-of-tenant; on allowlist routes + /analytics/*,
+// fulfils the "AnalyticsTenantGuard" requirement) · TenantAllowlistGuard
+// (SE JWT + ConnectedAccount connected; for future extension endpoints).
+// Reads req.user = { tenantId, isAdmin } — populated by admin login (TODO: Salma).
+
 ## Clients Module
 
 // ── Role 3 · Nagy (Client Identity) ───────────────────────────────────────

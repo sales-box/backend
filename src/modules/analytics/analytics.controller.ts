@@ -6,11 +6,16 @@ import {
   Query,
   DefaultValuePipe,
   ParseIntPipe,
+  UseGuards,
 } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service';
 import { AnalyticsSummary } from './types/analytics.types';
 import { KnowledgeGap } from '@prisma/client';
+import { AdminTenantGuard } from '../../common/guards/admin-tenant.guard';
 
+// Admin-only, tenant-scoped: rejects any attempt to read another tenant's
+// numbers by editing the ?tenantId query param.
+@UseGuards(AdminTenantGuard)
 @Controller('analytics')
 export class AnalyticsController {
   constructor(private readonly analyticsService: AnalyticsService) {}
