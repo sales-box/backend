@@ -6,6 +6,7 @@ const validEnv = {
   PORT: '3000',
   DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
   COOKIE_SECRET: 'a-32-character-long-cookie-secret',
+  JWT_SECRET: 'a-32-character-long-jwt-secret',
   GOOGLE_CLIENT_ID: 'client-id',
   GOOGLE_CLIENT_SECRET: 'client-secret',
   GOOGLE_REDIRECT_URI: 'http://localhost:3000/auth/google/callback',
