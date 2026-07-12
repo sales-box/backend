@@ -1,18 +1,33 @@
 import {
+  Body,
   Controller,
+  ForbiddenException,
   Get,
+  HttpCode,
   HttpStatus,
+  Post,
   Query,
   Redirect,
   Req,
   Res,
+  UseGuards,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ApiFoundResponse, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiFoundResponse,
+  ApiOkResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { AuthService } from './auth.service';
 import { GoogleCallbackDto } from './dto/google-callback.dto';
+import { SeLoginDto } from './dto/se-login.dto';
+import { JwtAuthGuard } from './jwt-auth.guard';
+import type { AuthenticatedRequest } from './jwt-auth.guard';
+import type { AdminJwtPayload } from './admin-auth.service';
+import { TenantAllowlistGuard } from '../allowlist/tenant-allowlist.guard';
 
 /** Cookie carrying the OAuth CSRF state between /auth/google and the callback. */
 const OAUTH_STATE_COOKIE = 'oauth_state';
@@ -84,6 +99,47 @@ export class AuthController {
     } catch {
       return this.redirect(dashboard, 'error');
     }
+  }
+
+  @Post('se/login')
+  @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({
+    description: 'Returns a JWT for an allowlisted Sales Engineer',
+  })
+  async seLogin(@Body() dto: SeLoginDto): Promise<{ token: string }> {
+    const result = await this.authService.seLoginWithGoogle(dto.code);
+    if ('error' in result) {
+      // 403 with { error: 'invalid_allowlist' } so the extension shows "Invalid"
+      // instead of a generic failure.
+      throw new ForbiddenException(result);
+    }
+    return result;
+  }
+
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: 'The identity carried by the caller’s JWT (admin or SE)',
+  })
+  me(@Req() req: AuthenticatedRequest): AdminJwtPayload {
+    // Whoami: the dashboard and the extension both call this to confirm the
+    // token is still valid and to read { tenantId, isAdmin, email }.
+    return req.user;
+  }
+
+  @Get('se/session')
+  @UseGuards(TenantAllowlistGuard)
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description:
+      'SE heartbeat: 200 only while the account is still connected, so the ' +
+      'extension detects a revoke/offboard even before the token expires',
+  })
+  seSession(@Req() req: AuthenticatedRequest): AdminJwtPayload {
+    // Unlike /auth/me (token-only), TenantAllowlistGuard also checks the account
+    // is still `connected`, turning this into a revocation-aware session check.
+    return req.user;
   }
 
   /** Unsigns and clears the state cookie; returns its value when intact. */

@@ -1,10 +1,16 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument */
-import { BadRequestException, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Logger,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as googleapis from 'googleapis';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthService } from './auth.service';
 import { CryptoService } from './crypto.service';
+import { AllowlistService } from '../allowlist/allowlist.service';
+import { JwtService } from '@nestjs/jwt';
 
 jest.mock('googleapis', () => {
   const getToken = jest.fn();
@@ -52,7 +58,9 @@ describe('AuthService buildGoogleAuthUrl', () => {
       makeConfig(env),
       {} as PrismaService,
       {} as CryptoService,
+      { verifyAccess: jest.fn() } as unknown as AllowlistService,
       { emit: jest.fn() } as any,
+      { signAsync: jest.fn() } as unknown as JwtService,
     );
     return new URL(service.buildGoogleAuthUrl(state));
   }
@@ -90,7 +98,9 @@ describe('AuthService buildGoogleAuthUrl', () => {
       makeConfig({ GOOGLE_CLIENT_ID: 'x' }),
       {} as PrismaService,
       {} as CryptoService,
+      { verifyAccess: jest.fn() } as unknown as AllowlistService,
       { emit: jest.fn() } as any,
+      { signAsync: jest.fn() } as unknown as JwtService,
     );
     expect(() => service.buildGoogleAuthUrl()).toThrow();
   });
@@ -119,9 +129,14 @@ describe('AuthService handleGoogleCallback', () => {
       connectedAccount: { findFirst, update, create },
     } as unknown as PrismaService;
     crypto = new CryptoService(makeConfig({ TOKEN_ENCRYPTION_KEY: KEY }));
-    service = new AuthService(makeConfig(env), prisma, crypto, {
-      emit: jest.fn(),
-    } as any);
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess: jest.fn() } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+      { signAsync: jest.fn() } as unknown as JwtService,
+    );
   });
 
   function happyTokens(overrides: Record<string, unknown> = {}) {
@@ -158,6 +173,113 @@ describe('AuthService handleGoogleCallback', () => {
     expect(arg.data.status).toBe('connected');
     expect(arg.data.scope).toBe(env.GOOGLE_SCOPES);
     expect(arg.data.tokenExpiresAt).toEqual(new Date(EXPIRY));
+  });
+
+  it('rejects an email not on any allowlist, even though Google approved', async () => {
+    happyTokens(); // Google side succeeds...
+
+    // ...but the allowlist bouncer refuses.
+    const verifyAccess = jest
+      .fn()
+      .mockRejectedValue(new ForbiddenException('not on allowlist'));
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+      { signAsync: jest.fn() } as unknown as JwtService,
+    );
+
+    await expect(service.handleGoogleCallback(CODE)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+    // No account may be saved for a rejected sign-in.
+    expect(create).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('seLoginWithGoogle signs the canonical claim shape with an SE TTL', async () => {
+    happyTokens();
+    // The upserted account is what the SE claims are built from.
+    create.mockResolvedValue({
+      id: 'acct-1',
+      email: EMAIL,
+      tenantId: 'tenant-1',
+      isAdmin: false,
+    });
+    const signAsync = jest.fn().mockResolvedValue('signed.jwt.token');
+    // verifyAccess returns the tenant the SE was granted under.
+    const verifyAccess = jest.fn().mockResolvedValue({ tenantId: 'tenant-1' });
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+      { signAsync } as unknown as JwtService,
+    );
+
+    const result = await service.seLoginWithGoogle(CODE);
+
+    expect(result).toEqual({ token: 'signed.jwt.token' });
+    // The allowlist tenant is stamped on the account, so tenant-scoped
+    // revoke/offboard can reach it later.
+    expect(create.mock.calls[0][0].data.tenantId).toBe('tenant-1');
+    // { sub, tenantId, isAdmin, email } — same shape the JwtAuthGuard verifies.
+    expect(signAsync).toHaveBeenCalledWith(
+      { sub: 'acct-1', tenantId: 'tenant-1', isAdmin: false, email: EMAIL },
+      { expiresIn: '7d' },
+    );
+    expect(create).toHaveBeenCalledTimes(1); // account upserted
+  });
+
+  it('an SE login never mints an admin token, even for an isAdmin row', async () => {
+    happyTokens();
+    create.mockResolvedValue({
+      id: 'acct-1',
+      email: EMAIL,
+      tenantId: 'tenant-1',
+      isAdmin: true, // row is an admin...
+    });
+    const signAsync = jest.fn().mockResolvedValue('t');
+    const verifyAccess = jest.fn().mockResolvedValue({ tenantId: 'tenant-1' });
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+      { signAsync } as unknown as JwtService,
+    );
+
+    await service.seLoginWithGoogle(CODE);
+
+    // ...but the SE session token is forced to isAdmin: false.
+    expect(signAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ isAdmin: false }),
+      { expiresIn: '7d' },
+    );
+  });
+
+  it('seLoginWithGoogle returns invalid_allowlist for a non-allowlisted email', async () => {
+    happyTokens();
+    const verifyAccess = jest.fn().mockRejectedValue(new ForbiddenException());
+    const signAsync = jest.fn();
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+      { signAsync } as unknown as JwtService,
+    );
+
+    const result = await service.seLoginWithGoogle(CODE);
+
+    expect(result).toEqual({ error: 'invalid_allowlist' });
+    expect(signAsync).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled(); // no account saved
   });
 
   it('stores tokens as ciphertext that decrypts back to the originals', async () => {

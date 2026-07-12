@@ -1,8 +1,19 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AnalyticsController } from './analytics.controller';
 import { AnalyticsService } from './analytics.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import type { AuthenticatedRequest } from '../auth/jwt-auth.guard';
+import { AdminTenantGuard } from '../../common/guards/admin-tenant.guard';
 
 /* eslint-disable @typescript-eslint/unbound-method */
+
+// A verified request as JwtAuthGuard would leave it: tenant id lives on the
+// token, so the controller reads it from req.user, never from the query.
+function reqFor(tenantId: string | null): AuthenticatedRequest {
+  return {
+    user: { sub: 'admin-1', tenantId, isAdmin: true, email: 'a@t.com' },
+  } as AuthenticatedRequest;
+}
 
 describe('AnalyticsController', () => {
   let controller: AnalyticsController;
@@ -21,7 +32,15 @@ describe('AnalyticsController', () => {
           },
         },
       ],
-    }).compile();
+    })
+      // Unit test targets the controller's logic; the guards (JwtAuthGuard,
+      // AdminTenantGuard) have their own specs. Pass them through here so the
+      // module compiles without their dependencies.
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(AdminTenantGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     controller = module.get<AnalyticsController>(AnalyticsController);
     service = module.get<AnalyticsService>(AnalyticsService);
@@ -41,22 +60,25 @@ describe('AnalyticsController', () => {
       };
       (service.getAnalyticsSummary as jest.Mock).mockResolvedValue(mockResult);
 
-      const result = await controller.getSummary(7);
-      expect(service.getAnalyticsSummary).toHaveBeenCalledWith(7, undefined);
+      const result = await controller.getSummary(7, reqFor('tenant-a'));
+      expect(service.getAnalyticsSummary).toHaveBeenCalledWith(7, 'tenant-a');
       expect(result).toEqual(mockResult);
     });
 
     it('should default to 30 days if no query param provided', async () => {
-      await controller.getSummary(undefined as unknown as number);
+      await controller.getSummary(
+        undefined as unknown as number,
+        reqFor('tenant-a'),
+      );
       expect(service.getAnalyticsSummary).toHaveBeenCalledWith(
         undefined,
-        undefined,
+        'tenant-a',
       );
     });
 
-    it('should forward tenantId to the service', async () => {
-      await controller.getSummary(7, 'tenant-a');
-      expect(service.getAnalyticsSummary).toHaveBeenCalledWith(7, 'tenant-a');
+    it('takes tenantId from the token, not the request', async () => {
+      await controller.getSummary(7, reqFor('tenant-b'));
+      expect(service.getAnalyticsSummary).toHaveBeenCalledWith(7, 'tenant-b');
     });
   });
 
@@ -69,22 +91,25 @@ describe('AnalyticsController', () => {
         mockAlerts,
       );
 
-      const result = await controller.getAlerts(5);
-      expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(5, undefined);
+      const result = await controller.getAlerts(5, reqFor('tenant-a'));
+      expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(5, 'tenant-a');
       expect(result).toEqual(mockAlerts);
     });
 
     it('should default to threshold 3 if no query param provided', async () => {
-      await controller.getAlerts(undefined as unknown as number);
+      await controller.getAlerts(
+        undefined as unknown as number,
+        reqFor('tenant-a'),
+      );
       expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(
         undefined,
-        undefined,
+        'tenant-a',
       );
     });
 
-    it('should forward tenantId to the service', async () => {
-      await controller.getAlerts(3, 'tenant-a');
-      expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(3, 'tenant-a');
+    it('takes tenantId from the token, not the request', async () => {
+      await controller.getAlerts(3, reqFor('tenant-b'));
+      expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(3, 'tenant-b');
     });
   });
 
