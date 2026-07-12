@@ -1,10 +1,15 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument */
-import { BadRequestException, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Logger,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as googleapis from 'googleapis';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthService } from './auth.service';
 import { CryptoService } from './crypto.service';
+import { AllowlistService } from '../allowlist/allowlist.service';
 
 jest.mock('googleapis', () => {
   const getToken = jest.fn();
@@ -52,6 +57,7 @@ describe('AuthService buildGoogleAuthUrl', () => {
       makeConfig(env),
       {} as PrismaService,
       {} as CryptoService,
+      { verifyAccess: jest.fn() } as unknown as AllowlistService,
       { emit: jest.fn() } as any,
     );
     return new URL(service.buildGoogleAuthUrl(state));
@@ -90,6 +96,7 @@ describe('AuthService buildGoogleAuthUrl', () => {
       makeConfig({ GOOGLE_CLIENT_ID: 'x' }),
       {} as PrismaService,
       {} as CryptoService,
+      { verifyAccess: jest.fn() } as unknown as AllowlistService,
       { emit: jest.fn() } as any,
     );
     expect(() => service.buildGoogleAuthUrl()).toThrow();
@@ -119,9 +126,13 @@ describe('AuthService handleGoogleCallback', () => {
       connectedAccount: { findFirst, update, create },
     } as unknown as PrismaService;
     crypto = new CryptoService(makeConfig({ TOKEN_ENCRYPTION_KEY: KEY }));
-    service = new AuthService(makeConfig(env), prisma, crypto, {
-      emit: jest.fn(),
-    } as any);
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess: jest.fn() } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+    );
   });
 
   function happyTokens(overrides: Record<string, unknown> = {}) {
@@ -158,6 +169,29 @@ describe('AuthService handleGoogleCallback', () => {
     expect(arg.data.status).toBe('connected');
     expect(arg.data.scope).toBe(env.GOOGLE_SCOPES);
     expect(arg.data.tokenExpiresAt).toEqual(new Date(EXPIRY));
+  });
+
+  it('rejects an email not on any allowlist, even though Google approved', async () => {
+    happyTokens(); // Google side succeeds...
+
+    // ...but the allowlist bouncer refuses.
+    const verifyAccess = jest
+      .fn()
+      .mockRejectedValue(new ForbiddenException('not on allowlist'));
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+    );
+
+    await expect(service.handleGoogleCallback(CODE)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+    // No account may be saved for a rejected sign-in.
+    expect(create).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
   });
 
   it('stores tokens as ciphertext that decrypts back to the originals', async () => {

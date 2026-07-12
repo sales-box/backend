@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  HttpException,
   Injectable,
   Logger,
   NotFoundException,
@@ -11,6 +12,7 @@ import { withTimeout } from '../../common/with-timeout';
 import { CryptoService } from './crypto.service';
 import { describeOAuthError } from './oauth-error.util';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { AllowlistService } from '../allowlist/allowlist.service';
 
 const GOOGLE_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GMAIL_API_VERSION = 'v1';
@@ -25,6 +27,7 @@ export class AuthService {
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
+    private readonly allowlistService: AllowlistService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -77,6 +80,9 @@ export class AuthService {
       if (!email) {
         throw new BadRequestException('Could not resolve account email');
       }
+
+      // Verify that the email is on an allowlist before storing the connected account.
+      await this.allowlistService.verifyAccess(email);
 
       const encryptedRefresh = tokens.refresh_token
         ? this.crypto.encrypt(tokens.refresh_token)
@@ -138,7 +144,9 @@ export class AuthService {
       this.logger.log(`Gmail account connected: ${email}`);
       return { email };
     } catch (error) {
-      if (error instanceof BadRequestException) {
+      // Re-throw any deliberate HTTP error (BadRequest, Forbidden, ...) as-is;
+      // BadRequestException is itself an HttpException, so this covers it.
+      if (error instanceof HttpException) {
         throw error;
       }
       this.logger.error(
