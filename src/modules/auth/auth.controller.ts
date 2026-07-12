@@ -1,18 +1,23 @@
 import {
+  Body,
   Controller,
+  ForbiddenException,
   Get,
+  HttpCode,
   HttpStatus,
+  Post,
   Query,
   Redirect,
   Req,
   Res,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ApiFoundResponse, ApiTags } from '@nestjs/swagger';
+import { ApiFoundResponse, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { AuthService } from './auth.service';
 import { GoogleCallbackDto } from './dto/google-callback.dto';
+import { SeLoginDto } from './dto/se-login.dto';
 
 /** Cookie carrying the OAuth CSRF state between /auth/google and the callback. */
 const OAUTH_STATE_COOKIE = 'oauth_state';
@@ -84,6 +89,21 @@ export class AuthController {
     } catch {
       return this.redirect(dashboard, 'error');
     }
+  }
+
+  @Post('se/login')
+  @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({
+    description: 'Returns a JWT for an allowlisted Sales Engineer',
+  })
+  async seLogin(@Body() dto: SeLoginDto): Promise<{ token: string }> {
+    const result = await this.authService.seLoginWithGoogle(dto.code);
+    if ('error' in result) {
+      // 403 with { error: 'invalid_allowlist' } so the extension shows "Invalid"
+      // instead of a generic failure.
+      throw new ForbiddenException(result);
+    }
+    return result;
   }
 
   /** Unsigns and clears the state cookie; returns its value when intact. */

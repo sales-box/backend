@@ -10,6 +10,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { AuthService } from './auth.service';
 import { CryptoService } from './crypto.service';
 import { AllowlistService } from '../allowlist/allowlist.service';
+import { TokenService } from './token.service';
 
 jest.mock('googleapis', () => {
   const getToken = jest.fn();
@@ -59,6 +60,7 @@ describe('AuthService buildGoogleAuthUrl', () => {
       {} as CryptoService,
       { verifyAccess: jest.fn() } as unknown as AllowlistService,
       { emit: jest.fn() } as any,
+      { issueSeToken: jest.fn() } as unknown as TokenService,
     );
     return new URL(service.buildGoogleAuthUrl(state));
   }
@@ -98,6 +100,7 @@ describe('AuthService buildGoogleAuthUrl', () => {
       {} as CryptoService,
       { verifyAccess: jest.fn() } as unknown as AllowlistService,
       { emit: jest.fn() } as any,
+      { issueSeToken: jest.fn() } as unknown as TokenService,
     );
     expect(() => service.buildGoogleAuthUrl()).toThrow();
   });
@@ -132,6 +135,7 @@ describe('AuthService handleGoogleCallback', () => {
       crypto,
       { verifyAccess: jest.fn() } as unknown as AllowlistService,
       { emit: jest.fn() } as any,
+      { issueSeToken: jest.fn() } as unknown as TokenService,
     );
   });
 
@@ -184,6 +188,7 @@ describe('AuthService handleGoogleCallback', () => {
       crypto,
       { verifyAccess } as unknown as AllowlistService,
       { emit: jest.fn() } as any,
+      { issueSeToken: jest.fn() } as unknown as TokenService,
     );
 
     await expect(service.handleGoogleCallback(CODE)).rejects.toBeInstanceOf(
@@ -192,6 +197,45 @@ describe('AuthService handleGoogleCallback', () => {
     // No account may be saved for a rejected sign-in.
     expect(create).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
+  });
+
+  it('seLoginWithGoogle returns a JWT for an allowlisted email', async () => {
+    happyTokens();
+    const issueSeToken = jest.fn().mockReturnValue('signed.jwt.token');
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess: jest.fn() } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+      { issueSeToken } as unknown as TokenService,
+    );
+
+    const result = await service.seLoginWithGoogle(CODE);
+
+    expect(result).toEqual({ token: 'signed.jwt.token' });
+    expect(issueSeToken).toHaveBeenCalledWith({ email: EMAIL });
+    expect(create).toHaveBeenCalledTimes(1); // account upserted
+  });
+
+  it('seLoginWithGoogle returns invalid_allowlist for a non-allowlisted email', async () => {
+    happyTokens();
+    const verifyAccess = jest.fn().mockRejectedValue(new ForbiddenException());
+    const issueSeToken = jest.fn();
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+      { issueSeToken } as unknown as TokenService,
+    );
+
+    const result = await service.seLoginWithGoogle(CODE);
+
+    expect(result).toEqual({ error: 'invalid_allowlist' });
+    expect(issueSeToken).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled(); // no account saved
   });
 
   it('stores tokens as ciphertext that decrypts back to the originals', async () => {
