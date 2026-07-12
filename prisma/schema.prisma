@@ -66,6 +66,9 @@ model ConnectedAccount {
   id                  String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   email               String
   isAdmin             Boolean              @default(false) @map("is_admin")
+  // Admin email+password login (argon2id). Lives on the SAME row as the
+  // Google connection so both identities converge — never a duplicate account.
+  passwordHash        String?              @map("password_hash")
   accessToken         String               @map("access_token")
   refreshToken        String?              @map("refresh_token")
   scope               String?
