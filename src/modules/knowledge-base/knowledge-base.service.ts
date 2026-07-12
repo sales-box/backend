@@ -39,6 +39,12 @@ export interface IngestInput {
   buffer: Buffer;
 }
 
+/** Tenant identity of the uploader, derived from the admin JWT claim. */
+export interface UploadOwner {
+  tenantId: string | null;
+  uploadedBy: string;
+}
+
 interface Chunk {
   chunkIndex: number;
   content: string;
@@ -52,7 +58,10 @@ export class KnowledgeBaseService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async ingest({ filename, buffer }: IngestInput): Promise<UploadResponseDto> {
+  async ingest(
+    { filename, buffer }: IngestInput,
+    owner?: UploadOwner,
+  ): Promise<UploadResponseDto> {
     const fileType = this.resolveFileType(filename);
     const text = await this.extractText(buffer, fileType);
     const chunks = await this.chunk(text);
@@ -61,7 +70,7 @@ export class KnowledgeBaseService {
       buffer.length,
       chunks.length,
     );
-    return this.persist(filename, fileType, chunks, quality);
+    return this.persist(filename, fileType, chunks, quality, owner);
   }
 
   /**
@@ -154,14 +163,19 @@ export class KnowledgeBaseService {
     fileType: FileType,
     chunks: Chunk[],
     quality: DocumentQuality,
+    owner?: UploadOwner,
   ): Promise<UploadResponseDto> {
     const status = chunks.length
       ? DocumentStatus.completed
       : DocumentStatus.failed;
 
     await this.prisma.$transaction(async (tx) => {
-      // filename; ON DELETE CASCADE removes its old chunks, so no duplicates.
-      await tx.document.deleteMany({ where: { filename } });
+      // Replace the tenant's own document with the same filename; ON DELETE
+      // CASCADE removes its old chunks, so no duplicates. Never touches
+      // another tenant's file of the same name.
+      await tx.document.deleteMany({
+        where: { filename, tenantId: owner?.tenantId ?? null },
+      });
 
       const doc = await tx.document.create({
         data: {
@@ -173,7 +187,8 @@ export class KnowledgeBaseService {
           processingError: chunks.length ? null : 'No extractable text found',
           isLowConfidence: quality.isLowConfidence,
           qualityReason: quality.qualityReason,
-          // TODO(admin-auth): set tenantId + uploadedBy from the JWT claim.
+          tenantId: owner?.tenantId ?? null,
+          uploadedBy: owner?.uploadedBy ?? null,
         },
       });
 
@@ -200,12 +215,13 @@ export class KnowledgeBaseService {
   }
 
   /**
-   * Paginated list of uploaded documents, newest first (dashboard).
-   * TODO(DEP-1): add `tenantId` to the where clause once tenants land.
+   * Paginated list of the tenant's OWN documents, newest first (dashboard).
+   * Admins without a tenant (legacy tokens) only see pre-tenant NULL rows.
    */
-  listDocuments(options?: PaginationOptions) {
+  listDocuments(options?: PaginationOptions, tenantId?: string | null) {
     return this.prisma.extended.document.paginate(
       {
+        where: { tenantId: tenantId ?? null },
         select: {
           id: true,
           filename: true,
@@ -224,12 +240,14 @@ export class KnowledgeBaseService {
   }
 
   /**
-   * Deletes a document by id. Its chunks are removed by the ON DELETE CASCADE
-   * FK on DocumentChunk, so no manual chunk cleanup is needed.
-   * TODO(DEP-1): add `tenantId` to the where clause once tenants land.
+   * Deletes the tenant's OWN document by id — another tenant's document with
+   * the same id is a 404, never a cross-tenant delete. Chunks are removed by
+   * the ON DELETE CASCADE FK on DocumentChunk.
    */
-  async deleteDocument(id: string): Promise<void> {
-    const { count } = await this.prisma.document.deleteMany({ where: { id } });
+  async deleteDocument(id: string, tenantId?: string | null): Promise<void> {
+    const { count } = await this.prisma.document.deleteMany({
+      where: { id, tenantId: tenantId ?? null },
+    });
     if (count === 0) {
       throw new NotFoundException(`Document ${id} not found`);
     }

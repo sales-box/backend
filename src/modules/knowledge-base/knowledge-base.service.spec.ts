@@ -93,7 +93,7 @@ describe('KnowledgeBaseService', () => {
       buffer: Buffer.from('hello world', 'utf-8'),
     });
     expect(tx.document.deleteMany).toHaveBeenCalledWith({
-      where: { filename: 'pricing.txt' },
+      where: { filename: 'pricing.txt', tenantId: null },
     });
   });
 
@@ -203,14 +203,22 @@ describe('KnowledgeBaseService', () => {
       };
       paginate.mockResolvedValue(page);
 
-      const res = await service.listDocuments({ page: 2, limit: 5 });
+      const res = await service.listDocuments(
+        { page: 2, limit: 5 },
+        'tenant-a',
+      );
 
       expect(res).toBe(page);
       expect(paginate).toHaveBeenCalledTimes(1);
       const [args, options] = paginate.mock.calls[0] as [
-        { select: Record<string, boolean>; orderBy: unknown },
+        {
+          where: Record<string, unknown>;
+          select: Record<string, boolean>;
+          orderBy: unknown;
+        },
         unknown,
       ];
+      expect(args.where).toEqual({ tenantId: 'tenant-a' });
       expect(args.orderBy).toEqual({ uploadDate: 'desc' });
       expect(args.select).toEqual({
         id: true,
@@ -225,22 +233,33 @@ describe('KnowledgeBaseService', () => {
       });
       expect(options).toEqual({ page: 2, limit: 5 });
     });
+
+    it('scopes the list to NULL tenant for legacy admins', async () => {
+      paginate.mockResolvedValue({ data: [], meta: {} });
+      await service.listDocuments({ page: 1, limit: 20 });
+      const [args] = paginate.mock.calls[0] as [{ where: unknown }];
+      expect(args.where).toEqual({ tenantId: null });
+    });
   });
 
   describe('deleteDocument', () => {
-    it('deletes by id and resolves; chunks are removed by the FK cascade', async () => {
+    it('deletes the tenant own document and resolves (FK cascade removes chunks)', async () => {
       deleteDocMany.mockResolvedValue({ count: 1 });
 
-      await expect(service.deleteDocument('doc-1')).resolves.toBeUndefined();
-      expect(deleteDocMany).toHaveBeenCalledWith({ where: { id: 'doc-1' } });
+      await expect(
+        service.deleteDocument('doc-1', 'tenant-a'),
+      ).resolves.toBeUndefined();
+      expect(deleteDocMany).toHaveBeenCalledWith({
+        where: { id: 'doc-1', tenantId: 'tenant-a' },
+      });
     });
 
-    it('throws NotFoundException when no document matches the id', async () => {
+    it('throws NotFoundException when no document matches id + tenant', async () => {
       deleteDocMany.mockResolvedValue({ count: 0 });
 
-      await expect(service.deleteDocument('missing')).rejects.toBeInstanceOf(
-        NotFoundException,
-      );
+      await expect(
+        service.deleteDocument('missing', 'tenant-a'),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 });

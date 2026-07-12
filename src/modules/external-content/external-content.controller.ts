@@ -1,9 +1,11 @@
-import { Body, Controller, Post } from '@nestjs/common';
-import { ApiOkResponse, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { ExternalContentService } from './external-content.service';
 import { ResolveExternalContentDto } from './dto/resolve-external-content.dto';
 import { ResolvedExternalContentDto } from './dto/resolved-external-content.dto';
 import { ResolvedExternalContent } from './external-content.types';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import type { AuthenticatedRequest } from '../auth/jwt-auth.guard';
 
 /**
  * Manual trigger for the external content resolver (US-043). This is a
@@ -11,6 +13,8 @@ import { ResolvedExternalContent } from './external-content.types';
  * belongs to the email module owner). Rate-limited by the global throttler.
  */
 @ApiTags('external-content')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard) // tenant identity comes from the JWT claim
 @Controller('external-content')
 export class ExternalContentController {
   constructor(private readonly service: ExternalContentService) {}
@@ -19,12 +23,12 @@ export class ExternalContentController {
   @ApiOkResponse({ type: [ResolvedExternalContentDto] })
   resolve(
     @Body() dto: ResolveExternalContentDto,
+    @Req() req: AuthenticatedRequest,
   ): Promise<ResolvedExternalContent[]> {
-    // TODO(admin-auth): take tenantId from the JWT claim, not the body.
     return this.service.resolveExternalContent(
       dto.emailBody,
       dto.interactionId,
-      dto.tenantId,
+      req.user.tenantId ?? undefined,
     );
   }
 }

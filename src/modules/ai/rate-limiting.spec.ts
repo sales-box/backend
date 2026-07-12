@@ -11,6 +11,7 @@ import type { FastifyInstance } from 'fastify';
 import { AiController } from './ai.controller';
 import { KnowledgeBaseController } from '../knowledge-base/knowledge-base.controller';
 import { KnowledgeBaseService } from '../knowledge-base/knowledge-base.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 // A plain route with NO @Throttle note. It proves the GLOBAL 100/min still
 // applies everywhere else — tightening upload/ai must not drop this to 5 or 10.
@@ -40,7 +41,12 @@ describe('route rate limiting', () => {
         // stub service is enough to let the controller be constructed.
         { provide: KnowledgeBaseService, useValue: { ingest: jest.fn() } },
       ],
-    }).compile();
+    })
+      // This suite tests THROTTLING only — bypass the KB auth guard so requests
+      // reach the throttle layer instead of 401-ing on a missing token.
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     app = moduleRef.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
