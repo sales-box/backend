@@ -135,4 +135,19 @@ export class AllowlistService {
     ]);
     this.logger.log(`Offboarded tenant ${tenantId}`);
   }
+
+  /** Lists a tenant's SEs for the team-management dashboard. */
+  async listAllowlist(tenantId: string) {
+    return this.prisma.allowlistEntry.findMany({
+      where: { tenantId },
+      select: {
+        email: true,
+        status: true,
+        grantedAt: true,
+        verifiedAt: true,
+        revokedAt: true,
+      },
+      orderBy: { grantedAt: 'desc' },
+    });
+  }
 }
