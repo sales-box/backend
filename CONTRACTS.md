@@ -56,6 +56,21 @@ upsertKnowledgeGap(topic: string, tenantId?: string): Promise<KnowledgeGap>
 // gaps are unique per (tenantId, topic) — same topic for two tenants = 2 rows
 getKnowledgeGapAlerts(threshold?: number, tenantId?: string): Promise<KnowledgeGap[]>
 
+## Admin Auth Module
+
+// ── Role 4 · Salma (Admin Auth) ───────────────────────────────────────────
+// Email+password login for tenant admins (argon2id + JWT). JwtAuthGuard
+// verifies the bearer token and sets req.user = { sub, tenantId, isAdmin,
+// email }; tenant guards (Karim) compose after it. Every KB + external-content
+// endpoint now derives tenantId from req.user, never from the body.
+adminLoginWithPassword(email: string, password: string): Promise<{ token: string }>
+// POST /auth/admin/login — generic 401 on any failure (no user enumeration)
+setAdminPassword(email: string, password: string, tenantId: string): Promise<{ linked: true }>
+// POST /auth/admin/set-password — writes the hash onto the SAME ConnectedAccount
+// the Google flow created for that email; first-admin-per-tenant only.
+linkAdminIdentities(tenantId: string, googleAccountId: string, passwordHash: string): Promise<void>
+// Google + password converge on ONE account row — never a duplicate.
+
 ## Security Module
 
 // ── Role 6 · Karim (Security) ─────────────────────────────────────────────
