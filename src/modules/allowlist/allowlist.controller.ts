@@ -1,9 +1,19 @@
-import { Body, Controller, Delete, Get, Param, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { AllowlistService } from './allowlist.service';
 import { GrantAllowlistDto } from './dto/grant-allowlist.dto';
+import { AdminTenantGuard } from '../../common/guards/admin-tenant.guard';
 
 @ApiTags('allowlist')
+@UseGuards(AdminTenantGuard)
 @Controller('tenants/:tenantId')
 export class AllowlistController {
   constructor(private readonly allowlistService: AllowlistService) {}
