@@ -8,7 +8,6 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '@/database/prisma.service';
 import { SignupTenantDto } from './tenants.dto';
-import { AllowlistService } from '../allowlist/allowlist.service';
 import { v4 as uuidv4 } from 'uuid';
 import * as nodemailer from 'nodemailer';
 
@@ -20,7 +19,6 @@ export class TenantsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
-    private readonly allowlistService: AllowlistService,
   ) {
     this.transporter = nodemailer.createTransport({
       host: this.config.getOrThrow<string>('SMTP_HOST'),
@@ -89,23 +87,17 @@ export class TenantsService {
       throw new GoneException('Verification token has expired');
     }
 
-    const activeTenant = await this.prisma.$transaction(async (tx) => {
-      const updated = await tx.tenant.update({
-        where: { id: tenant.id },
-        data: {
-          status: 'active',
-          emailVerifiedAt: new Date(),
-          emailVerificationToken: null,
-          emailVerificationExpiresAt: null,
-        },
-      });
-
-      // Grant the admin's email access on the now-active tenant.
-      // skipInvite=true so we don't send SE-branded "install the extension"
-      // copy to the admin who is activating their own company account.
-      await this.allowlistService.grantAccess(updated.id, adminEmail, tx, true);
-
-      return updated;
+    // The admin is deliberately NOT granted onto the allowlist: the allowlist
+    // is the SE guest list and counts toward the plan's SE seat cap. The admin
+    // authenticates through set-password + admin login instead (option "a").
+    const activeTenant = await this.prisma.tenant.update({
+      where: { id: tenant.id },
+      data: {
+        status: 'active',
+        emailVerifiedAt: new Date(),
+        emailVerificationToken: null,
+        emailVerificationExpiresAt: null,
+      },
     });
 
     return {

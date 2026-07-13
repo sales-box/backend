@@ -164,9 +164,12 @@ export class AuthService {
     try {
       const { email, tokens } = await this.exchangeCodeForEmail(code);
 
-      // Reject sign-in for any email not on an allowlist, even if Google approved.
-      await this.allowlistService.verifyAccess(email);
-
+      // Deliberately NOT allowlist-gated: the allowlist is the SE guest list,
+      // and the admin is a different trust model (they own the tenant).
+      // Connecting Google grants no privileges by itself — the account only
+      // becomes an admin via set-password (tenant active + first-admin rule),
+      // which also stamps the tenantId. SE login (seLoginWithGoogle) stays
+      // strictly allowlist-gated.
       const connectedAccount = await this.upsertConnectedAccount(email, tokens);
 
       this.eventEmitter.emit('google.account.connected', {
