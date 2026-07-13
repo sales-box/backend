@@ -129,3 +129,6 @@ test-pdf*.ts
 *-guide.md
 *-design.md
 
+# Local Postman collections (contain real server URLs)
+Inpox_Sales_Copilot_API_Endpoints*.json
+repomix-output.*

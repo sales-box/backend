@@ -5,12 +5,15 @@ This file documents the API contracts for the functions exposed by the backend l
 ## Access Control Module
 
 // ── Role 2 · Karim (Access Control) ───────────────────────────────────────
-grantAccess(tenantId: string, email: string, tx?: Prisma.TransactionClient): Promise<void>
+grantAccess(tenantId: string, email: string, tx?: Prisma.TransactionClient, skipInvite?: boolean): Promise<void>
 // Checks the tenant's plan-tier SE cap, records the entry as granted, emails
 // the SE the extension install link. Optional tx so it can run inside another
 // transaction (e.g. tenant activation grants the admin's own email).
-verifyAccess(email: string): Promise<void> // called inside AuthService.handleGoogleCallback
-// Throws ForbiddenException if the email is on no allowlist; else marks verified.
+// skipInvite=true suppresses the SE-branded invite email — pass true during
+// tenant activation so the admin does not receive "install the extension" copy.
+verifyAccess(email: string): Promise<{ tenantId: string }> // called inside AuthService.handleGoogleCallback
+// Throws ForbiddenException if the email is on no allowlist; else marks verified and returns the tenantId
+// so the caller can stamp it onto ConnectedAccount + JWT (DEP-1 tenant stamping).
 revokeAccess(tenantId: string, email: string): Promise<void>
 // One transaction: allowlist entry -> revoked AND ConnectedAccount -> revoked.
 offboardTenant(tenantId: string): Promise<void>

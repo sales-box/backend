@@ -8,6 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '@/database/prisma.service';
 import { SignupTenantDto } from './tenants.dto';
+import { AllowlistService } from '../allowlist/allowlist.service';
 import { v4 as uuidv4 } from 'uuid';
 import * as nodemailer from 'nodemailer';
 
@@ -19,6 +20,7 @@ export class TenantsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly allowlistService: AllowlistService,
   ) {
     this.transporter = nodemailer.createTransport({
       host: this.config.getOrThrow<string>('SMTP_HOST'),
@@ -98,10 +100,10 @@ export class TenantsService {
         },
       });
 
-      // TODO (Role 2 - Karim):
-      // The tenant is now active. You must call your AllowlistService.grantAccess() here.
-      // Ensure your method accepts the Prisma transaction client `tx` so it remains atomic.
-      // Example: await this.allowlistService.grantAccess(tx, updated.id, adminEmail);
+      // Grant the admin's email access on the now-active tenant.
+      // skipInvite=true so we don't send SE-branded "install the extension"
+      // copy to the admin who is activating their own company account.
+      await this.allowlistService.grantAccess(updated.id, adminEmail, tx, true);
 
       return updated;
     });
