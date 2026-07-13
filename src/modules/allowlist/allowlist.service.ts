@@ -34,11 +34,17 @@ export class AllowlistService {
    *
    * Accepts an optional Prisma transaction client so it can run atomically inside
    * another operation (e.g. tenant activation grants the admin's own email).
+   *
+   * @param skipInvite - When true, suppresses the SE-branded invite email.
+   *   Pass true during tenant activation so the admin does not receive
+   *   "install the extension" copy meant for Sales Engineers.
+   *   Defaults to false; existing call sites need no change.
    */
   async grantAccess(
     tenantId: string,
     email: string,
     tx?: Prisma.TransactionClient,
+    skipInvite = false,
   ): Promise<void> {
     const db = tx ?? this.prisma;
 
@@ -66,7 +72,11 @@ export class AllowlistService {
     });
 
     // Side effect after the row is written; never fails the grant.
-    await this.email.sendSeInvite(email);
+    // skipInvite=true when called from tenant activation (admin self-grant);
+    // the SE-branded "install the extension" copy is wrong in that context.
+    if (!skipInvite) {
+      await this.email.sendSeInvite(email);
+    }
     this.logger.log(`Granted access to ${email} on tenant ${tenantId}`);
   }
 

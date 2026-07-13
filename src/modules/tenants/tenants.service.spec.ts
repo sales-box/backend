@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { TenantsService } from './tenants.service';
 import { PrismaService } from '../../database/prisma.service';
 import { ConfigService } from '@nestjs/config';
+import { AllowlistService } from '../allowlist/allowlist.service';
 import {
   NotFoundException,
   BadRequestException,
@@ -43,12 +44,17 @@ describe('TenantsService', () => {
     }),
   } as unknown as ConfigService;
 
+  const mockAllowlistService = {
+    grantAccess: jest.fn(),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         TenantsService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: ConfigService, useValue: mockConfig },
+        { provide: AllowlistService, useValue: mockAllowlistService },
       ],
     }).compile();
 
