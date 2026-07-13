@@ -19,6 +19,7 @@ const validEnv = {
   S3_BUCKET: 'salesbox-iti',
   SMTP_USER: 'test@gmail.com',
   SMTP_PASS: 'testpass123',
+  ANTHROPIC_API_KEY: 'test-anthropic-key',
 };
 
 describe('validateEnv', () => {
@@ -37,6 +38,7 @@ describe('validateEnv', () => {
     'GOOGLE_PUBSUB_TOPIC_NAME',
     'AWS_REGION',
     'S3_BUCKET',
+    'ANTHROPIC_API_KEY',
   ])('throws at startup when %s is missing', (key) => {
     const env = { ...validEnv };
     delete (env as Record<string, unknown>)[key];
