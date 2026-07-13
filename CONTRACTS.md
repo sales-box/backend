@@ -100,6 +100,12 @@ setAdminPassword(email: string, password: string, tenantId: string): Promise<{ l
 // the Google flow created for that email; first-admin-per-tenant only.
 linkAdminIdentities(tenantId: string, googleAccountId: string, passwordHash: string): Promise<void>
 // Google + password converge on ONE account row — never a duplicate.
+//
+// Google admin login (GET /auth/google/callback): every outcome redirects to
+// the SPA's /callback page (origin from FRONTEND_DASHBOARD_URL config only —
+// never a caller redirect param). Established admin (isAdmin + passwordHash)
+// → ?token=<admin JWT>&tenantId=; first-time connect → ?status=connected
+// (SPA routes to set-password); failure → ?status=error&retry=1.
 
 ## Security Module
 
