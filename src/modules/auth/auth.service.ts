@@ -156,20 +156,26 @@ export class AuthService {
   }
 
   /**
-   * Admin OAuth callback: connects the admin's Gmail and rejects any email not
-   * on a tenant allowlist. Redirect-based flow — returns only the email; the
-   * controller redirects to the dashboard.
+   * Admin OAuth callback: connects the admin's Gmail. Redirect-based flow —
+   * the controller turns the result into a dashboard redirect.
+   *
+   * Returns an adminToken ONLY for an established admin (isAdmin with a
+   * password already set): "Continue with Google" is then a real login.
+   * A first-time connect returns no token — the account gains privileges
+   * later via set-password (tenant active + first-admin rule).
    */
-  async handleGoogleCallback(code: string): Promise<{ email: string }> {
+  async handleGoogleCallback(code: string): Promise<{
+    email: string;
+    adminToken?: string;
+    tenantId?: string | null;
+  }> {
     try {
       const { email, tokens } = await this.exchangeCodeForEmail(code);
 
       // Deliberately NOT allowlist-gated: the allowlist is the SE guest list,
       // and the admin is a different trust model (they own the tenant).
-      // Connecting Google grants no privileges by itself — the account only
-      // becomes an admin via set-password (tenant active + first-admin rule),
-      // which also stamps the tenantId. SE login (seLoginWithGoogle) stays
-      // strictly allowlist-gated.
+      // Connecting Google grants no privileges by itself. SE login
+      // (seLoginWithGoogle) stays strictly allowlist-gated.
       const connectedAccount = await this.upsertConnectedAccount(email, tokens);
 
       this.eventEmitter.emit('google.account.connected', {
@@ -178,6 +184,23 @@ export class AuthService {
       });
 
       this.logger.log(`Gmail account connected: ${email}`);
+
+      // Established admin → mint the same JWT /auth/admin/login issues
+      // (module-default TTL), so Google works as a login, not just a connect.
+      if (connectedAccount.isAdmin && connectedAccount.passwordHash) {
+        const payload: AdminJwtPayload = {
+          sub: connectedAccount.id,
+          tenantId: connectedAccount.tenantId,
+          isAdmin: true,
+          email: connectedAccount.email,
+        };
+        return {
+          email,
+          adminToken: await this.jwt.signAsync({ ...payload }),
+          tenantId: connectedAccount.tenantId,
+        };
+      }
+
       return { email };
     } catch (error) {
       // Re-throw any deliberate HTTP error (BadRequest, Forbidden, ...) as-is;
