@@ -13,9 +13,10 @@ jest.mock('uuid', () => ({
   v4: jest.fn().mockReturnValue('mocked-uuid-token'),
 }));
 
+const mockSendMail = jest.fn<Promise<unknown>, [{ html: string }]>();
 jest.mock('nodemailer', () => ({
   createTransport: jest.fn().mockReturnValue({
-    sendMail: jest.fn().mockResolvedValue(true),
+    sendMail: (arg: { html: string }) => mockSendMail(arg),
   }),
 }));
 
@@ -40,6 +41,8 @@ describe('TenantsService', () => {
   const mockConfig = {
     getOrThrow: jest.fn((key: string) => {
       if (key === 'SMTP_PORT') return '1025';
+      if (key === 'FRONTEND_DASHBOARD_URL')
+        return 'http://localhost:5173/dashboard';
       return 'mock-value';
     }),
   } as unknown as ConfigService;
@@ -65,6 +68,7 @@ describe('TenantsService', () => {
   describe('signup', () => {
     it('should create a pending tenant and attempt to send an email', async () => {
       mockTenantCreate.mockResolvedValue({ id: 'tenant-123' });
+      mockSendMail.mockResolvedValue(true);
 
       const dto = { companyName: 'Test Inc', adminEmail: 'admin@test.com' };
       const result = await service.signup(dto);
@@ -75,6 +79,12 @@ describe('TenantsService', () => {
       expect(arg.data.companyName).toBe('Test Inc');
       expect(arg.data.status).toBe('pending');
       expect(result.message).toContain('Signup successful');
+
+      // The email links to the FRONTEND /verify page (not the raw API), so the
+      // browser lands on a real page that then routes to set-password.
+      const mailArg = mockSendMail.mock.calls[0][0];
+      expect(mailArg.html).toContain('http://localhost:5173/verify?token=');
+      expect(mailArg.html).not.toContain('/tenants/verify');
     });
   });
 
