@@ -5,6 +5,8 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 
 const DASHBOARD = 'http://localhost:5173/dashboard';
+// All OAuth outcomes land on the SPA's /callback page (same origin as above).
+const CALLBACK = 'http://localhost:5173/callback';
 
 function makeConfig(): ConfigService {
   return {
@@ -102,9 +104,43 @@ describe('AuthController googleCallback', () => {
 
     expect(res.statusCode).toBe(HttpStatus.FOUND);
     const url = new URL(res.url);
-    expect(`${url.origin}${url.pathname}`).toBe(DASHBOARD);
+    expect(`${url.origin}${url.pathname}`).toBe(CALLBACK);
     expect(url.searchParams.get('status')).toBe('connected');
     expect(handleGoogleCallback).toHaveBeenCalledWith('good-code');
+  });
+
+  it('hands the session token to the SPA for an established admin', async () => {
+    handleGoogleCallback.mockResolvedValue({
+      email: 'admin@acme.com',
+      adminToken: 'signed.admin.jwt',
+      tenantId: 'tenant-a',
+    });
+
+    const res = await controller.googleCallback(
+      { code: 'good-code', state: STATE },
+      makeRequest(STATE),
+      makeReply(),
+    );
+
+    const url = new URL(res.url);
+    expect(`${url.origin}${url.pathname}`).toBe(CALLBACK);
+    expect(url.searchParams.get('token')).toBe('signed.admin.jwt');
+    expect(url.searchParams.get('tenantId')).toBe('tenant-a');
+    expect(url.searchParams.get('status')).toBeNull(); // token replaces status
+  });
+
+  it('first-time connect (no token from the service) stays ?status=connected', async () => {
+    handleGoogleCallback.mockResolvedValue({ email: 'new@acme.com' });
+
+    const res = await controller.googleCallback(
+      { code: 'good-code', state: STATE },
+      makeRequest(STATE),
+      makeReply(),
+    );
+
+    const url = new URL(res.url);
+    expect(url.searchParams.get('status')).toBe('connected');
+    expect(url.searchParams.get('token')).toBeNull();
   });
 
   it('redirects to ?status=error&retry=1 when the service throws (no 500)', async () => {
@@ -118,7 +154,7 @@ describe('AuthController googleCallback', () => {
 
     expect(res.statusCode).toBe(HttpStatus.FOUND);
     const url = new URL(res.url);
-    expect(`${url.origin}${url.pathname}`).toBe(DASHBOARD);
+    expect(`${url.origin}${url.pathname}`).toBe(CALLBACK);
     expect(url.searchParams.get('status')).toBe('error');
     expect(url.searchParams.get('retry')).toBe('1');
   });

@@ -200,6 +200,69 @@ describe('AuthService handleGoogleCallback', () => {
     expect(create).toHaveBeenCalledTimes(1);
   });
 
+  it('mints an admin JWT when the account is an established admin', async () => {
+    happyTokens();
+    // The account already went through set-password: admin with a hash.
+    update.mockResolvedValue({
+      id: 'acct-admin',
+      email: EMAIL,
+      tenantId: 'tenant-a',
+      isAdmin: true,
+      passwordHash: '$argon2id$stored-hash',
+    });
+    findFirst.mockResolvedValue({ id: 'acct-admin', email: EMAIL });
+    const signAsync = jest.fn().mockResolvedValue('signed.admin.jwt');
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess: jest.fn() } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+      { signAsync } as unknown as JwtService,
+    );
+
+    const result = await service.handleGoogleCallback(CODE);
+
+    expect(result).toEqual({
+      email: EMAIL,
+      adminToken: 'signed.admin.jwt',
+      tenantId: 'tenant-a',
+    });
+    // Same claim shape as /auth/admin/login, module-default TTL (no override).
+    expect(signAsync).toHaveBeenCalledWith({
+      sub: 'acct-admin',
+      tenantId: 'tenant-a',
+      isAdmin: true,
+      email: EMAIL,
+    });
+  });
+
+  it('does NOT mint a token for an admin who has no password yet', async () => {
+    happyTokens();
+    update.mockResolvedValue({
+      id: 'acct-1',
+      email: EMAIL,
+      tenantId: 'tenant-a',
+      isAdmin: true,
+      passwordHash: null, // set-password not done yet
+    });
+    findFirst.mockResolvedValue({ id: 'acct-1', email: EMAIL });
+    const signAsync = jest.fn();
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess: jest.fn() } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+      { signAsync } as unknown as JwtService,
+    );
+
+    const result = await service.handleGoogleCallback(CODE);
+
+    expect(result).toEqual({ email: EMAIL });
+    expect(signAsync).not.toHaveBeenCalled();
+  });
+
   it('seLoginWithGoogle signs the canonical claim shape with an SE TTL', async () => {
     happyTokens();
     // The upserted account is what the SE claims are built from.

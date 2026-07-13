@@ -72,32 +72,40 @@ export class AuthController {
   @Redirect()
   @ApiFoundResponse({
     description:
-      'Redirect to the dashboard with ?status=connected on success, or ?status=error&retry=1 on failure',
+      'Redirect to the dashboard /callback page: ?token=&tenantId= for an ' +
+      'established admin (Google acts as a login), ?status=connected for a ' +
+      'first-time connect, or ?status=error&retry=1 on failure',
   })
   async googleCallback(
     @Query() query: GoogleCallbackDto,
     @Req() req: FastifyRequest,
     @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<{ url: string; statusCode: number }> {
-    const dashboard = this.config.getOrThrow<string>('FRONTEND_DASHBOARD_URL');
-
     // One-shot: the state cookie is consumed whether the flow succeeds or not.
     const cookieState = this.consumeStateCookie(req, reply);
 
     if (query.error || !query.code) {
-      return this.redirect(dashboard, 'error');
+      return this.redirect({ status: 'error', retry: '1' });
     }
 
     // Reject forged callbacks before exchanging the code (login CSRF).
     if (!this.statesMatch(cookieState, query.state)) {
-      return this.redirect(dashboard, 'error');
+      return this.redirect({ status: 'error', retry: '1' });
     }
 
     try {
-      await this.authService.handleGoogleCallback(query.code);
-      return this.redirect(dashboard, 'connected');
+      const result = await this.authService.handleGoogleCallback(query.code);
+      // Established admin: hand the session token to the SPA. Otherwise it is
+      // a first-time connect — the SPA routes the user to set-password.
+      if (result.adminToken && result.tenantId) {
+        return this.redirect({
+          token: result.adminToken,
+          tenantId: result.tenantId,
+        });
+      }
+      return this.redirect({ status: 'connected' });
     } catch {
-      return this.redirect(dashboard, 'error');
+      return this.redirect({ status: 'error', retry: '1' });
     }
   }
 
@@ -163,14 +171,19 @@ export class AuthController {
     return timingSafeEqual(Buffer.from(expected), Buffer.from(received));
   }
 
-  private redirect(
-    dashboard: string,
-    status: 'connected' | 'error',
-  ): { url: string; statusCode: number } {
-    const url = new URL(dashboard);
-    url.searchParams.set('status', status);
-    if (status === 'error') {
-      url.searchParams.set('retry', '1');
+  /**
+   * Builds the SPA /callback redirect. The target origin comes ONLY from
+   * FRONTEND_DASHBOARD_URL config — never from a caller-supplied redirect
+   * param, which would be an open redirect leaking tokens to arbitrary URLs.
+   */
+  private redirect(params: Record<string, string>): {
+    url: string;
+    statusCode: number;
+  } {
+    const dashboard = this.config.getOrThrow<string>('FRONTEND_DASHBOARD_URL');
+    const url = new URL('/callback', new URL(dashboard).origin);
+    for (const [key, value] of Object.entries(params)) {
+      url.searchParams.set(key, value);
     }
     return { url: url.toString(), statusCode: HttpStatus.FOUND };
   }

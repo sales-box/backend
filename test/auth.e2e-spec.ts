@@ -40,6 +40,8 @@ const gmocks = (googleapis as unknown as { __mocks: Record<string, jest.Mock> })
 
 describe('Auth (e2e)', () => {
   const DASHBOARD = 'http://localhost:5173/dashboard';
+  // All OAuth outcomes land on the SPA /callback page (same origin).
+  const CALLBACK = 'http://localhost:5173/callback';
   const env: Record<string, string> = {
     GOOGLE_CLIENT_ID: 'test-client-id',
     GOOGLE_CLIENT_SECRET: 'test-client-secret',
@@ -179,8 +181,43 @@ describe('Auth (e2e)', () => {
       .expect(302);
 
     const location = new URL(res.headers.location);
-    expect(`${location.origin}${location.pathname}`).toBe(DASHBOARD);
+    expect(`${location.origin}${location.pathname}`).toBe(CALLBACK);
     expect(location.searchParams.get('status')).toBe('connected');
+  });
+
+  it('established admin -> 302 /callback?token=&tenantId= (Google acts as a login)', async () => {
+    gmocks.getToken.mockResolvedValue({
+      tokens: { access_token: 'access', expiry_date: 1893456000000 },
+    });
+    gmocks.getProfile.mockResolvedValue({
+      data: { emailAddress: 'admin@acme.com' },
+    });
+    // The upsert path finds an existing account that already completed
+    // set-password: isAdmin with a stored hash and a tenant.
+    const prisma = app.get(PrismaService);
+    (prisma.connectedAccount.findFirst as jest.Mock).mockResolvedValue({
+      id: 'acct-admin',
+      email: 'admin@acme.com',
+    });
+    (prisma.connectedAccount.update as jest.Mock).mockResolvedValue({
+      id: 'acct-admin',
+      email: 'admin@acme.com',
+      tenantId: 'tenant-a',
+      isAdmin: true,
+      passwordHash: '$argon2id$stored',
+    });
+
+    const { cookie, state } = await startOAuthFlow();
+    const res = await request(app.getHttpServer())
+      .get(`/auth/google/callback?code=good-code&state=${state}`)
+      .set('Cookie', cookie)
+      .expect(302);
+
+    const location = new URL(res.headers.location);
+    expect(`${location.origin}${location.pathname}`).toBe(CALLBACK);
+    expect(location.searchParams.get('token')).toBe('test.jwt.token');
+    expect(location.searchParams.get('tenantId')).toBe('tenant-a');
+    expect(location.searchParams.get('status')).toBeNull();
   });
 
   it('/auth/google/callback?code=bad -> 302 dashboard ?status=error&retry=1', async () => {
@@ -193,7 +230,7 @@ describe('Auth (e2e)', () => {
       .expect(302);
 
     const location = new URL(res.headers.location);
-    expect(`${location.origin}${location.pathname}`).toBe(DASHBOARD);
+    expect(`${location.origin}${location.pathname}`).toBe(CALLBACK);
     expect(location.searchParams.get('status')).toBe('error');
     expect(location.searchParams.get('retry')).toBe('1');
   });
