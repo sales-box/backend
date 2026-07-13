@@ -8,12 +8,14 @@ This file documents the API contracts for the functions exposed by the backend l
 grantAccess(tenantId: string, email: string, tx?: Prisma.TransactionClient, skipInvite?: boolean): Promise<void>
 // Checks the tenant's plan-tier SE cap, records the entry as granted, emails
 // the SE the extension install link. Optional tx so it can run inside another
-// transaction (e.g. tenant activation grants the admin's own email).
-// skipInvite=true suppresses the SE-branded invite email — pass true during
-// tenant activation so the admin does not receive "install the extension" copy.
-verifyAccess(email: string): Promise<{ tenantId: string }> // called inside AuthService.handleGoogleCallback
+// transaction. skipInvite=true suppresses the SE-branded invite email.
+// The allowlist is the SE guest list ONLY — the tenant admin is never granted
+// onto it (admin auth = set-password + admin login, a separate trust model),
+// so admins never consume an SE seat from the plan cap.
+verifyAccess(email: string): Promise<{ tenantId: string }> // called inside AuthService.seLoginWithGoogle ONLY
 // Throws ForbiddenException if the email is on no allowlist; else marks verified and returns the tenantId
 // so the caller can stamp it onto ConnectedAccount + JWT (DEP-1 tenant stamping).
+// The admin Google callback (handleGoogleCallback) is deliberately NOT gated by this.
 revokeAccess(tenantId: string, email: string): Promise<void>
 // One transaction: allowlist entry -> revoked AND ConnectedAccount -> revoked.
 offboardTenant(tenantId: string): Promise<void>
