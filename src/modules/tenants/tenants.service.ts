@@ -45,8 +45,16 @@ export class TenantsService {
       },
     });
 
-    const apiUrl = this.config.getOrThrow<string>('API_URL');
-    const verificationLink = `${apiUrl}/tenants/verify?token=${token}&email=${encodeURIComponent(dto.adminEmail)}`;
+    // Point the admin at the frontend /verify page (which calls the API and
+    // then routes to set-password), NOT the raw API endpoint (that returns
+    // JSON in the browser). Origin comes from the configured dashboard URL.
+    const frontendOrigin = new URL(
+      this.config.getOrThrow<string>('FRONTEND_DASHBOARD_URL'),
+    ).origin;
+    const verifyUrl = new URL('/verify', frontendOrigin);
+    verifyUrl.searchParams.set('token', token);
+    verifyUrl.searchParams.set('email', dto.adminEmail);
+    const verificationLink = verifyUrl.toString();
 
     try {
       await this.transporter.sendMail({
