@@ -28,6 +28,7 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AiModule } from './modules/ai/ai.module';
 import { TenantsModule } from './modules/tenants/tenants.module';
 import { PaymentModule } from './modules/payments/payment.module';
+import { LlmModule } from './common/llm/llm.module';
 
 const isProd = process.env.NODE_ENV === 'production';
 
@@ -117,6 +118,7 @@ const isProd = process.env.NODE_ENV === 'production';
     AiModule,
     TenantsModule,
     PaymentModule,
+    LlmModule,
   ],
   providers: [
     // Apply rate limiting globally.

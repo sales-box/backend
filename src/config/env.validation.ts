@@ -185,6 +185,10 @@ export class EnvironmentVariables {
 
   @IsUrl({ require_tld: false })
   API_URL: string = 'http://localhost:3000';
+
+  @IsString()
+  @MinLength(1)
+  ANTHROPIC_API_KEY!: string;
 }
 
 export function validateEnv(
