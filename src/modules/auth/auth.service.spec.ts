@@ -175,10 +175,12 @@ describe('AuthService handleGoogleCallback', () => {
     expect(arg.data.tokenExpiresAt).toEqual(new Date(EXPIRY));
   });
 
-  it('rejects an email not on any allowlist, even though Google approved', async () => {
-    happyTokens(); // Google side succeeds...
+  it('admin callback is NOT allowlist-gated — the allowlist is the SE guest list', async () => {
+    happyTokens();
 
-    // ...but the allowlist bouncer refuses.
+    // Even a bouncer that would refuse must never be consulted on the admin
+    // path: connecting Google grants no privileges by itself (privileges come
+    // from set-password), while SE login stays strictly gated.
     const verifyAccess = jest
       .fn()
       .mockRejectedValue(new ForbiddenException('not on allowlist'));
@@ -191,12 +193,11 @@ describe('AuthService handleGoogleCallback', () => {
       { signAsync: jest.fn() } as unknown as JwtService,
     );
 
-    await expect(service.handleGoogleCallback(CODE)).rejects.toBeInstanceOf(
-      ForbiddenException,
-    );
-    // No account may be saved for a rejected sign-in.
-    expect(create).not.toHaveBeenCalled();
-    expect(update).not.toHaveBeenCalled();
+    const result = await service.handleGoogleCallback(CODE);
+
+    expect(result).toEqual({ email: EMAIL });
+    expect(verifyAccess).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledTimes(1);
   });
 
   it('seLoginWithGoogle signs the canonical claim shape with an SE TTL', async () => {
