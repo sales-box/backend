@@ -186,9 +186,27 @@ export class EnvironmentVariables {
   @IsUrl({ require_tld: false })
   API_URL: string = 'http://localhost:3000';
 
+  // ----- LLM (provider-agnostic — OpenAI SDK + configurable baseURL) -----
+  // Currently pointed at Groq's OpenAI-compatible endpoint. Swapping
+  // providers later (e.g. once ITI issues an OpenAI key) should only
+  // require changing these vars, not the client code.
   @IsString()
   @MinLength(1)
-  ANTHROPIC_API_KEY!: string;
+  LLM_API_KEY!: string;
+
+  @IsUrl({ require_tld: false })
+  LLM_BASE_URL!: string;
+
+  @IsString()
+  @MinLength(1)
+  LLM_MODEL!: string;
+
+  // Multimodal model for image/attachment analysis (Extractor's vision
+  // fallback, Attachments module). Reuses LLM_API_KEY/LLM_BASE_URL —
+  // only the model name differs.
+  @IsString()
+  @MinLength(1)
+  VISION_MODEL!: string;
 }
 
 export function validateEnv(

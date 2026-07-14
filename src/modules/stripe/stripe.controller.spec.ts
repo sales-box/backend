@@ -37,7 +37,7 @@ describe('StripeController', () => {
   describe('webhook', () => {
     const mockRequest = {
       rawBody: Buffer.from('mock-raw-body'),
-    } as unknown as fastify.FastifyRequest;
+    } as unknown as fastify.FastifyRequest & { rawBody: Buffer };
 
     it('should verify signature and dispatch payment_intent.succeeded', async () => {
       const mockEvent = {
