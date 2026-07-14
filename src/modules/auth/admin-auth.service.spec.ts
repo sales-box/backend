@@ -152,11 +152,38 @@ describe('AdminAuthService', () => {
 
     it('rejects when no Google account exists for the email', async () => {
       tenantFindUnique.mockResolvedValue(activeTenant);
-      findFirst.mockResolvedValueOnce(null);
+      findFirst
+        .mockResolvedValueOnce(null) // tenant-scoped
+        .mockResolvedValueOnce(null); // email-only fallback
 
       await expect(
         service.setAdminPassword('admin@acme.com', 'x-password', 'tenant-a'),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('falls back to email-only lookup when ConnectedAccount has tenantId=null', async () => {
+      tenantFindUnique.mockResolvedValue(activeTenant);
+      findFirst
+        .mockResolvedValueOnce(null) // tenant-scoped: not found
+        .mockResolvedValueOnce({
+          id: 'acc-1',
+          passwordHash: null,
+          tenantId: null,
+          isAdmin: false,
+        }) // fallback: found with null tenantId
+        .mockResolvedValueOnce(null); // no other admin
+
+      const res = await service.setAdminPassword(
+        'admin@acme.com',
+        'a-strong-password',
+        'tenant-a',
+      );
+
+      expect(res).toEqual({ linked: true });
+      expect(findFirst).toHaveBeenCalledTimes(3);
+      expect(findFirst).toHaveBeenNthCalledWith(2, {
+        where: { email: 'admin@acme.com', tenantId: null, isAdmin: false },
+      });
     });
 
     it('rejects when a password is already set', async () => {
