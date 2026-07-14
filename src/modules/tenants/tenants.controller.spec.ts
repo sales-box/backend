@@ -15,6 +15,7 @@ describe('TenantsController', () => {
     signup: jest.fn(),
     verify: jest.fn(),
     getTenant: jest.fn(),
+    updateTenant: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -81,9 +82,7 @@ describe('TenantsController', () => {
         tier: 'free',
         status: 'active',
       };
-      mockTenantsService.updateTenant = jest
-        .fn()
-        .mockResolvedValue(expectedResult);
+      mockTenantsService.updateTenant.mockResolvedValue(expectedResult);
 
       const result = await controller.updateTenant('tenant-id', dto);
       expect(mockTenantsService.updateTenant).toHaveBeenCalledWith(
