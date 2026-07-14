@@ -2,13 +2,15 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { LlmClientService } from './llm-client.service';
 
-const mockCreateMessage = jest.fn();
+const mockCreateCompletion = jest.fn();
 
-jest.mock('@anthropic-ai/sdk', () => {
+jest.mock('openai', () => {
   return jest.fn().mockImplementation(() => {
     return {
-      messages: {
-        create: mockCreateMessage,
+      chat: {
+        completions: {
+          create: mockCreateCompletion,
+        },
       },
     };
   });
@@ -27,10 +29,13 @@ describe('LlmClientService', () => {
           provide: ConfigService,
           useValue: {
             get: jest.fn().mockImplementation((key: string) => {
-              if (key === 'ANTHROPIC_API_KEY') {
-                return 'test-api-key';
-              }
-              return null;
+              const values: Record<string, string> = {
+                LLM_API_KEY: 'test-api-key',
+                LLM_BASE_URL: 'https://api.groq.com/openai/v1',
+                LLM_MODEL: 'llama-3.3-70b-versatile',
+                VISION_MODEL: 'meta-llama/llama-4-scout-17b-16e-instruct',
+              };
+              return values[key] ?? null;
             }),
           },
         },
@@ -45,29 +50,31 @@ describe('LlmClientService', () => {
   });
 
   describe('generateStructured', () => {
-    it('successfully calls Anthropic API and returns structured output matching schema', async () => {
+    it('successfully calls the LLM API and returns structured output matching schema', async () => {
       const mockResult = {
-        id: 'msg-123',
-        type: 'message',
-        role: 'assistant',
-        content: [
+        choices: [
           {
-            type: 'text',
-            text: 'Here is the structured data.',
-          },
-          {
-            type: 'tool_use',
-            id: 'toolu-123',
-            name: 'structured_output',
-            input: {
-              result: 'success',
-              confidence: 0.95,
+            message: {
+              content: null,
+              tool_calls: [
+                {
+                  id: 'call-123',
+                  type: 'function',
+                  function: {
+                    name: 'structured_output',
+                    arguments: JSON.stringify({
+                      result: 'success',
+                      confidence: 0.95,
+                    }),
+                  },
+                },
+              ],
             },
           },
         ],
       };
 
-      mockCreateMessage.mockResolvedValue(mockResult);
+      mockCreateCompletion.mockResolvedValue(mockResult);
 
       const schema = {
         type: 'object',
@@ -93,41 +100,49 @@ describe('LlmClientService', () => {
         confidence: 0.95,
       });
 
-      expect(mockCreateMessage).toHaveBeenCalledWith({
-        model: 'claude-3-5-sonnet-20241022',
-        max_tokens: 4000,
+      expect(mockCreateCompletion).toHaveBeenCalledWith({
+        model: 'llama-3.3-70b-versatile',
         temperature: 0.1,
-        system: 'You are a test agent.',
         messages: [
-          {
-            role: 'user',
-            content: 'Please analyze this.',
-          },
+          { role: 'system', content: 'You are a test agent.' },
+          { role: 'user', content: 'Please analyze this.' },
         ],
         tools: [
           {
-            name: 'structured_output',
-            description: 'Generate structured output matching the schema',
-            input_schema: schema,
+            type: 'function',
+            function: {
+              name: 'structured_output',
+              description: 'Generate structured output matching the schema',
+              parameters: schema,
+            },
           },
         ],
         tool_choice: {
-          type: 'tool',
-          name: 'structured_output',
+          type: 'function',
+          function: { name: 'structured_output' },
         },
       });
     });
 
     it('defaults temperature to 0.2 if not specified', async () => {
       const mockResult = {
-        content: [
+        choices: [
           {
-            type: 'tool_use',
-            input: { ok: true },
+            message: {
+              tool_calls: [
+                {
+                  type: 'function',
+                  function: {
+                    name: 'structured_output',
+                    arguments: JSON.stringify({ ok: true }),
+                  },
+                },
+              ],
+            },
           },
         ],
       };
-      mockCreateMessage.mockResolvedValue(mockResult);
+      mockCreateCompletion.mockResolvedValue(mockResult);
 
       await service.generateStructured({
         systemPrompt: 'test',
@@ -135,7 +150,7 @@ describe('LlmClientService', () => {
         schema: {},
       });
 
-      expect(mockCreateMessage).toHaveBeenCalledWith(
+      expect(mockCreateCompletion).toHaveBeenCalledWith(
         expect.objectContaining({
           temperature: 0.2,
         }),
@@ -143,7 +158,7 @@ describe('LlmClientService', () => {
     });
 
     it('throws custom error if API returns an error', async () => {
-      mockCreateMessage.mockRejectedValue(new Error('Invalid API Key'));
+      mockCreateCompletion.mockRejectedValue(new Error('Invalid API Key'));
 
       await expect(
         service.generateStructured({
@@ -154,16 +169,18 @@ describe('LlmClientService', () => {
       ).rejects.toThrow('LLM Generation Error: Invalid API Key');
     });
 
-    it('throws error if tool_use block is not found in the response', async () => {
+    it('throws error if structured_output tool call is not found in the response', async () => {
       const mockResult = {
-        content: [
+        choices: [
           {
-            type: 'text',
-            text: 'I refuse to return structured data.',
+            message: {
+              content: 'I refuse to return structured data.',
+              tool_calls: undefined,
+            },
           },
         ],
       };
-      mockCreateMessage.mockResolvedValue(mockResult);
+      mockCreateCompletion.mockResolvedValue(mockResult);
 
       await expect(
         service.generateStructured({
@@ -172,8 +189,43 @@ describe('LlmClientService', () => {
           schema: {},
         }),
       ).rejects.toThrow(
-        'LLM Generation Error: Anthropic response does not contain a structured tool_use block.',
+        'LLM Generation Error: LLM response does not contain a structured_output tool call.',
       );
+    });
+  });
+
+  describe('analyzeImage', () => {
+    it('successfully calls the vision model and returns text content', async () => {
+      const mockResult = {
+        choices: [
+          {
+            message: {
+              content: 'This image shows an invoice for $500.',
+            },
+          },
+        ],
+      };
+      mockCreateCompletion.mockResolvedValue(mockResult);
+
+      const res = await service.analyzeImage(
+        'base64imagedata',
+        'Describe this attachment.',
+      );
+
+      expect(res).toBe('This image shows an invoice for $500.');
+      expect(mockCreateCompletion).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+        }),
+      );
+    });
+
+    it('throws custom error if vision API returns an error', async () => {
+      mockCreateCompletion.mockRejectedValue(new Error('Rate limited'));
+
+      await expect(
+        service.analyzeImage('base64imagedata', 'Describe this.'),
+      ).rejects.toThrow('LLM Vision Error: Rate limited');
     });
   });
 });

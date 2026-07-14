@@ -19,7 +19,10 @@ const validEnv = {
   S3_BUCKET: 'salesbox-iti',
   SMTP_USER: 'test@gmail.com',
   SMTP_PASS: 'testpass123',
-  ANTHROPIC_API_KEY: 'test-anthropic-key',
+  LLM_API_KEY: 'test-llm-key',
+  LLM_BASE_URL: 'https://api.groq.com/openai/v1',
+  LLM_MODEL: 'llama-3.3-70b-versatile',
+  VISION_MODEL: 'meta-llama/llama-4-scout-17b-16e-instruct',
 };
 
 describe('validateEnv', () => {
@@ -38,7 +41,10 @@ describe('validateEnv', () => {
     'GOOGLE_PUBSUB_TOPIC_NAME',
     'AWS_REGION',
     'S3_BUCKET',
-    'ANTHROPIC_API_KEY',
+    'LLM_API_KEY',
+    'LLM_BASE_URL',
+    'LLM_MODEL',
+    'VISION_MODEL',
   ])('throws at startup when %s is missing', (key) => {
     const env = { ...validEnv };
     delete (env as Record<string, unknown>)[key];
