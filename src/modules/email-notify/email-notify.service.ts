@@ -49,6 +49,34 @@ export class EmailNotifyService {
         from: this.config.get<string>('SMTP_USER'),
         to: email,
         subject: 'Welcome to Inbox Sales Copilot — Action Required',
+        text: `Hi ${seName},
+
+Welcome to the team! You have been granted access to the Inbox Sales Copilot.
+
+This AI-powered assistant lives directly inside your Gmail and provides smart, context-aware reply suggestions for your client emails based on our knowledge base and history.
+
+To get started, please follow these steps to install the extension:
+
+Step 1: Download the Extension
+Download the extension ZIP file here: ${installUrl}
+Extract/unzip the file to a folder on your computer (e.g., your Desktop or Documents folder).
+
+Step 2: Install in Chrome
+Open Google Chrome and go to chrome://extensions in your address bar.
+In the top right corner, turn on Developer mode.
+Click the Load unpacked button in the top left.
+Select the folder where you extracted the extension (make sure you select the folder containing the manifest.json file).
+
+Step 3: Pin and Sign In
+Click the "Puzzle" icon in your Chrome toolbar and pin Inbox Sales Copilot.
+Open Gmail (mail.google.com).
+You will see the Copilot panel open on the right side of your screen.
+Click Sign in with Google and select your company email address.
+
+That's it! If you run into any issues, please reach out to your manager or IT support.
+
+Best regards,
+The ${companyName} Team`,
         html: `
 <p>Hi ${seName},</p>
 <p>Welcome to the team! You have been granted access to the Inbox Sales Copilot.</p>
