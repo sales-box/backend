@@ -131,6 +131,7 @@ describe('LlmClientService', () => {
             message: {
               tool_calls: [
                 {
+                  type: 'function',
                   function: {
                     name: 'structured_output',
                     arguments: JSON.stringify({ ok: true }),
