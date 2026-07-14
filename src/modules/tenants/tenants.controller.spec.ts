@@ -1,6 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { TenantsController } from './tenants.controller';
 import { TenantsService } from './tenants.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { AdminTenantGuard } from '../../common/guards/admin-tenant.guard';
 
 jest.mock('uuid', () => ({
   v4: jest.fn().mockReturnValue('mocked-uuid-token'),
@@ -24,7 +26,12 @@ describe('TenantsController', () => {
           useValue: mockTenantsService,
         },
       ],
-    }).compile();
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(AdminTenantGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     controller = module.get<TenantsController>(TenantsController);
     jest.clearAllMocks();
@@ -62,6 +69,28 @@ describe('TenantsController', () => {
 
       expect(mockTenantsService.getTenant).toHaveBeenCalledWith('tenant-id');
       expect(result).toEqual({ id: 'tenant-id' });
+    });
+  });
+
+  describe('updateTenant', () => {
+    it('should call tenantsService.updateTenant', async () => {
+      const dto = { companyName: 'Updated Acme' };
+      const expectedResult = {
+        id: 'tenant-id',
+        companyName: 'Updated Acme',
+        tier: 'free',
+        status: 'active',
+      };
+      mockTenantsService.updateTenant = jest
+        .fn()
+        .mockResolvedValue(expectedResult);
+
+      const result = await controller.updateTenant('tenant-id', dto);
+      expect(mockTenantsService.updateTenant).toHaveBeenCalledWith(
+        'tenant-id',
+        dto,
+      );
+      expect(result).toEqual(expectedResult);
     });
   });
 });

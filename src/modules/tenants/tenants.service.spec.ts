@@ -3,6 +3,7 @@ import { TenantsService } from './tenants.service';
 import { PrismaService } from '../../database/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import { AllowlistService } from '../allowlist/allowlist.service';
+import { Prisma } from '@prisma/client';
 import {
   NotFoundException,
   BadRequestException,
@@ -142,6 +143,55 @@ describe('TenantsService', () => {
       expect(arg.where.id).toBe('tenant-123');
       expect(arg.data.status).toBe('active');
       expect(result.tenantId).toBe('tenant-123');
+    });
+  });
+
+  describe('updateTenant', () => {
+    it('should successfully update tenant and return selected fields', async () => {
+      const mockResult = {
+        id: 'tenant-123',
+        companyName: 'New Name',
+        tier: 'free',
+        status: 'active',
+      };
+      mockTenantUpdate.mockResolvedValue(mockResult);
+
+      const result = await service.updateTenant('tenant-123', {
+        companyName: 'New Name',
+      });
+
+      expect(mockTenantUpdate).toHaveBeenCalledWith({
+        where: { id: 'tenant-123' },
+        data: { companyName: 'New Name' },
+        select: {
+          id: true,
+          companyName: true,
+          tier: true,
+          status: true,
+        },
+      });
+      expect(result).toEqual(mockResult);
+    });
+
+    it('should throw NotFoundException if tenant does not exist (P2025)', async () => {
+      const error = new Prisma.PrismaClientKnownRequestError('An error', {
+        code: 'P2025',
+        clientVersion: 'mock',
+      });
+      mockTenantUpdate.mockRejectedValue(error);
+
+      await expect(
+        service.updateTenant('tenant-123', { companyName: 'New Name' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('should rethrow generic errors', async () => {
+      const error = new Error('Database connection failed');
+      mockTenantUpdate.mockRejectedValue(error);
+
+      await expect(
+        service.updateTenant('tenant-123', { companyName: 'New Name' }),
+      ).rejects.toThrow('Database connection failed');
     });
   });
 });
