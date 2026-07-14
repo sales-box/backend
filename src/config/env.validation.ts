@@ -128,6 +128,9 @@ export class EnvironmentVariables {
   @IsUrl({ require_tld: false })
   FRONTEND_DASHBOARD_URL!: string;
 
+  @IsUrl({ require_tld: false })
+  EXTENSION_INSTALL_URL!: string;
+
   // ----- CRM (HubSpot) -----
 
   @IsEnum(CrmProvider)

@@ -10,6 +10,8 @@ import { PrismaService } from '@/database/prisma.service';
 import { SignupTenantDto } from './tenants.dto';
 import { v4 as uuidv4 } from 'uuid';
 import * as nodemailer from 'nodemailer';
+import { Prisma } from '@prisma/client';
+import { UpdateTenantDto } from './dto/update-tenant.dto';
 
 @Injectable()
 export class TenantsService {
@@ -127,5 +129,31 @@ export class TenantsService {
 
     if (!tenant) throw new NotFoundException('Tenant not found');
     return tenant;
+  }
+
+  async updateTenant(id: string, dto: UpdateTenantDto) {
+    try {
+      return await this.prisma.tenant.update({
+        where: { id },
+        data: {
+          companyName: dto.companyName,
+        },
+        select: {
+          id: true,
+          companyName: true,
+          tier: true,
+          status: true,
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2025'
+      ) {
+        throw new NotFoundException(`Tenant with ID ${id} not found`);
+      }
+      this.logger.error(`Failed to update tenant ${id}`, error);
+      throw error;
+    }
   }
 }

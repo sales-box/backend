@@ -3,19 +3,28 @@ import {
   Get,
   Param,
   Patch,
+  Post,
+  Body,
   Query,
   DefaultValuePipe,
   ParseIntPipe,
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+} from '@nestjs/swagger';
 import { AnalyticsService } from './analytics.service';
 import { AnalyticsSummary } from './types/analytics.types';
 import { KnowledgeGap } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { AuthenticatedRequest } from '../auth/jwt-auth.guard';
 import { AdminTenantGuard } from '../../common/guards/admin-tenant.guard';
+import { ReportGapDto } from './dto/report-gap.dto';
+import { ActivityFeedQueryDto } from './dto/activity-feed-query.dto';
 
 // Admin-only, tenant-scoped. JwtAuthGuard authenticates and populates req.user;
 // AdminTenantGuard then confirms the caller is an admin of a tenant. The tenant
@@ -27,6 +36,19 @@ import { AdminTenantGuard } from '../../common/guards/admin-tenant.guard';
 @Controller('analytics')
 export class AnalyticsController {
   constructor(private readonly analyticsService: AnalyticsService) {}
+
+  @Get('activity')
+  @ApiOperation({ summary: 'Get cross-SE activity feed for the tenant' })
+  @ApiResponse({
+    status: 200,
+    description: 'The activity feed has been successfully retrieved.',
+  })
+  async getActivityFeed(
+    @Query() query: ActivityFeedQueryDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.analyticsService.getActivityFeed(req.user.tenantId!, query);
+  }
 
   @Get('summary')
   async getSummary(
@@ -47,6 +69,22 @@ export class AnalyticsController {
   ): Promise<KnowledgeGap[]> {
     return this.analyticsService.getKnowledgeGapAlerts(
       threshold,
+      req.user.tenantId ?? undefined,
+    );
+  }
+
+  @Post('gaps')
+  @ApiOperation({ summary: 'Report a new knowledge gap' })
+  @ApiResponse({
+    status: 201,
+    description: 'The knowledge gap has been successfully reported.',
+  })
+  async reportGap(
+    @Body() dto: ReportGapDto,
+    @Req() req: AuthenticatedRequest,
+  ): Promise<KnowledgeGap> {
+    return this.analyticsService.upsertKnowledgeGap(
+      dto.topic,
       req.user.tenantId ?? undefined,
     );
   }
