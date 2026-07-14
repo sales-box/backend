@@ -234,10 +234,20 @@ export class AuthService {
     code: string,
     redirectUri?: string,
   ): Promise<{ token: string } | { error: 'invalid_allowlist' }> {
-    const { email, tokens } = await this.exchangeCodeForEmail(
-      code,
-      redirectUri,
-    );
+    let email: string;
+    let tokens: GoogleTokens;
+    try {
+      ({ email, tokens } = await this.exchangeCodeForEmail(code, redirectUri));
+    } catch (error) {
+      // Catch unhandled Google OAuth code exchange failures and emit a clean 400 rather than raw 500
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      this.logger.error(
+        `Google OAuth callback failed: ${describeOAuthError(error)}`,
+      );
+      throw new BadRequestException('Google authentication failed');
+    }
 
     let tenantId: string;
     try {

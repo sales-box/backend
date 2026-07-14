@@ -329,6 +329,25 @@ describe('AuthService handleGoogleCallback', () => {
     );
   });
 
+  it('seLoginWithGoogle throws BadRequestException when the code exchange fails', async () => {
+    gmocks.getToken.mockRejectedValue(new Error('invalid_grant'));
+    const verifyAccess = jest.fn();
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+      { signAsync: jest.fn() } as unknown as JwtService,
+    );
+
+    await expect(service.seLoginWithGoogle(CODE)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(verifyAccess).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it('seLoginWithGoogle returns invalid_allowlist for a non-allowlisted email', async () => {
     happyTokens();
     const verifyAccess = jest.fn().mockRejectedValue(new ForbiddenException());
