@@ -29,6 +29,7 @@ describe('AnalyticsController', () => {
             getAnalyticsSummary: jest.fn(),
             getKnowledgeGapAlerts: jest.fn(),
             resolveGap: jest.fn(),
+            upsertKnowledgeGap: jest.fn(),
           },
         },
       ],
@@ -125,6 +126,28 @@ describe('AnalyticsController', () => {
 
       const result = await controller.resolveGap('1');
       expect(service.resolveGap).toHaveBeenCalledWith('1');
+      expect(result).toEqual(mockGap);
+    });
+  });
+
+  describe('reportGap', () => {
+    it('should call upsertKnowledgeGap with topic and tenantId', async () => {
+      const mockGap = {
+        id: 'gap-1',
+        topic: 'pricing for enterprise plan',
+        tenantId: 'tenant-a',
+        occurrences: 1,
+        resolved: false,
+      };
+      (service.upsertKnowledgeGap as jest.Mock).mockResolvedValue(mockGap);
+
+      const dto = { topic: 'pricing for enterprise plan' };
+      const result = await controller.reportGap(dto, reqFor('tenant-a'));
+
+      expect(service.upsertKnowledgeGap).toHaveBeenCalledWith(
+        'pricing for enterprise plan',
+        'tenant-a',
+      );
       expect(result).toEqual(mockGap);
     });
   });

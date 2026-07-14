@@ -3,19 +3,27 @@ import {
   Get,
   Param,
   Patch,
+  Post,
+  Body,
   Query,
   DefaultValuePipe,
   ParseIntPipe,
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+} from '@nestjs/swagger';
 import { AnalyticsService } from './analytics.service';
 import { AnalyticsSummary } from './types/analytics.types';
 import { KnowledgeGap } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { AuthenticatedRequest } from '../auth/jwt-auth.guard';
 import { AdminTenantGuard } from '../../common/guards/admin-tenant.guard';
+import { ReportGapDto } from './dto/report-gap.dto';
 
 // Admin-only, tenant-scoped. JwtAuthGuard authenticates and populates req.user;
 // AdminTenantGuard then confirms the caller is an admin of a tenant. The tenant
@@ -47,6 +55,22 @@ export class AnalyticsController {
   ): Promise<KnowledgeGap[]> {
     return this.analyticsService.getKnowledgeGapAlerts(
       threshold,
+      req.user.tenantId ?? undefined,
+    );
+  }
+
+  @Post('gaps')
+  @ApiOperation({ summary: 'Report a new knowledge gap' })
+  @ApiResponse({
+    status: 201,
+    description: 'The knowledge gap has been successfully reported.',
+  })
+  async reportGap(
+    @Body() dto: ReportGapDto,
+    @Req() req: AuthenticatedRequest,
+  ): Promise<KnowledgeGap> {
+    return this.analyticsService.upsertKnowledgeGap(
+      dto.topic,
       req.user.tenantId ?? undefined,
     );
   }
