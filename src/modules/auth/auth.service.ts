@@ -70,6 +70,7 @@ export class AuthService {
    */
   private async exchangeCodeForEmail(
     code: string,
+    redirectUri?: string,
   ): Promise<{ email: string; tokens: GoogleTokens }> {
     if (!code) {
       throw new BadRequestException('Missing authorization code');
@@ -78,7 +79,7 @@ export class AuthService {
     const oauth2 = new google.auth.OAuth2(
       this.config.getOrThrow<string>('GOOGLE_CLIENT_ID'),
       this.config.getOrThrow<string>('GOOGLE_CLIENT_SECRET'),
-      this.config.getOrThrow<string>('GOOGLE_REDIRECT_URI'),
+      redirectUri ?? this.config.getOrThrow<string>('GOOGLE_REDIRECT_URI'),
     );
 
     const { tokens } = await withTimeout(
@@ -230,8 +231,12 @@ export class AuthService {
    */
   async seLoginWithGoogle(
     code: string,
+    redirectUri?: string,
   ): Promise<{ token: string } | { error: 'invalid_allowlist' }> {
-    const { email, tokens } = await this.exchangeCodeForEmail(code);
+    const { email, tokens } = await this.exchangeCodeForEmail(
+      code,
+      redirectUri,
+    );
 
     let tenantId: string;
     try {

@@ -115,7 +115,10 @@ export class AuthController {
     description: 'Returns a JWT for an allowlisted Sales Engineer',
   })
   async seLogin(@Body() dto: SeLoginDto): Promise<{ token: string }> {
-    const result = await this.authService.seLoginWithGoogle(dto.code);
+    const result = await this.authService.seLoginWithGoogle(
+      dto.code,
+      dto.redirectUri,
+    );
     if ('error' in result) {
       // 403 with { error: 'invalid_allowlist' } so the extension shows "Invalid"
       // instead of a generic failure.

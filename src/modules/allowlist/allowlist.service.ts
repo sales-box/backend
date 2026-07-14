@@ -75,7 +75,7 @@ export class AllowlistService {
     // skipInvite=true when called from tenant activation (admin self-grant);
     // the SE-branded "install the extension" copy is wrong in that context.
     if (!skipInvite) {
-      await this.email.sendSeInvite(email);
+      await this.email.sendSeInvite(email, tenant.companyName);
     }
     this.logger.log(`Granted access to ${email} on tenant ${tenantId}`);
   }
