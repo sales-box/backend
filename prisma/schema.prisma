@@ -100,9 +100,37 @@ model WebhookSubscription {
   provider           String           @default("GMAIL")
   expirationDate     DateTime         @map("expiration_date") @db.Timestamptz(6)
   subscriptionId     String?          @map("subscription_id")
+  // Gmail history baseline: the last historyId the classifier processed for
+  // this account. history.list(startHistoryId=this) returns exactly the
+  // messages we haven't classified yet. Null until the first watch/notification
+  // seeds it.
+  lastHistoryId      String?          @map("last_history_id")
   connectedAccount   ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
 
   @@map("webhook_subscriptions")
+}
+
+// Classifier output — "General Analysis". One row per
+// Gmail message, written ONCE by the background classifier; every on-demand
+// stage (Extractor onward) reads it from here and never re-runs the classifier.
+// Keyed by messageId (not Interaction): no Interaction/Client row exists yet
+// at webhook time — client identity resolution happens later, on-demand.
+model GeneralAnalysis {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  messageId        String   @unique @map("message_id")
+  threadId         String?  @map("thread_id")
+  accountEmail     String   @map("account_email")
+  tenantId         String?  @map("tenant_id") @db.Uuid
+  isUrgent         Boolean  @map("is_urgent")
+  urgencyReason    String?  @map("urgency_reason")
+  intent           String
+  intentConfidence Float    @map("intent_confidence")
+  reasoning        String?
+  promptVersion    String   @map("prompt_version")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([tenantId, isUrgent])
+  @@map("general_analysis")
 }
 
 enum DocumentStatus {
