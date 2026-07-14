@@ -145,13 +145,20 @@ describe('AllowlistService', () => {
     });
 
     it('grants and emails an invite when under the limit', async () => {
-      prisma.tenant.findUnique.mockResolvedValue({ id: 't1', tier: 2 }); // cap 10
+      prisma.tenant.findUnique.mockResolvedValue({
+        id: 't1',
+        tier: 2,
+        companyName: 'Acme Corp',
+      }); // cap 10
       prisma.allowlistEntry.count.mockResolvedValue(4);
 
       await service.grantAccess('t1', 'new@acme.com');
 
       expect(prisma.allowlistEntry.upsert).toHaveBeenCalledTimes(1);
-      expect(email.sendSeInvite).toHaveBeenCalledWith('new@acme.com');
+      expect(email.sendSeInvite).toHaveBeenCalledWith(
+        'new@acme.com',
+        'Acme Corp',
+      );
     });
   });
 });
