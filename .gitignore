@@ -133,3 +133,6 @@ test-pdf*.ts
 Inpox_Sales_Copilot_API_Endpoints*.json
 repomix-output.*
 backend-*.xml
+
+# LangGraph API
+.langgraph_api

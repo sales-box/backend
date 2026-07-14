@@ -25,7 +25,8 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "openapi:gen": "nest build && node dist/openapi-cli.js",
     "api:gen": "orval --config orval.config.ts",
-    "prepare": "husky"
+    "prepare": "husky",
+    "studio": "langgraphjs dev"
   },
   "lint-staged": {
     "*.ts": [
@@ -47,6 +48,9 @@
     "@fastify/multipart": "^9.4.0",
     "@hubspot/api-client": "^14.0.1",
     "@keyv/redis": "^5.1.6",
+    "@langchain/core": "^1.2.2",
+    "@langchain/langgraph": "^1.4.7",
+    "@langchain/openai": "^1.5.5",
     "@langchain/textsplitters": "^1.0.1",
     "@nest-lab/throttler-storage-redis": "^1.2.0",
     "@nestjs/bullmq": "^11.0.4",
@@ -87,13 +91,15 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "stripe": "^22.3.1",
-    "uuid": "^14.0.1"
+    "uuid": "^14.0.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@commitlint/cli": "^21.1.0",
     "@commitlint/config-conventional": "^21.1.0",
     "@eslint/eslintrc": "^3.2.0",
     "@eslint/js": "^9.18.0",
+    "@langchain/langgraph-cli": "^1.4.2",
     "@mermaid-js/mermaid-cli": "^11.15.0",
     "@nestjs/cli": "^11.0.0",
     "@nestjs/schematics": "^11.0.0",
