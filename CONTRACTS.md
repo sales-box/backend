@@ -119,3 +119,30 @@ sanitizeForLog(text: string): string
 
 // ── Role 3 · Nagy (CRM Per-Tenant Factory) ────────────────────────────────
 getAdapterForTenant(tenantId: string): Promise<ICrmAdapter | null>
+
+## Classifier / General Analysis Module
+
+// ── Role 1 · Salma (Classifier, AI Phase §1) ──────────────────────────────
+classify(emailBody: string): Promise<ClassificationResult>
+// type ClassificationResult = {
+// isUrgent: boolean;
+// urgencyReason: string | null; // null when not urgent
+// intent: 'product inquiry' | 'demo request' | 'support' | 'follow-up' | 'sensitive';
+// intentConfidence: number; // 0..1
+// reasoning: string; // stored for debug/eval — NOT part of the contract
+// }
+// Runs in the BACKGROUND (BullMQ), exactly ONCE per email, at webhook time.
+// Input = "Subject: <subject>\n\n<cleaned body>", caged as <untrusted_content>
+// and prefiltered before the LLM (temperature 0, structured output).
+//
+// The result is persisted as the "General Analysis" cache — the GeneralAnalysis
+// table, keyed by messageId (UNIQUE = the exactly-once guarantee). Downstream
+// stages (Extractor onward) READ this row by messageId and never re-run the
+// classifier.
+//
+// GeneralAnalysis row shape (prisma): { messageId (unique), threadId?,
+// accountEmail, tenantId? (nullable, from the connected account), isUrgent,
+// urgencyReason?, intent, intentConfidence, reasoning?, promptVersion, createdAt }.
+//
+// Trigger: POST /gmail/webhook (Pub/Sub push) -> enqueues a classify job.
+// No public REST surface — this stage is background-only.
