@@ -125,8 +125,11 @@ describe('AuthService handleGoogleCallback', () => {
     findFirst = jest.fn().mockResolvedValue(null);
     update = jest.fn().mockResolvedValue({ id: 'mock-id', email: EMAIL });
     create = jest.fn().mockResolvedValue({ id: 'mock-id', email: EMAIL });
+    // findUnique is used by upsertConnectedAccount when tenantId is present
+    // (SE login path). Default to null so the create branch executes.
+    const findUnique = jest.fn().mockResolvedValue(null);
     prisma = {
-      connectedAccount: { findFirst, update, create },
+      connectedAccount: { findFirst, findUnique, update, create },
     } as unknown as PrismaService;
     crypto = new CryptoService(makeConfig({ TOKEN_ENCRYPTION_KEY: KEY }));
     service = new AuthService(

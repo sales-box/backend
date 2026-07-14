@@ -45,8 +45,15 @@ export class TenantAllowlistGuard implements CanActivate {
       throw new UnauthorizedException('Invalid token');
     }
 
+    // Scope the lookup by BOTH tenantId and email (from the verified JWT) so a
+    // revoked account at tenant A cannot be validated against a ConnectedAccount
+    // row that was later re-assigned to tenant B with the same email address.
     const account = await this.prisma.connectedAccount.findFirst({
-      where: { email: payload.email, status: 'connected' },
+      where: {
+        email: payload.email,
+        status: 'connected',
+        ...(payload.tenantId ? { tenantId: payload.tenantId } : {}),
+      },
     });
     if (!account) {
       throw new UnauthorizedException('Account is not connected');

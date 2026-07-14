@@ -133,12 +133,19 @@ export class AuthService {
       ...(tenantId ? { tenantId } : {}),
     };
 
-    // TODO (Role 3 - Mohamed): the admin path still looks up by email alone;
-    // switch to a [tenantId, email] composite once OAuth state carries tenantId.
-    // The SE path already passes tenantId in (from the allowlist grant).
-    const existing = await this.prisma.connectedAccount.findFirst({
-      where: { email },
-    });
+    // When tenantId is present (SE login path), scope the lookup to the
+    // [tenantId, email] composite unique key so the same email under a
+    // different tenant is never mistakenly matched or overwritten.
+    // When tenantId is absent (admin first-connect via Google OAuth, before a
+    // tenant association exists) a plain email lookup is the only option —
+    // the row gains a tenantId later when setAdminPassword links identities.
+    const existing = tenantId
+      ? await this.prisma.connectedAccount.findUnique({
+          where: { tenantId_email: { tenantId, email } },
+        })
+      : await this.prisma.connectedAccount.findFirst({
+          where: { email },
+        });
 
     if (existing) {
       return this.prisma.connectedAccount.update({
@@ -253,19 +260,39 @@ export class AuthService {
     };
   }
 
-  public async getUserCredentials(email: string): Promise<{
+  /**
+   * Returns the decrypted OAuth credentials for a connected account.
+   *
+   * @param email    The account email address.
+   * @param tenantId When provided the lookup is scoped to the [tenantId, email]
+   *                 composite key, which is safe and correct for all SE / admin
+   *                 paths that have a tenant in context.
+   *
+   * ⚠️  CALL-SITE NOTE for GmailClientFactory.createClient:
+   *    That call site currently only has the emailAccount string and no tenantId
+   *    available. It passes `undefined` here, so the lookup falls back to a
+   *    plain email scan. This is a known gap — threading tenantId through the
+   *    gmail-client-factory → gmail-provider → webhook-service chain requires a
+   *    larger refactor and should be tracked as a follow-up task (DEP-1 phase 2).
+   *    Do NOT silently widen this gap further without a product decision.
+   */
+  public async getUserCredentials(
+    email: string,
+    tenantId?: string,
+  ): Promise<{
     access_token: string;
     refresh_token?: string;
     expiry_date?: number;
   }> {
-    // const account = await this.prisma.connectedAccount.findUnique({
-    //   where: { email },
-    // });
-
-    // TODO (Role 3 - Mohamed): Temporary fix for DEP-1. Replace findFirst with findUnique using composite key [tenantId, email].
-    const account = await this.prisma.connectedAccount.findFirst({
-      where: { email },
-    });
+    const account = tenantId
+      ? await this.prisma.connectedAccount.findUnique({
+          where: { tenantId_email: { tenantId, email } },
+        })
+      : // Admin-first-connect / gmail-factory path: tenantId not yet available.
+        // Falls back to email-only scan. See call-site note above.
+        await this.prisma.connectedAccount.findFirst({
+          where: { email },
+        });
 
     if (!account) {
       throw new NotFoundException('No connected account found for user');

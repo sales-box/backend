@@ -5,10 +5,10 @@ import {
   Param,
   Post,
   Query,
-  Headers,
-  BadRequestException,
+  Req,
+  UseGuards,
 } from '@nestjs/common';
-import { ApiOkResponse, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { ClientsService } from './clients.service';
 import {
   CreateClientDto,
@@ -16,8 +16,16 @@ import {
   GetClientsQueryDto,
 } from './clients.dto';
 import { PaginationQueryDto } from '@/common/dto/pagination-query.dto';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import type { AuthenticatedRequest } from '../auth/jwt-auth.guard';
+import { AdminTenantGuard } from '../../common/guards/admin-tenant.guard';
 
 @ApiTags('clients')
+@ApiBearerAuth()
+// JwtAuthGuard authenticates and populates req.user; AdminTenantGuard confirms
+// the caller is an admin of a tenant. tenantId is taken from the verified JWT
+// so a caller cannot spoof a different tenant by supplying a crafted header.
+@UseGuards(JwtAuthGuard, AdminTenantGuard)
 @Controller('clients')
 export class ClientsController {
   constructor(private readonly clientsService: ClientsService) {}
@@ -25,14 +33,11 @@ export class ClientsController {
   @Post()
   @ApiOkResponse({ description: 'Create or return existing client' })
   async createClient(
-    @Headers('x-tenant-id') tenantId: string,
+    @Req() req: AuthenticatedRequest,
     @Body() body: CreateClientDto,
   ) {
-    if (!tenantId) {
-      throw new BadRequestException('x-tenant-id header is required');
-    }
     return this.clientsService.getOrCreateClient(
-      tenantId,
+      req.user.tenantId!,
       body.email,
       body.name,
       body.company,
@@ -42,50 +47,35 @@ export class ClientsController {
   @Post(':id/interactions')
   @ApiOkResponse({ description: 'Add interaction history to client' })
   async addInteraction(
-    @Headers('x-tenant-id') tenantId: string,
+    @Req() req: AuthenticatedRequest,
     @Param('id') id: string,
     @Body() body: CreateInteractionDto,
   ) {
-    if (!tenantId) {
-      throw new BadRequestException('x-tenant-id header is required');
-    }
-    return this.clientsService.addInteraction(tenantId, id, body);
+    return this.clientsService.addInteraction(req.user.tenantId!, id, body);
   }
 
   @Get(':id')
   @ApiOkResponse({ description: 'Get client with latest 20 interactions' })
-  async getClient(
-    @Headers('x-tenant-id') tenantId: string,
-    @Param('id') id: string,
-  ) {
-    if (!tenantId) {
-      throw new BadRequestException('x-tenant-id header is required');
-    }
-    return this.clientsService.getClient(tenantId, id);
+  async getClient(@Req() req: AuthenticatedRequest, @Param('id') id: string) {
+    return this.clientsService.getClient(req.user.tenantId!, id);
   }
 
   @Get('context')
   @ApiOkResponse({ description: 'Get client context for CRM' })
   async getClientContext(
-    @Headers('x-tenant-id') tenantId: string,
+    @Req() req: AuthenticatedRequest,
     @Query('email') email: string,
   ) {
-    if (!tenantId) {
-      throw new BadRequestException('x-tenant-id header is required');
-    }
-    return this.clientsService.getClientContext(tenantId, email);
+    return this.clientsService.getClientContext(req.user.tenantId!, email);
   }
 
   @Get()
   @ApiOkResponse({ description: 'Get paginated list of clients' })
   async getClients(
-    @Headers('x-tenant-id') tenantId: string,
+    @Req() req: AuthenticatedRequest,
     @Query() query: GetClientsQueryDto,
   ) {
-    if (!tenantId) {
-      throw new BadRequestException('x-tenant-id header is required');
-    }
-    return this.clientsService.getClients(tenantId, query.search, {
+    return this.clientsService.getClients(req.user.tenantId!, query.search, {
       page: query.page,
       limit: query.limit,
     });
@@ -94,14 +84,11 @@ export class ClientsController {
   @Get(':clientId/interactions')
   @ApiOkResponse({ description: 'Get interaction history for a client' })
   async getInteractions(
-    @Headers('x-tenant-id') tenantId: string,
+    @Req() req: AuthenticatedRequest,
     @Param('clientId') clientId: string,
     @Query() query: PaginationQueryDto,
   ) {
-    if (!tenantId) {
-      throw new BadRequestException('x-tenant-id header is required');
-    }
-    return this.clientsService.getInteractions(tenantId, clientId, {
+    return this.clientsService.getInteractions(req.user.tenantId!, clientId, {
       page: query.page,
       limit: query.limit,
     });
