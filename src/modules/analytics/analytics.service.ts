@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma, KnowledgeGap } from '@prisma/client';
 import { AnalyticsSummary } from './types/analytics.types';
+import { ActivityFeedQueryDto } from './dto/activity-feed-query.dto';
 
 @Injectable()
 export class AnalyticsService {
@@ -175,6 +176,102 @@ export class AnalyticsService {
       }
       this.logger.error(`Failed to resolve knowledge gap ${id}`, error);
       throw new InternalServerErrorException('Could not resolve knowledge gap');
+    }
+  }
+
+  async getActivityFeed(
+    tenantId: string,
+    query: ActivityFeedQueryDto,
+  ): Promise<{
+    data: Array<{
+      id: string;
+      time: Date;
+      client: string;
+      company: string;
+      classification: string | null;
+      confidence: number | null;
+      action: string | null;
+    }>;
+    meta: {
+      total: number;
+      page: number;
+      limit: number;
+      totalPages: number;
+    };
+  }> {
+    let targetDate: Date;
+    if (query.date) {
+      targetDate = new Date(query.date);
+      if (isNaN(targetDate.getTime())) {
+        throw new BadRequestException('Invalid date format');
+      }
+    } else {
+      targetDate = new Date();
+    }
+
+    const year = targetDate.getUTCFullYear();
+    const month = targetDate.getUTCMonth();
+    const day = targetDate.getUTCDate();
+
+    const start = new Date(Date.UTC(year, month, day, 0, 0, 0, 0));
+    const end = new Date(Date.UTC(year, month, day, 23, 59, 59, 999));
+
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 50;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.InteractionWhereInput = {
+      date: {
+        gte: start,
+        lte: end,
+      },
+      client: {
+        tenantId,
+      },
+    };
+
+    try {
+      const [total, interactions] = await Promise.all([
+        this.prisma.interaction.count({ where }),
+        this.prisma.interaction.findMany({
+          where,
+          include: {
+            client: true,
+          },
+          orderBy: {
+            date: 'desc',
+          },
+          skip,
+          take: limit,
+        }),
+      ]);
+
+      const data = interactions.map((interaction) => ({
+        id: interaction.id,
+        time: interaction.date,
+        client: interaction.client.name || '',
+        company: interaction.client.company || '',
+        classification: interaction.classification,
+        confidence: interaction.productConfidence,
+        action: interaction.recommendation,
+      }));
+
+      const totalPages = Math.ceil(total / limit);
+
+      return {
+        data,
+        meta: {
+          total,
+          page,
+          limit,
+          totalPages,
+        },
+      };
+    } catch (error) {
+      this.logger.error('Failed to retrieve activity feed', error);
+      throw new InternalServerErrorException(
+        'Could not retrieve activity feed',
+      );
     }
   }
 }

@@ -30,6 +30,7 @@ describe('AnalyticsController', () => {
             getKnowledgeGapAlerts: jest.fn(),
             resolveGap: jest.fn(),
             upsertKnowledgeGap: jest.fn(),
+            getActivityFeed: jest.fn(),
           },
         },
       ],
@@ -149,6 +150,40 @@ describe('AnalyticsController', () => {
         'tenant-a',
       );
       expect(result).toEqual(mockGap);
+    });
+  });
+
+  describe('getActivityFeed', () => {
+    it('should call getActivityFeed with correct query parameters and tenantId', async () => {
+      const mockFeed = {
+        data: [
+          {
+            id: 'int-1',
+            time: new Date(),
+            client: 'Alice',
+            company: 'Acme Corp',
+            classification: 'sales_inquiry',
+            confidence: 0.95,
+            action: 'send_quote',
+          },
+        ],
+        meta: {
+          total: 1,
+          page: 1,
+          limit: 50,
+          totalPages: 1,
+        },
+      };
+      (service.getActivityFeed as jest.Mock).mockResolvedValue(mockFeed);
+
+      const query = { page: 1, limit: 50, date: '2026-07-14' };
+      const result = await controller.getActivityFeed(
+        query,
+        reqFor('tenant-a'),
+      );
+
+      expect(service.getActivityFeed).toHaveBeenCalledWith('tenant-a', query);
+      expect(result).toEqual(mockFeed);
     });
   });
 });

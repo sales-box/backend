@@ -24,6 +24,7 @@ describe('AnalyticsService', () => {
               count: jest.fn(),
               groupBy: jest.fn(),
               aggregate: jest.fn(),
+              findMany: jest.fn(),
             },
             knowledgeGap: {
               upsert: jest.fn(),
@@ -273,6 +274,130 @@ describe('AnalyticsService', () => {
 
       await expect(service.resolveGap('not-found')).rejects.toThrow(
         NotFoundException,
+      );
+    });
+  });
+
+  describe('getActivityFeed', () => {
+    const mockClient = { id: 'c-1', name: 'Bob', company: 'Acme' };
+    const mockInteraction = {
+      id: 'int-1',
+      date: new Date('2026-07-14T12:00:00Z'),
+      type: 'email',
+      subject: 'Hello',
+      aiSummary: 'Summary',
+      classification: 'sales',
+      productConfidence: 0.9,
+      recommendation: 'reply',
+      client: mockClient,
+    };
+
+    it('returns activity feed mapped correctly with calendar date bounds (S4-V1)', async () => {
+      (prisma.interaction.count as jest.Mock).mockResolvedValue(1);
+      (prisma.interaction.findMany as jest.Mock).mockResolvedValue([
+        mockInteraction,
+      ]);
+
+      const query = { page: 1, limit: 50, date: '2026-07-14' };
+      const result = await service.getActivityFeed('tenant-a', query);
+
+      expect(prisma.interaction.count).toHaveBeenCalledWith({
+        where: {
+          date: {
+            gte: new Date(Date.UTC(2026, 6, 14, 0, 0, 0, 0)),
+            lte: new Date(Date.UTC(2026, 6, 14, 23, 59, 59, 999)),
+          },
+          client: { tenantId: 'tenant-a' },
+        },
+      });
+
+      expect(prisma.interaction.findMany).toHaveBeenCalledWith({
+        where: {
+          date: {
+            gte: new Date(Date.UTC(2026, 6, 14, 0, 0, 0, 0)),
+            lte: new Date(Date.UTC(2026, 6, 14, 23, 59, 59, 999)),
+          },
+          client: { tenantId: 'tenant-a' },
+        },
+        include: { client: true },
+        orderBy: { date: 'desc' },
+        skip: 0,
+        take: 50,
+      });
+
+      expect(result.data).toEqual([
+        {
+          id: 'int-1',
+          time: mockInteraction.date,
+          client: 'Bob',
+          company: 'Acme',
+          classification: 'sales',
+          confidence: 0.9,
+          action: 'reply',
+        },
+      ]);
+      expect(result.meta).toEqual({
+        total: 1,
+        page: 1,
+        limit: 50,
+        totalPages: 1,
+      });
+    });
+
+    it('paginates correctly using skip and take', async () => {
+      (prisma.interaction.count as jest.Mock).mockResolvedValue(25);
+      (prisma.interaction.findMany as jest.Mock).mockResolvedValue([]);
+
+      const query = { page: 3, limit: 10, date: '2026-07-14' };
+      const result = await service.getActivityFeed('tenant-a', query);
+
+      expect(prisma.interaction.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          skip: 20,
+          take: 10,
+        }),
+      );
+      expect(result.meta.totalPages).toBe(3);
+    });
+
+    it('returns empty array when no interactions match target date', async () => {
+      (prisma.interaction.count as jest.Mock).mockResolvedValue(0);
+      (prisma.interaction.findMany as jest.Mock).mockResolvedValue([]);
+
+      const query = { page: 1, limit: 50, date: '2026-07-14' };
+      const result = await service.getActivityFeed('tenant-a', query);
+
+      expect(result.data).toEqual([]);
+      expect(result.meta).toEqual({
+        total: 0,
+        page: 1,
+        limit: 50,
+        totalPages: 0,
+      });
+    });
+
+    it('filters strictly by tenantId (tenant isolation)', async () => {
+      (prisma.interaction.count as jest.Mock).mockResolvedValue(0);
+      (prisma.interaction.findMany as jest.Mock).mockResolvedValue([]);
+
+      const query = { page: 1, limit: 50, date: '2026-07-14' };
+      await service.getActivityFeed('tenant-b', query);
+
+      expect(prisma.interaction.count).toHaveBeenCalledWith({
+        where: {
+          date: {
+            gte: new Date(Date.UTC(2026, 6, 14, 0, 0, 0, 0)),
+            lte: new Date(Date.UTC(2026, 6, 14, 23, 59, 59, 999)),
+          },
+          client: { tenantId: 'tenant-b' },
+        },
+      });
+    });
+
+    it('throws BadRequestException for invalid date string', async () => {
+      const query = { page: 1, limit: 50, date: 'invalid-date' };
+      await expect(service.getActivityFeed('tenant-a', query)).rejects.toThrow(
+        BadRequestException,
       );
     });
   });
