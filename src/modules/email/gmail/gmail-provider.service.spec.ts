@@ -27,16 +27,19 @@ describe('GmailProvider', () => {
   let mockMessagesGet: jest.Mock;
   let mockThreadsList: jest.Mock;
   let mockThreadsGet: jest.Mock;
+  let mockHistoryList: jest.Mock;
 
   beforeEach(async () => {
     mockMessagesGet = jest.fn().mockResolvedValue({ data: stubRawData });
     mockThreadsList = jest.fn().mockResolvedValue({ data: { threads: [] } });
     mockThreadsGet = jest.fn().mockResolvedValue({ data: {} });
+    mockHistoryList = jest.fn().mockResolvedValue({ data: {} });
 
     mockCreateClient = jest.fn().mockResolvedValue({
       users: {
         messages: { get: mockMessagesGet },
         threads: { list: mockThreadsList, get: mockThreadsGet },
+        history: { list: mockHistoryList },
       },
     });
 
@@ -179,7 +182,70 @@ describe('GmailProvider', () => {
 
       expect(result).toEqual([]);
     });
+  });
 
+  describe('fetchNewMessageIds', () => {
+    it('collects new INBOX message ids across pages, dedups, and returns the newest historyId', async () => {
+      mockHistoryList
+        .mockResolvedValueOnce({
+          data: {
+            history: [
+              {
+                messagesAdded: [
+                  { message: { id: 'm1' } },
+                  { message: { id: 'm2' } },
+                ],
+              },
+              { messagesAdded: [{ message: { id: 'm2' } }] }, // duplicate
+            ],
+            historyId: '150',
+            nextPageToken: 'p2',
+          },
+        })
+        .mockResolvedValueOnce({
+          data: {
+            history: [{ messagesAdded: [{ message: { id: 'm3' } }] }],
+            historyId: '160',
+          },
+        });
+
+      const result = await provider.fetchNewMessageIds('se@acme.com', '100');
+
+      expect(result.messageIds).toEqual(['m1', 'm2', 'm3']);
+      expect(result.newHistoryId).toBe('160');
+      expect(mockCreateClient).toHaveBeenCalledWith('se@acme.com');
+      expect(mockHistoryList).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'me',
+          startHistoryId: '100',
+          historyTypes: ['messageAdded'],
+          labelId: 'INBOX',
+        }),
+      );
+      expect(mockHistoryList).toHaveBeenCalledTimes(2);
+    });
+
+    it('returns empty ids and the start baseline when history is empty', async () => {
+      mockHistoryList.mockResolvedValueOnce({ data: {} });
+
+      const result = await provider.fetchNewMessageIds('se@acme.com', '100');
+
+      expect(result.messageIds).toEqual([]);
+      expect(result.newHistoryId).toBe('100');
+    });
+
+    it('propagates Gmail errors untouched (404 handling is the caller`s job)', async () => {
+      mockHistoryList.mockRejectedValue(
+        Object.assign(new Error('Not Found'), { code: 404 }),
+      );
+
+      await expect(
+        provider.fetchNewMessageIds('se@acme.com', '1'),
+      ).rejects.toMatchObject({ code: 404 });
+    });
+  });
+
+  describe('fetchThreads (sorting)', () => {
     it('returns sorted threads descending by latest message date', async () => {
       mockThreadsList.mockResolvedValue({
         data: {

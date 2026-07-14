@@ -3,6 +3,7 @@ import { EmailProvider } from '@/modules/email/email-provider.abstract';
 import { EmailThread, ParsedMessage } from '@/modules/email/email.types';
 import { GmailParserService } from '@/modules/email/gmail/gmail-parser.service';
 import { GmailClientFactory } from '@/modules/email/gmail/gmail-client.factory';
+import { NewMessagesResult } from '@/modules/email/gmail/gmail.types';
 import { gmail_v1 } from 'googleapis';
 
 @Injectable()
@@ -25,6 +26,44 @@ export class GmailProvider implements EmailProvider {
     });
 
     return this.parser.parseMessage(message.data);
+  }
+
+  /**
+   * Diffs Gmail history since the stored baseline and returns the ids of
+   * messages newly added to INBOX (SENT and drafts excluded via labelId).
+   * 404 from Gmail (= baseline older than the ~1 week history window) is
+   * deliberately NOT handled here — the classifier processor resets its
+   * baseline on that signal.
+   */
+  async fetchNewMessageIds(
+    emailAccount: string,
+    startHistoryId: string,
+  ): Promise<NewMessagesResult> {
+    const gmailClient = await this.clientFactory.createClient(emailAccount);
+    const messageIds = new Set<string>();
+    let newHistoryId = startHistoryId;
+    let pageToken: string | undefined = undefined;
+
+    do {
+      const res: { data: gmail_v1.Schema$ListHistoryResponse } =
+        await gmailClient.users.history.list({
+          userId: 'me',
+          startHistoryId,
+          historyTypes: ['messageAdded'],
+          labelId: 'INBOX',
+          pageToken,
+        });
+
+      for (const entry of res.data.history ?? []) {
+        for (const added of entry.messagesAdded ?? []) {
+          if (added.message?.id) messageIds.add(added.message.id);
+        }
+      }
+      if (res.data.historyId) newHistoryId = res.data.historyId;
+      pageToken = res.data.nextPageToken ?? undefined;
+    } while (pageToken);
+
+    return { messageIds: [...messageIds], newHistoryId };
   }
 
   async fetchThreads(

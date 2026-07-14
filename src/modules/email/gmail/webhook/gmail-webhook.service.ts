@@ -46,6 +46,9 @@ export class GmailWebhookService {
       });
 
       const expirationEpoch = Number(response.data.expiration);
+      const watchHistoryId = response.data.historyId
+        ? String(response.data.historyId)
+        : null;
 
       await this.prisma.webhookSubscription.upsert({
         where: { connectedAccountId: id },
@@ -55,6 +58,10 @@ export class GmailWebhookService {
         create: {
           connectedAccountId: id,
           expirationDate: new Date(expirationEpoch),
+          // Baseline for the classifier's history diff: everything AFTER this
+          // watch call counts as "new". Renewals must NOT overwrite an existing
+          // baseline — that would silently skip unprocessed messages.
+          lastHistoryId: watchHistoryId,
         },
       });
 
