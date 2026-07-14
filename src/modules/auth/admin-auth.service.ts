@@ -42,6 +42,22 @@ export class AdminAuthService {
     email: string,
     password: string,
   ): Promise<{ token: string }> {
+    // Guard against an admin email that legitimately exists under multiple
+    // tenants. findFirst would silently pick one, which is a data-integrity
+    // hazard. Detect the ambiguity early and require a product decision.
+    const matchCount = await this.prisma.connectedAccount.count({
+      where: { email, isAdmin: true },
+    });
+    if (matchCount > 1) {
+      // More than one admin row shares this email across different tenants.
+      // Silently authenticating against whichever Prisma returns first would
+      // hand the caller an arbitrary tenant's session. Surface this clearly
+      // so a human (or future multi-tenant login UI) can resolve it.
+      throw new ConflictException(
+        'Multiple accounts found for this email — contact support',
+      );
+    }
+
     const account = await this.prisma.connectedAccount.findFirst({
       where: { email, isAdmin: true },
     });
@@ -90,8 +106,11 @@ export class AdminAuthService {
       throw new BadRequestException('Tenant is not active');
     }
 
+    // Scope the lookup to [tenantId, email] so an account belonging to a
+    // different tenant with the same email cannot inadvertently receive admin
+    // privileges for this tenant.
     const account = await this.prisma.connectedAccount.findFirst({
-      where: { email },
+      where: { tenantId, email },
     });
     if (!account) {
       throw new BadRequestException(

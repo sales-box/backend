@@ -11,18 +11,21 @@ import { PrismaService } from '../../database/prisma.service';
 describe('AdminAuthService', () => {
   let service: AdminAuthService;
   let findFirst: jest.Mock;
+  let count: jest.Mock;
   let update: jest.Mock;
   let tenantFindUnique: jest.Mock;
   let signAsync: jest.Mock;
 
   const prismaFor = () =>
     ({
-      connectedAccount: { findFirst, update },
+      connectedAccount: { findFirst, count, update },
       tenant: { findUnique: tenantFindUnique },
     }) as unknown as PrismaService;
 
   beforeEach(() => {
     findFirst = jest.fn();
+    // Default: exactly one match — the normal single-tenant path.
+    count = jest.fn().mockResolvedValue(1);
     update = jest.fn().mockResolvedValue({ id: 'acc-1' });
     tenantFindUnique = jest.fn();
     signAsync = jest.fn().mockResolvedValue('signed.jwt.token');
@@ -91,6 +94,17 @@ describe('AdminAuthService', () => {
       await expect(
         service.adminLoginWithPassword('ghost@acme.com', 'x'),
       ).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+
+    it('throws ConflictException when the same email is an admin for multiple tenants', async () => {
+      // count > 1 means the same email exists as admin under two different tenants.
+      count.mockResolvedValue(2);
+
+      await expect(
+        service.adminLoginWithPassword('shared@acme.com', 'x'),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(findFirst).not.toHaveBeenCalled();
+      expect(signAsync).not.toHaveBeenCalled();
     });
   });
 

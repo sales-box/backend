@@ -2,39 +2,38 @@ import {
   Body,
   Controller,
   Get,
-  Headers,
   Post,
-  BadRequestException,
+  Req,
+  UseGuards,
   Param,
 } from '@nestjs/common';
 import { PaymentService } from './payment.service';
-import { ApiTags, ApiOkResponse } from '@nestjs/swagger';
+import { ApiTags, ApiOkResponse, ApiBearerAuth } from '@nestjs/swagger';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import type { AuthenticatedRequest } from '../auth/jwt-auth.guard';
+import { AdminTenantGuard } from '../../common/guards/admin-tenant.guard';
 
 @ApiTags('payments')
+@ApiBearerAuth()
+// JwtAuthGuard authenticates and populates req.user; AdminTenantGuard confirms
+// the caller is an admin of a tenant. tenantId is taken from the verified JWT
+// so a caller cannot spoof a different tenant by supplying a crafted header.
+@UseGuards(JwtAuthGuard, AdminTenantGuard)
 @Controller('payments')
 export class PaymentController {
   constructor(private readonly paymentService: PaymentService) {}
 
   @Post('create-payment-intent')
   async createPaymentIntent(
-    @Headers('x-tenant-id') tenantId: string,
+    @Req() req: AuthenticatedRequest,
     @Body('amount') amount: number,
   ) {
-    if (!tenantId) {
-      throw new BadRequestException('x-tenant-id header is required');
-    }
-    return this.paymentService.createPaymentIntent(tenantId, amount);
+    return this.paymentService.createPaymentIntent(req.user.tenantId!, amount);
   }
 
   @Get(':id')
   @ApiOkResponse({ description: 'Get payment by id' })
-  async getPayment(
-    @Headers('x-tenant-id') tenantId: string,
-    @Param('id') id: string,
-  ) {
-    if (!tenantId) {
-      throw new BadRequestException('x-tenant-id header is required');
-    }
-    return this.paymentService.getPayment(tenantId, id);
+  async getPayment(@Req() req: AuthenticatedRequest, @Param('id') id: string) {
+    return this.paymentService.getPayment(req.user.tenantId!, id);
   }
 }
