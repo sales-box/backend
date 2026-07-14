@@ -111,10 +111,11 @@ export class AuthService {
    * row, so tenant-scoped revoke/offboard can reach this account.
    */
   private async upsertConnectedAccount(
-    email: string,
+    rawEmail: string,
     tokens: GoogleTokens,
     tenantId?: string,
   ) {
+    const email = rawEmail.toLowerCase().trim();
     if (!tokens.access_token) {
       throw new BadRequestException('No access token returned by Google');
     }
@@ -282,13 +283,14 @@ export class AuthService {
    *    Do NOT silently widen this gap further without a product decision.
    */
   public async getUserCredentials(
-    email: string,
+    rawEmail: string,
     tenantId?: string,
   ): Promise<{
     access_token: string;
     refresh_token?: string;
     expiry_date?: number;
   }> {
+    const email = rawEmail.toLowerCase().trim();
     const account = tenantId
       ? await this.prisma.connectedAccount.findUnique({
           where: { tenantId_email: { tenantId, email } },

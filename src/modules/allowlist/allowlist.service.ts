@@ -42,10 +42,11 @@ export class AllowlistService {
    */
   async grantAccess(
     tenantId: string,
-    email: string,
+    rawEmail: string,
     tx?: Prisma.TransactionClient,
     skipInvite = false,
   ): Promise<void> {
+    const email = rawEmail.toLowerCase().trim();
     const db = tx ?? this.prisma;
 
     const tenant = await db.tenant.findUnique({ where: { id: tenantId } });
@@ -91,9 +92,13 @@ export class AllowlistService {
    * (which match the live account by tenantId + email) actually reach an SE's
    * account, and gives SE tokens a real tenant before DEP-1 lands.
    */
-  async verifyAccess(email: string): Promise<{ tenantId: string }> {
+  async verifyAccess(rawEmail: string): Promise<{ tenantId: string }> {
+    const email = rawEmail.toLowerCase().trim();
     const entry = await this.prisma.allowlistEntry.findFirst({
-      where: { email, status: { in: [GRANTED, VERIFIED] } },
+      where: {
+        email: { equals: email, mode: 'insensitive' },
+        status: { in: [GRANTED, VERIFIED] },
+      },
     });
 
     if (!entry) {
@@ -115,7 +120,8 @@ export class AllowlistService {
    * ConnectedAccount to revoked in a single transaction — so access is gone
    * right now, not whenever the OAuth token happens to expire on its own.
    */
-  async revokeAccess(tenantId: string, email: string): Promise<void> {
+  async revokeAccess(tenantId: string, rawEmail: string): Promise<void> {
+    const email = rawEmail.toLowerCase().trim();
     await this.prisma.$transaction([
       this.prisma.allowlistEntry.updateMany({
         where: { tenantId, email },
