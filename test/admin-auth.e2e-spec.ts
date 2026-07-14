@@ -28,6 +28,7 @@ class ProbeController {
 
 describe('Admin Auth (e2e)', () => {
   let app: NestFastifyApplication;
+  const count = jest.fn();
   const findFirst = jest.fn();
   const update = jest.fn();
   const tenantFindUnique = jest.fn();
@@ -47,7 +48,7 @@ describe('Admin Auth (e2e)', () => {
         {
           provide: PrismaService,
           useValue: {
-            connectedAccount: { findFirst, update },
+            connectedAccount: { count, findFirst, update },
             tenant: { findUnique: tenantFindUnique },
           },
         },
@@ -73,6 +74,8 @@ describe('Admin Auth (e2e)', () => {
 
   it('logs in with a correct password and returns a working JWT', async () => {
     const passwordHash = await hash('correct-horse');
+    // count returns 1 → single match, no ambiguity
+    count.mockResolvedValue(1);
     findFirst.mockResolvedValue({
       id: 'acc-1',
       email: 'admin@acme.com',
@@ -99,6 +102,8 @@ describe('Admin Auth (e2e)', () => {
 
   it('rejects a wrong password with 401 (generic)', async () => {
     const passwordHash = await hash('correct-horse');
+    // count returns 1 → single match, no ambiguity
+    count.mockResolvedValue(1);
     findFirst.mockResolvedValue({
       id: 'acc-1',
       email: 'admin@acme.com',
