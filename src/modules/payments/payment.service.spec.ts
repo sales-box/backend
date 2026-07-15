@@ -44,6 +44,7 @@ describe('PaymentService', () => {
       expect(mockStripeService.createPaymentIntent).toHaveBeenCalledWith(
         'tenant-abc',
         5000,
+        undefined,
       );
       expect(result).toEqual({ id: 'pi_123' });
     });
