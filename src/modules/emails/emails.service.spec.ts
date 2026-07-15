@@ -4,6 +4,7 @@ import { EmailsService } from './emails.service';
 import { EmailService } from '@/modules/email/email.service';
 import { google } from 'googleapis';
 import { EmailThread } from '@/modules/email/email.types';
+import { GmailClientProvider } from './gmail-client.provider';
 
 // Mock googleapis for profile email resolution
 jest.mock('googleapis', () => {
@@ -30,10 +31,24 @@ describe('EmailsService', () => {
   let service: EmailsService;
   let mockEmailService: any;
   let mockGmail: any;
+  let mockGmailClientProvider: any;
+  let mockGmailClient: any;
 
   beforeEach(async () => {
     mockEmailService = {
       fetchThreads: jest.fn(),
+    };
+
+    mockGmailClient = {
+      users: {
+        threads: {
+          list: jest.fn(),
+        },
+      },
+    };
+
+    mockGmailClientProvider = {
+      getClientForAccount: jest.fn().mockResolvedValue(mockGmailClient),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -42,6 +57,10 @@ describe('EmailsService', () => {
         {
           provide: EmailService,
           useValue: mockEmailService,
+        },
+        {
+          provide: GmailClientProvider,
+          useValue: mockGmailClientProvider,
         },
       ],
     }).compile();
@@ -144,6 +163,45 @@ describe('EmailsService', () => {
 
       const result = await service.fetchThreadsForClient(clientEmail, token);
       expect(result).toEqual([]);
+    });
+  });
+
+  describe('getInboxStatsForSe', () => {
+    const seEmail = 'seller@example.com';
+    const tenantId = 'tenant-123';
+
+    it('should call getClientForAccount and return inbox statistics when threads exist', async () => {
+      mockGmailClient.users.threads.list.mockResolvedValue({
+        data: {
+          threads: [{ id: 'thread-1' }, { id: 'thread-2' }],
+        },
+      });
+
+      const result = await service.getInboxStatsForSe(seEmail, tenantId);
+
+      expect(mockGmailClientProvider.getClientForAccount).toHaveBeenCalledWith(
+        seEmail,
+        tenantId,
+      );
+      expect(mockGmailClient.users.threads.list).toHaveBeenCalledWith({
+        userId: 'me',
+      });
+      expect(result.totalEmails).toBe(2);
+      expect(result.syncedAt).toBeDefined();
+    });
+
+    it('should return totalEmails 0 if threads list is empty or undefined', async () => {
+      mockGmailClient.users.threads.list.mockResolvedValue({
+        data: {},
+      });
+
+      const result = await service.getInboxStatsForSe(seEmail);
+
+      expect(mockGmailClientProvider.getClientForAccount).toHaveBeenCalledWith(
+        seEmail,
+        undefined,
+      );
+      expect(result.totalEmails).toBe(0);
     });
   });
 });

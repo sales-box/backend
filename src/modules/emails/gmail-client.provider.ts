@@ -17,15 +17,17 @@ export class GmailClientProvider {
     private readonly crypto: CryptoService,
   ) {}
 
-  async getClientForAccount(email: string): Promise<gmail_v1.Gmail> {
-    // const account = await this.prisma.connectedAccount.findUnique({
-    //   where: { email },
-    // });
-
-    // TODO (Role 3 - Mohamed): Temporary fix for DEP-1. Replace findFirst with findUnique using composite key [tenantId, email].
-    const account = await this.prisma.connectedAccount.findFirst({
-      where: { email },
-    });
+  async getClientForAccount(
+    email: string,
+    tenantId?: string,
+  ): Promise<gmail_v1.Gmail> {
+    const account = tenantId
+      ? await this.prisma.connectedAccount.findUnique({
+          where: { tenantId_email: { tenantId, email } },
+        })
+      : await this.prisma.connectedAccount.findFirst({
+          where: { email },
+        });
 
     if (!account || account.status !== 'connected') {
       throw new NotFoundException(
