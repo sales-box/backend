@@ -60,9 +60,16 @@ export class TenantsService {
 
     try {
       await this.transporter.sendMail({
-        from: '"Sales Copilot" <noreply@salescopilot.com>',
+        // Must send AS the authenticated SMTP account — Gmail SMTP rejects a
+        // mismatched From (the old hard-coded noreply@salescopilot.com failed
+        // silently, so no verification email ever reached the admin). Same
+        // convention as the working SE invite email (email-notify.service).
+        from: this.config.getOrThrow<string>('SMTP_USER'),
         to: dto.adminEmail,
         subject: 'Verify your company account',
+        // Plain-text fallback alongside the HTML part (some providers/filters
+        // drop HTML-only mail — mirrors the SE invite fix).
+        text: `Welcome to Sales Copilot!\n\nVerify your company account by opening this link:\n${verificationLink}\n\nThis link expires in 24 hours.`,
         html: `<p>Welcome to Sales Copilot!</p><p>Please verify your account by clicking: <a href="${verificationLink}">Verify Account</a></p>`,
       });
       this.logger.log(`Activation email sent to ${dto.adminEmail}`);

@@ -14,10 +14,14 @@ jest.mock('uuid', () => ({
   v4: jest.fn().mockReturnValue('mocked-uuid-token'),
 }));
 
-const mockSendMail = jest.fn<Promise<unknown>, [{ html: string }]>();
+const mockSendMail = jest.fn<
+  Promise<unknown>,
+  [{ from: string; text: string; html: string }]
+>();
 jest.mock('nodemailer', () => ({
   createTransport: jest.fn().mockReturnValue({
-    sendMail: (arg: { html: string }) => mockSendMail(arg),
+    sendMail: (arg: { from: string; text: string; html: string }) =>
+      mockSendMail(arg),
   }),
 }));
 
@@ -86,6 +90,12 @@ describe('TenantsService', () => {
       const mailArg = mockSendMail.mock.calls[0][0];
       expect(mailArg.html).toContain('http://localhost:5173/verify?token=');
       expect(mailArg.html).not.toContain('/tenants/verify');
+      // Regression: must send AS the authenticated SMTP_USER (mocked to
+      // 'mock-value'), never a hard-coded foreign From that Gmail rejects.
+      expect(mailArg.from).toBe('mock-value');
+      expect(mailArg.from).not.toContain('salescopilot.com');
+      // And carry a plain-text fallback with the same verify link.
+      expect(mailArg.text).toContain('http://localhost:5173/verify?token=');
     });
   });
 
