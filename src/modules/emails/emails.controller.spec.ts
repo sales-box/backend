@@ -2,13 +2,20 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { EmailsController } from './emails.controller';
 import { EmailsService } from './emails.service';
 import { BadRequestException } from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 describe('EmailsController', () => {
   let controller: EmailsController;
 
   const mockEmailsService = {
     fetchThreadsForClient: jest.fn(),
+    getInboxStatsForSe: jest.fn(),
   };
+
+  const tenantId = 'tenant-test-123';
+  const mockReq = {
+    user: { tenantId, isAdmin: false, email: 'se@example.com', sub: 'acc-1' },
+  } as unknown as import('../auth/jwt-auth.guard').AuthenticatedRequest;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -19,7 +26,10 @@ describe('EmailsController', () => {
           useValue: mockEmailsService,
         },
       ],
-    }).compile();
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     controller = module.get<EmailsController>(EmailsController);
     jest.clearAllMocks();
@@ -27,6 +37,24 @@ describe('EmailsController', () => {
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
+  });
+
+  describe('getInboxStats', () => {
+    it('should call EmailsService.getInboxStatsForSe with user details from JWT', async () => {
+      const mockResult = {
+        totalEmails: 15,
+        syncedAt: '2023-07-01T12:00:00.000Z',
+      };
+      mockEmailsService.getInboxStatsForSe.mockResolvedValue(mockResult);
+
+      const result = await controller.getInboxStats(mockReq);
+
+      expect(result).toEqual(mockResult);
+      expect(mockEmailsService.getInboxStatsForSe).toHaveBeenCalledWith(
+        'se@example.com',
+        tenantId,
+      );
+    });
   });
 
   describe('getThreadHistory', () => {

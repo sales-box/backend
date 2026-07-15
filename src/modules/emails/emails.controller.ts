@@ -4,16 +4,48 @@ import {
   Get,
   Headers,
   Query,
+  Req,
+  UseGuards,
 } from '@nestjs/common';
-import { ApiHeader, ApiOkResponse, ApiQuery, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiHeader,
+  ApiOkResponse,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
 import { EmailsService } from './emails.service';
 import { GetThreadHistoryDto } from './emails.dto';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import type { AuthenticatedRequest } from '../auth/jwt-auth.guard';
 
 @ApiTags('emails')
 @Controller('emails')
 export class EmailsController {
   constructor(private readonly emailsService: EmailsService) {}
 
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('inbox-stats')
+  @ApiOkResponse({
+    description: 'Inbox statistics for the SE',
+    schema: {
+      type: 'object',
+      properties: {
+        totalEmails: { type: 'number' },
+        syncedAt: { type: 'string', format: 'date-time' },
+      },
+    },
+  })
+  async getInboxStats(@Req() req: AuthenticatedRequest) {
+    return this.emailsService.getInboxStatsForSe(
+      req.user.email,
+      req.user.tenantId ?? undefined,
+    );
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
   @Get('thread-history')
   @ApiOkResponse({
     description: 'List of email threads with the client',

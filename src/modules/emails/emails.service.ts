@@ -1,12 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { google } from 'googleapis';
 import { EmailService } from '@/modules/email/email.service';
+import { GmailClientProvider } from './gmail-client.provider';
 
 @Injectable()
 export class EmailsService {
   private readonly logger = new Logger(EmailsService.name);
 
-  constructor(private readonly emailService: EmailService) {}
+  constructor(
+    private readonly emailService: EmailService,
+    private readonly gmailClientProvider: GmailClientProvider,
+  ) {}
 
   async fetchThreadsForClient(
     clientEmail: string,
@@ -87,6 +91,21 @@ export class EmailsService {
       );
       return [];
     }
+  }
+
+  async getInboxStatsForSe(
+    email: string,
+    tenantId?: string,
+  ): Promise<{ totalEmails: number; syncedAt: string }> {
+    const gmail = await this.gmailClientProvider.getClientForAccount(
+      email,
+      tenantId,
+    );
+    const { data } = await gmail.users.threads.list({ userId: 'me' });
+    return {
+      totalEmails: data.threads?.length ?? 0,
+      syncedAt: new Date().toISOString(),
+    };
   }
 
   private extractEmailAddress(fromValue: string): string {
