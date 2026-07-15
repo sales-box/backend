@@ -27,8 +27,13 @@ export class PaymentController {
   async createPaymentIntent(
     @Req() req: AuthenticatedRequest,
     @Body('amount') amount: number,
+    @Body('tier') tier?: number,
   ) {
-    return this.paymentService.createPaymentIntent(req.user.tenantId!, amount);
+    return this.paymentService.createPaymentIntent(
+      req.user.tenantId!,
+      amount,
+      tier,
+    );
   }
 
   @Get(':id')

@@ -10,12 +10,13 @@ export class StripeService {
       .STRIPE_API_VERSION as Stripe.StripeConfig['apiVersion'],
   });
 
-  async createPaymentIntent(tenantId: string, amount: number) {
+  async createPaymentIntent(tenantId: string, amount: number, tier?: number) {
     return this.stripe.paymentIntents.create({
       amount,
       currency: 'usd',
       metadata: {
         tenantId,
+        ...(tier != null && { tier: String(tier) }),
       },
     });
   }

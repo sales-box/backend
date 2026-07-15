@@ -12,10 +12,11 @@ export class PaymentService {
     private readonly prisma: PrismaService,
   ) {}
 
-  async createPaymentIntent(tenantId: string, amount: number) {
+  async createPaymentIntent(tenantId: string, amount: number, tier?: number) {
     const paymentIntent = await this.stripeService.createPaymentIntent(
       tenantId,
       amount,
+      tier,
     );
     return paymentIntent;
   }
@@ -43,6 +44,20 @@ export class PaymentService {
         `Payment succeeded for non-existent tenant: ${tenantId}. ID: ${paymentIntent.id}`,
       );
       return;
+    }
+
+    const tier = paymentIntent.metadata?.tier
+      ? Number(paymentIntent.metadata.tier)
+      : undefined;
+
+    if (tier && [1, 2, 3].includes(tier)) {
+      await this.prisma.tenant.update({
+        where: { id: tenantId },
+        data: { tier },
+      });
+      this.logger.log(
+        `Tenant ${tenantId} upgraded to tier ${tier}`,
+      );
     }
 
     this.logger.log(
