@@ -46,6 +46,7 @@ describe('PaymentController', () => {
       expect(mockPaymentService.createPaymentIntent).toHaveBeenCalledWith(
         tenantId,
         5000,
+        undefined,
       );
       expect(result).toEqual({ id: 'pi_123' });
     });
