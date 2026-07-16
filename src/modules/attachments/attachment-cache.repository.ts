@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
-import { Cache } from 'cache-manager';
+import type { Cache } from 'cache-manager';
 import type { ParsedAttachment } from './attachments.service';
 
 /** Parsed attachments are immutable per attachmentId, so 24h is safe. */
