@@ -1,6 +1,10 @@
 import { Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { ReplyGraphDependencies } from '@/modules/ai/graphs/reply/reply-graph.factory';
+import type { ReplyGraphStateType } from '@/modules/ai/graphs/reply/reply-graph.state';
+import { MatcherSchema, MatchResult } from './matcher.schema';
+import { MATCHER_SYSTEM_PROMPT, MATCHER_USER_PROMPT } from './matcher.prompt';
+import { wrapUntrustedContent } from '@/common/security/untrusted-content.wrapper';
 
 const logger = new Logger('MatcherNode');
 
@@ -72,4 +76,90 @@ export async function retrieveChunks(
   }
 
   return rows;
+}
+
+/**
+ * The matcher node: retrieve (tenant-scoped) → one LLM call → MatchResult.
+ * A chain step, not an agent — no model-decided control flow.
+ */
+export async function matcherNode(
+  state: ReplyGraphStateType,
+  deps: Pick<ReplyGraphDependencies, 'prisma' | 'aiModelService'>,
+): Promise<Partial<ReplyGraphStateType>> {
+  // Requirements are the distilled question; the raw email is the fallback
+  // until the extractor contract lands.
+  const queryText = state.requirements?.length
+    ? state.requirements.join('\n')
+    : state.emailBody;
+
+  const chunks = await retrieveChunks(state.tenantId, queryText, deps);
+
+  if (chunks.length === 0) {
+    // No grounding material — asking the LLM anyway would invite invention.
+    logger.warn(`no chunks for tenant ${state.tenantId}; skipping LLM call`);
+    return {
+      matchResult: {
+        resultType: 'answer',
+        recommendedProduct: null,
+        reasoning:
+          'No relevant documents were found in the knowledge base for this request.',
+        confidence: 0,
+        citedChunks: [],
+        exclusions: [],
+        basedOnLowConfidenceSource: false,
+        citedChunkDetails: [],
+      },
+    };
+  }
+
+  const chunkBlock = chunks
+    .map((c) => `[chunk ${c.id}]\n${c.content ?? ''}`)
+    .join('\n\n');
+
+  const userMessage = MATCHER_USER_PROMPT.replace(
+    '{intent}',
+    state.intent ?? 'unknown (assume product inquiry)',
+  )
+    .replace('{emailBody}', wrapUntrustedContent(state.emailBody, 'email_body'))
+    .replace(
+      '{requirements}',
+      state.requirements?.length
+        ? state.requirements.map((r) => `- ${r}`).join('\n')
+        : 'None extracted — derive them from the email.',
+    )
+    .replace('{productChunks}', chunkBlock);
+
+  const llmResult = await deps.aiModelService.generateStructured({
+    schema: MatcherSchema,
+    runName: 'MatcherNode',
+    messages: [
+      { role: 'system', content: MATCHER_SYSTEM_PROMPT },
+      { role: 'user', content: userMessage },
+    ],
+  });
+
+  // Code-side guards — never trust the model on rules code can enforce:
+  // an "answer" claims no product choice, whatever the model filled in.
+  const recommendedProduct =
+    llmResult.resultType === 'answer' ? null : llmResult.recommendedProduct;
+  // Cited IDs must be real. Drop anything the model invented.
+  const byId = new Map(chunks.map((c) => [c.id, c]));
+  const citedChunks = llmResult.citedChunks.filter((id) => byId.has(id));
+
+  const matchResult: MatchResult = {
+    ...llmResult,
+    recommendedProduct,
+    citedChunks,
+    // From the DB flag set by the knowledge-base quality gate — computed
+    // here, never asked of the model.
+    basedOnLowConfidenceSource: citedChunks.some(
+      (id) => byId.get(id)!.isLowConfidence,
+    ),
+    citedChunkDetails: citedChunks.map((id) => ({
+      id,
+      content: byId.get(id)!.content ?? '',
+    })),
+  };
+
+  return { matchResult };
 }

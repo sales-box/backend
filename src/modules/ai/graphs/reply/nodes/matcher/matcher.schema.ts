@@ -57,9 +57,13 @@ export type ExclusionOutput = z.infer<typeof ExclusionSchema>;
 
 /**
  * What the matcher node returns into graph state: the LLM's output plus
- * the code-computed source-quality flag (true if any cited chunk belongs
- * to a document flagged by the knowledge-base quality gate).
+ * two code-computed additions.
  */
 export type MatchResult = MatcherOutput & {
+  /** True if any cited chunk belongs to a document flagged by the
+   *  knowledge-base quality gate. From the DB, never from the model. */
   basedOnLowConfidenceSource: boolean;
+  /** Full text of the cited chunks — the composer's claim verification
+   *  needs the words, not just the IDs. */
+  citedChunkDetails: { id: string; content: string }[];
 };
