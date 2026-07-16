@@ -15,7 +15,7 @@ export type ParsedAttachment = {
   skipped?: boolean;
   reason?: string;
 };
-interface AttachmentRef {
+export interface AttachmentRef {
   filename: string;
   mimeType: string;
   size: number;
