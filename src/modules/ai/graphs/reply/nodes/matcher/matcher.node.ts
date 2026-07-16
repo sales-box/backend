@@ -11,6 +11,11 @@ const logger = new Logger('MatcherNode');
 /** How many chunks we hand the LLM. Enough context for answers that span
  *  chunks, small enough to fit the prompt. */
 const TOP_K = 5;
+/** How many candidates each search method contributes before fusion. */
+const SEARCH_POOL = 20;
+/** RRF dampening constant — the default from the paper that introduced
+ *  Reciprocal Rank Fusion (Cormack et al.); nothing to tune. */
+const RRF_K = 60;
 
 export interface RetrievedChunk {
   id: string;
@@ -22,27 +27,26 @@ export interface RetrievedChunk {
   similarity: number;
 }
 
-/**
- * Semantic retrieval with two independent tenant-isolation layers.
- *
- * Layer 1 (query): JOIN documents and filter on d.tenant_id — chunks have
- * no tenant column of their own, only their parent document does.
- * Layer 2 (code): re-check every returned row. Redundant on purpose: one
- * bug in one query must never be enough to leak a tenant's documents.
- */
-export async function retrieveChunks(
+/** Layer 2 of tenant isolation: re-check every returned row. Redundant on
+ *  purpose — one bug in one query must never be enough to leak a tenant's
+ *  documents to another. */
+function assertTenant(rows: RetrievedChunk[], tenantId: string): void {
+  for (const row of rows) {
+    if (row.tenantId !== tenantId) {
+      logger.error(
+        `SECURITY INCIDENT: retrieval returned chunk ${row.id} of tenant ${row.tenantId} while serving tenant ${tenantId}`,
+      );
+      throw new Error('matcher: cross-tenant row in retrieval results');
+    }
+  }
+}
+
+/** Semantic half: closest meaning first, via pgvector cosine distance. */
+export async function semanticSearch(
   tenantId: string,
   queryText: string,
   deps: Pick<ReplyGraphDependencies, 'prisma' | 'aiModelService'>,
 ): Promise<RetrievedChunk[]> {
-  if (!tenantId) {
-    // Never a silent empty result: a missing tenant is an upstream bug,
-    // and silence would hide it.
-    throw new Error(
-      'matcher: tenantId is missing — refusing to search without a tenant scope',
-    );
-  }
-
   const queryVector = await deps.aiModelService.embedQuery(queryText);
   // pgvector takes vectors as '[0.1,0.2,...]' text cast with ::vector;
   // JSON.stringify of a number[] produces exactly that shape.
@@ -63,19 +67,104 @@ export async function retrieveChunks(
     WHERE d.tenant_id = ${tenantId}::uuid
       AND c.embedding IS NOT NULL
     ORDER BY c.embedding <=> ${vectorLiteral}::vector
-    LIMIT ${TOP_K}
+    LIMIT ${SEARCH_POOL}
   `);
+  assertTenant(rows, tenantId);
+  return rows;
+}
 
-  for (const row of rows) {
-    if (row.tenantId !== tenantId) {
-      logger.error(
-        `SECURITY INCIDENT: retrieval returned chunk ${row.id} of tenant ${row.tenantId} while serving tenant ${tenantId}`,
-      );
-      throw new Error('matcher: cross-tenant row in retrieval results');
-    }
+/**
+ * Keyword half: exact-token matching via Postgres full-text search.
+ * Embeddings are systematically weak on exact identifiers (SKUs, model
+ * numbers, part codes) — this half never misses a literal token.
+ * to_tsvector is computed inline: at the measured corpus size (Stage 0)
+ * a GIN index would be premature; revisit when the count says otherwise.
+ */
+export async function keywordSearch(
+  tenantId: string,
+  queryText: string,
+  prisma: ReplyGraphDependencies['prisma'],
+): Promise<RetrievedChunk[]> {
+  // OR semantics, built by hand: plainto_tsquery ANDs every term, so a
+  // 20-word email would only match chunks containing ALL 20 stems — i.e.
+  // nothing. With OR, ts_rank naturally rewards chunks matching the rare
+  // terms (the SKUs) over ones matching common words.
+  const orQuery = queryText
+    .split(/[^\p{L}\p{N}]+/u) // keep only letter/digit runs — sanitises tsquery syntax
+    .filter((term) => term.length > 1)
+    .join(' | ');
+  if (!orQuery) return [];
+
+  const rows = await prisma.$queryRaw<RetrievedChunk[]>(Prisma.sql`
+    SELECT c.id,
+           c.content,
+           c.chunk_index                             AS "chunkIndex",
+           c.document_id                             AS "documentId",
+           d.tenant_id                               AS "tenantId",
+           d.is_low_confidence                       AS "isLowConfidence",
+           0::float8                                 AS similarity
+    FROM document_chunks c
+    JOIN documents d ON d.id = c.document_id
+    WHERE d.tenant_id = ${tenantId}::uuid
+      AND c.content IS NOT NULL
+      AND to_tsvector('english', c.content)
+          @@ to_tsquery('english', ${orQuery})
+    ORDER BY ts_rank(
+      to_tsvector('english', c.content),
+      to_tsquery('english', ${orQuery})
+    ) DESC
+    LIMIT ${SEARCH_POOL}
+  `);
+  assertTenant(rows, tenantId);
+  return rows;
+}
+
+/**
+ * Reciprocal Rank Fusion: score = Σ 1/(RRF_K + rank position). Uses only
+ * rank positions — cosine similarity and ts_rank are incomparable scales,
+ * so blending their raw scores would mean inventing a weight and defending
+ * it forever. Ranked well in BOTH lists beats ranked well in one.
+ */
+export function rrfFuse(lists: RetrievedChunk[][]): RetrievedChunk[] {
+  const byId = new Map<string, { chunk: RetrievedChunk; score: number }>();
+  for (const list of lists) {
+    list.forEach((chunk, position) => {
+      const entry = byId.get(chunk.id) ?? { chunk, score: 0 };
+      entry.score += 1 / (RRF_K + position + 1);
+      // Prefer the semantic instance (has a real similarity value).
+      if (chunk.similarity > entry.chunk.similarity) entry.chunk = chunk;
+      byId.set(chunk.id, entry);
+    });
+  }
+  return [...byId.values()]
+    .sort((a, b) => b.score - a.score)
+    .map((e) => e.chunk);
+}
+
+/**
+ * Hybrid retrieval: semantic (meaning) + keyword (exact tokens), fused
+ * with RRF, top K. Both halves are tenant-scoped (layer 1: SQL filter)
+ * and re-checked (layer 2: assertTenant).
+ */
+export async function retrieveChunks(
+  tenantId: string,
+  queryText: string,
+  deps: Pick<ReplyGraphDependencies, 'prisma' | 'aiModelService'>,
+): Promise<RetrievedChunk[]> {
+  if (!tenantId) {
+    // Never a silent empty result: a missing tenant is an upstream bug,
+    // and silence would hide it.
+    throw new Error(
+      'matcher: tenantId is missing — refusing to search without a tenant scope',
+    );
   }
 
-  return rows;
+  const [semantic, keyword] = await Promise.all([
+    semanticSearch(tenantId, queryText, deps),
+    keywordSearch(tenantId, queryText, deps.prisma),
+  ]);
+
+  return rrfFuse([semantic, keyword]).slice(0, TOP_K);
 }
 
 /**
