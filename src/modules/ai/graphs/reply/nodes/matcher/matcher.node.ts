@@ -142,9 +142,61 @@ export function rrfFuse(lists: RetrievedChunk[][]): RetrievedChunk[] {
 }
 
 /**
+ * Neighbour expansion: for every hit, also fetch the chunks physically
+ * before and after it in the same document (chunk_index ± 1).
+ *
+ * Why: procedures get split across chunks. The middle steps match the
+ * question; the safety precondition in the previous chunk doesn't. The
+ * answer would be correct-but-amputated — every word cited, the warning
+ * silently gone — a failure the hallucination gate cannot see.
+ * Uses idx_chunks_doc, which already exists. One cheap query.
+ */
+export async function expandNeighbours(
+  hits: RetrievedChunk[],
+  tenantId: string,
+  prisma: ReplyGraphDependencies['prisma'],
+): Promise<RetrievedChunk[]> {
+  const anchors = hits.filter((c) => c.chunkIndex !== null);
+  if (anchors.length === 0) return hits;
+
+  const wanted = anchors.map(
+    (c) =>
+      Prisma.sql`(c.document_id = ${c.documentId}::uuid
+                  AND c.chunk_index IN (${c.chunkIndex! - 1}, ${c.chunkIndex! + 1}))`,
+  );
+
+  const neighbours = await prisma.$queryRaw<RetrievedChunk[]>(Prisma.sql`
+    SELECT c.id,
+           c.content,
+           c.chunk_index                             AS "chunkIndex",
+           c.document_id                             AS "documentId",
+           d.tenant_id                               AS "tenantId",
+           d.is_low_confidence                       AS "isLowConfidence",
+           0::float8                                 AS similarity
+    FROM document_chunks c
+    JOIN documents d ON d.id = c.document_id
+    WHERE d.tenant_id = ${tenantId}::uuid
+      AND (${Prisma.join(wanted, ' OR ')})
+  `);
+  assertTenant(neighbours, tenantId);
+
+  // Dedupe: a neighbour that was already a hit stays a hit.
+  const seen = new Set(hits.map((c) => c.id));
+  const fresh = neighbours.filter((c) => !seen.has(c.id));
+
+  // Keep reading order inside each document: sort everything by
+  // (document, position) so the LLM reads procedures in sequence.
+  return [...hits, ...fresh].sort((a, b) =>
+    a.documentId === b.documentId
+      ? (a.chunkIndex ?? 0) - (b.chunkIndex ?? 0)
+      : a.documentId.localeCompare(b.documentId),
+  );
+}
+
+/**
  * Hybrid retrieval: semantic (meaning) + keyword (exact tokens), fused
- * with RRF, top K. Both halves are tenant-scoped (layer 1: SQL filter)
- * and re-checked (layer 2: assertTenant).
+ * with RRF, top K, then neighbour-expanded. Both halves are tenant-scoped
+ * (layer 1: SQL filter) and re-checked (layer 2: assertTenant).
  */
 export async function retrieveChunks(
   tenantId: string,
@@ -164,7 +216,8 @@ export async function retrieveChunks(
     keywordSearch(tenantId, queryText, deps.prisma),
   ]);
 
-  return rrfFuse([semantic, keyword]).slice(0, TOP_K);
+  const topHits = rrfFuse([semantic, keyword]).slice(0, TOP_K);
+  return expandNeighbours(topHits, tenantId, deps.prisma);
 }
 
 /**
