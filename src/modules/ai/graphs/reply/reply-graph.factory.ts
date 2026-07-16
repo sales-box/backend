@@ -7,9 +7,13 @@ import {
   BaseCheckpointSaver,
 } from '@langchain/langgraph';
 import { composerNode } from '@/modules/ai/graphs/reply/nodes/composer/composer.node';
+import { PrismaService } from '@/database/prisma.service';
 
 export interface ReplyGraphDependencies {
   aiModelService: AiModelService;
+  // Required, not optional: the matcher node's retrieval SQL cannot run
+  // without it, and a required field makes the compiler find every caller.
+  prisma: PrismaService;
   checkpointer?: BaseCheckpointSaver;
 }
 

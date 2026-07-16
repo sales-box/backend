@@ -4,6 +4,7 @@ import { Injectable } from '@nestjs/common';
 import { Logger } from '@nestjs/common';
 import { AiModelService } from '@/modules/ai/ai.model.service';
 import { buildReplyGraph } from '@/modules/ai/graphs/reply/reply-graph.factory';
+import { PrismaService } from '@/database/prisma.service';
 
 @Injectable()
 export class ReplyService {
@@ -14,8 +15,14 @@ export class ReplyService {
     string
   >;
 
-  constructor(private readonly aiModelService: AiModelService) {
-    this.graph = buildReplyGraph({ aiModelService: this.aiModelService });
+  constructor(
+    private readonly aiModelService: AiModelService,
+    private readonly prisma: PrismaService,
+  ) {
+    this.graph = buildReplyGraph({
+      aiModelService: this.aiModelService,
+      prisma: this.prisma,
+    });
   }
 
   async draftReply(
