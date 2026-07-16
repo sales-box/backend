@@ -53,7 +53,9 @@ interface Chunk {
 
 @Injectable()
 export class KnowledgeBaseService {
-  // cl100k_base matches OpenAI text-embedding-ada-002 / 3-small (our vector(1536)).
+  // cl100k_base is used for token *counting* during chunking. The embedding
+  // model is nomic-embed-text (vector(768), via Ollama) — a different
+  // tokenizer, but chunk-size budgeting only needs a consistent approximation.
   private readonly encoding: Tiktoken = getEncoding('cl100k_base');
 
   constructor(private readonly prisma: PrismaService) {}

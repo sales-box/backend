@@ -170,7 +170,7 @@ model DocumentChunk {
   document   Document                     @relation(fields: [documentId], references: [id], onDelete: Cascade)
   chunkIndex Int?                         @map("chunk_index")
   content    String?
-  embedding  Unsupported("vector(1536)")?
+  embedding  Unsupported("vector(768)")?
   tokenCount Int?                         @map("token_count")
   metadata   Json?
 

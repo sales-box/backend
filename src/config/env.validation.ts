@@ -210,6 +210,21 @@ export class EnvironmentVariables {
   @IsString()
   @MinLength(1)
   VISION_MODEL!: string;
+
+  // ----- Embeddings (separate provider from chat) -----
+  // Chat runs on Groq, which serves no /embeddings endpoint, so the
+  // embedding provider must be configurable independently. Currently
+  // pointed at a local Ollama instance (OpenAI-compatible API).
+  @IsString()
+  @MinLength(1)
+  EMBEDDING_API_KEY!: string;
+
+  @IsUrl({ require_tld: false })
+  EMBEDDING_BASE_URL!: string;
+
+  @IsString()
+  @MinLength(1)
+  EMBEDDING_MODEL!: string;
 }
 
 export function validateEnv(
