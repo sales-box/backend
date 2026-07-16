@@ -127,7 +127,7 @@ export class AttachmentsService {
     return slideTexts.join('\n\n');
   }
 
-  async parseAttachment(
+  async parseAttachmentCached(
     accountEmail: string,
     messageId: string,
     attachment: AttachmentRef,
@@ -326,7 +326,7 @@ export class AttachmentsService {
 
     const results = await Promise.allSettled(
       email.attachments.map((att) =>
-        this.parseAttachment(accountEmail, email.id, att),
+        this.parseAttachmentCached(accountEmail, email.id, att),
       ),
     );
 

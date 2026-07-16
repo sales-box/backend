@@ -79,7 +79,7 @@ assessDocumentQuality(extractedTextLength: number, fileSizeBytes: number, chunkC
 
 // ── Role 5 · Rana (Attachments Cache & Security) ──────────────────────────
 parseAttachments(accountEmail: string, email: EmailRef): Promise<ParsedAttachment[]>
-parseAttachment(accountEmail: string, messageId: string, attachment: AttachmentRef): Promise<ParsedAttachment>
+parseAttachmentCached(accountEmail: string, messageId: string, attachment: AttachmentRef): Promise<ParsedAttachment>
 //
 // type ParsedAttachment = {
 // filename: string;

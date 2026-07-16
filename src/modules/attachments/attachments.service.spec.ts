@@ -243,7 +243,7 @@ describe('AttachmentsService', () => {
       };
       mockCache.get.mockResolvedValue(cached);
 
-      const result = await service.parseAttachment(
+      const result = await service.parseAttachmentCached(
         'test@example.com',
         'msg-1',
         makeAtt({ filename: 'doc.pdf' }),
@@ -260,7 +260,7 @@ describe('AttachmentsService', () => {
         data: { data: gmailAttachmentData() },
       });
 
-      const result = await service.parseAttachment(
+      const result = await service.parseAttachmentCached(
         'test@example.com',
         'msg-1',
         makeAtt(),
@@ -271,7 +271,7 @@ describe('AttachmentsService', () => {
     });
 
     it('should not cache skipped results', async () => {
-      const result = await service.parseAttachment(
+      const result = await service.parseAttachmentCached(
         'test@example.com',
         'msg-1',
         makeAtt({ size: 15 * 1024 * 1024 }),
@@ -291,7 +291,7 @@ describe('AttachmentsService', () => {
         data: { data: gmailAttachmentData() },
       });
 
-      const result = await service.parseAttachment(
+      const result = await service.parseAttachmentCached(
         'test@example.com',
         'msg-1',
         makeAtt(),
@@ -310,7 +310,7 @@ describe('AttachmentsService', () => {
         data: { data: gmailAttachmentData() },
       });
 
-      const result = await service.parseAttachment(
+      const result = await service.parseAttachmentCached(
         'test@example.com',
         'msg-1',
         makeAtt(),
@@ -332,7 +332,7 @@ describe('AttachmentsService', () => {
     });
 
     it('should wrap PDF text with source=attachment_text', async () => {
-      const result = await service.parseAttachment(
+      const result = await service.parseAttachmentCached(
         'test@example.com',
         'msg-1',
         makeAtt(),
@@ -345,7 +345,7 @@ describe('AttachmentsService', () => {
     });
 
     it('should wrap docx text with source=attachment_text', async () => {
-      const result = await service.parseAttachment(
+      const result = await service.parseAttachmentCached(
         'test@example.com',
         'msg-1',
         makeAtt({
@@ -362,7 +362,7 @@ describe('AttachmentsService', () => {
     });
 
     it('should wrap pptx text with source=attachment_text', async () => {
-      const result = await service.parseAttachment(
+      const result = await service.parseAttachmentCached(
         'test@example.com',
         'msg-1',
         makeAtt({
@@ -379,7 +379,7 @@ describe('AttachmentsService', () => {
     });
 
     it('should NOT wrap xlsx structured data', async () => {
-      const result = await service.parseAttachment(
+      const result = await service.parseAttachmentCached(
         'test@example.com',
         'msg-1',
         makeAtt({
@@ -404,7 +404,7 @@ describe('AttachmentsService', () => {
     });
 
     it('should call vision on images and wrap output with source=vision_extracted', async () => {
-      const result = await service.parseAttachment(
+      const result = await service.parseAttachmentCached(
         'test@example.com',
         'msg-1',
         makeAtt({ filename: 'photo.jpg', mimeType: 'image/jpeg' }),
@@ -421,7 +421,7 @@ describe('AttachmentsService', () => {
     it('should wrap weak-PDF vision fallback with source=vision_extracted', async () => {
       mockPdfText = SHORT_PDF_TEXT;
 
-      const result = await service.parseAttachment(
+      const result = await service.parseAttachmentCached(
         'test@example.com',
         'msg-1',
         makeAtt(),
@@ -433,7 +433,7 @@ describe('AttachmentsService', () => {
     });
 
     it('should NOT wrap image base64 itself', async () => {
-      const result = await service.parseAttachment(
+      const result = await service.parseAttachmentCached(
         'test@example.com',
         'msg-1',
         makeAtt({ filename: 'photo.png', mimeType: 'image/png' }),
@@ -448,7 +448,7 @@ describe('AttachmentsService', () => {
 
   describe('parseAttachment Gates & Routing', () => {
     it('should skip oversized attachments without calling Gmail API', async () => {
-      const result = await service.parseAttachment(
+      const result = await service.parseAttachmentCached(
         'test@example.com',
         'msg-1',
         makeAtt({ size: 15 * 1024 * 1024 }),
@@ -467,7 +467,7 @@ describe('AttachmentsService', () => {
       mockGmailApi.users.messages.attachments.get.mockResolvedValue({
         data: { data: gmailAttachmentData() },
       });
-      const result = await service.parseAttachment(
+      const result = await service.parseAttachmentCached(
         'test@example.com',
         'msg-1',
         makeAtt({
@@ -485,7 +485,7 @@ describe('AttachmentsService', () => {
       mockGmailApi.users.messages.attachments.get.mockResolvedValue({
         data: { data: gmailAttachmentData() },
       });
-      const result = await service.parseAttachment(
+      const result = await service.parseAttachmentCached(
         'test@example.com',
         'msg-1',
         makeAtt({
@@ -503,7 +503,7 @@ describe('AttachmentsService', () => {
       mockGmailApi.users.messages.attachments.get.mockResolvedValue({
         data: { data: gmailAttachmentData() },
       });
-      const result = await service.parseAttachment(
+      const result = await service.parseAttachmentCached(
         'test@example.com',
         'msg-1',
         makeAtt({
@@ -525,7 +525,7 @@ describe('AttachmentsService', () => {
         .spyOn(service, 'parseDocx')
         .mockRejectedValueOnce(new Error('corrupt docx'));
 
-      const result = await service.parseAttachment(
+      const result = await service.parseAttachmentCached(
         'test@example.com',
         'msg-1',
         makeAtt({
@@ -540,7 +540,7 @@ describe('AttachmentsService', () => {
     });
 
     it('should skip unknown formats directly', async () => {
-      const result = await service.parseAttachment(
+      const result = await service.parseAttachmentCached(
         'test@example.com',
         'msg-1',
         makeAtt({ filename: 'archive.zip', mimeType: 'application/zip' }),
