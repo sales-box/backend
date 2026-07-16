@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AttachmentsService } from './attachments.service';
+import { AttachmentCacheRepository } from './attachment-cache.repository';
 import { GmailClientProvider } from '../emails/gmail-client.provider';
 import * as pdfParse from 'pdf-parse';
 
@@ -67,9 +68,15 @@ type MockGmailApi = {
   };
 };
 
+type MockAttachmentCache = {
+  get: jest.Mock;
+  set: jest.Mock;
+};
+
 describe('AttachmentsService', () => {
   let service: AttachmentsService;
   let mockGmailApi: MockGmailApi;
+  let mockCache: MockAttachmentCache;
 
   beforeEach(async () => {
     // Basic mock structure for Gmail API
@@ -87,10 +94,17 @@ describe('AttachmentsService', () => {
       getClientForAccount: jest.fn().mockResolvedValue(mockGmailApi),
     };
 
+    // Default: always a cache miss; individual tests override.
+    mockCache = {
+      get: jest.fn().mockResolvedValue(null),
+      set: jest.fn().mockResolvedValue(undefined),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AttachmentsService,
         { provide: GmailClientProvider, useValue: mockProvider },
+        { provide: AttachmentCacheRepository, useValue: mockCache },
       ],
     }).compile();
 

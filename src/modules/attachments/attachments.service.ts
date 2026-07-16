@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { GmailClientProvider } from '../emails/gmail-client.provider';
+import { AttachmentCacheRepository } from './attachment-cache.repository';
 import * as pdfParse from 'pdf-parse';
 import * as mammoth from 'mammoth';
 import * as ExcelJS from 'exceljs';
@@ -38,7 +39,10 @@ const MIME_PPTX =
 @Injectable()
 export class AttachmentsService {
   private readonly logger = new Logger(AttachmentsService.name);
-  constructor(private readonly gmailClientProvider: GmailClientProvider) {}
+  constructor(
+    private readonly gmailClientProvider: GmailClientProvider,
+    private readonly attachmentCache: AttachmentCacheRepository,
+  ) {}
 
   async downloadAttachment(
     accountEmail: string,
@@ -117,6 +121,32 @@ export class AttachmentsService {
   }
 
   async parseAttachment(
+    accountEmail: string,
+    messageId: string,
+    attachment: AttachmentRef,
+  ): Promise<ParsedAttachment> {
+    const cached = await this.attachmentCache.get(attachment.attachmentId);
+    if (cached) {
+      this.logger.log(
+        `Cache hit for attachment ${attachment.attachmentId} (${attachment.filename})`,
+      );
+      return cached;
+    }
+
+    const parsed = await this.parseAttachmentFresh(
+      accountEmail,
+      messageId,
+      attachment,
+    );
+    // Only successful parses are cached — skipped/parse_error results must
+    // stay retryable (a transient Gmail/parser failure is not immutable).
+    if (!parsed.skipped) {
+      await this.attachmentCache.set(attachment.attachmentId, parsed);
+    }
+    return parsed;
+  }
+
+  private async parseAttachmentFresh(
     accountEmail: string,
     messageId: string,
     attachment: AttachmentRef,
