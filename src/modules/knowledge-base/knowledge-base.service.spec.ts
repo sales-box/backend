@@ -41,7 +41,11 @@ describe('KnowledgeBaseService', () => {
       document: { deleteMany: deleteDocMany },
       extended: { document: { paginate } },
     };
-    service = new KnowledgeBaseService(prisma as unknown as PrismaService);
+    const embeddingsQueue = { add: jest.fn().mockResolvedValue(undefined) };
+    service = new KnowledgeBaseService(
+      prisma as unknown as PrismaService,
+      embeddingsQueue as never,
+    );
   });
 
   it('rejects unsupported file types with 400 and writes nothing', async () => {

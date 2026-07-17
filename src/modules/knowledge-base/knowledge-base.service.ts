@@ -1,8 +1,11 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { extname } from 'node:path';
 import { DocumentStatus } from '@prisma/client';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
@@ -11,6 +14,10 @@ import { PDFParse } from 'pdf-parse';
 import { PrismaService } from '../../database/prisma.service';
 import type { PaginationOptions } from '../../database/pagination/pagination.types';
 import { UploadResponseDto } from './dto/upload-response.dto';
+import {
+  EMBEDDINGS_QUEUE,
+  EMBED_DOCUMENT_JOB,
+} from '../embeddings/embeddings.constants';
 
 const MAX_TOKENS_PER_CHUNK = 1000;
 const CHUNK_OVERLAP_TOKENS = 150; // ~15% of chunk size
@@ -53,12 +60,16 @@ interface Chunk {
 
 @Injectable()
 export class KnowledgeBaseService {
+  private readonly logger = new Logger(KnowledgeBaseService.name);
   // cl100k_base is used for token *counting* during chunking. The embedding
   // model is nomic-embed-text (vector(768), via Ollama) — a different
   // tokenizer, but chunk-size budgeting only needs a consistent approximation.
   private readonly encoding: Tiktoken = getEncoding('cl100k_base');
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @InjectQueue(EMBEDDINGS_QUEUE) private readonly embeddingsQueue: Queue,
+  ) {}
 
   async ingest(
     { filename, buffer }: IngestInput,
@@ -171,6 +182,8 @@ export class KnowledgeBaseService {
       ? DocumentStatus.completed
       : DocumentStatus.failed;
 
+    let documentId: string | null = null;
+
     await this.prisma.$transaction(async (tx) => {
       // Replace the tenant's own document with the same filename; ON DELETE
       // CASCADE removes its old chunks, so no duplicates. Never touches
@@ -193,9 +206,11 @@ export class KnowledgeBaseService {
           uploadedBy: owner?.uploadedBy ?? null,
         },
       });
+      documentId = doc.id;
 
       if (chunks.length) {
-        // embedding stays NULL for now (populated later by the RAG worker).
+        // Chunks are stored with embedding = NULL; the embeddings worker
+        // (enqueued below, after commit) fills them in.
         await tx.documentChunk.createMany({
           data: chunks.map((c) => ({
             documentId: doc.id,
@@ -206,6 +221,26 @@ export class KnowledgeBaseService {
         });
       }
     });
+
+    // Enqueue AFTER the transaction commits (never inside it — the worker
+    // could start before the rows are visible). Fire-and-forget: a failed
+    // enqueue must not fail the upload; the chunks are safely stored and a
+    // manual/scheduled backfill still covers them.
+    if (documentId && chunks.length) {
+      await this.embeddingsQueue
+        .add(
+          EMBED_DOCUMENT_JOB,
+          { documentId },
+          { attempts: 3, backoff: { type: 'exponential', delay: 5000 } },
+        )
+        .catch((err) =>
+          this.logger.error(
+            `failed to enqueue embedding job for document ${documentId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          ),
+        );
+    }
 
     return {
       filename,

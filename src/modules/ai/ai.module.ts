@@ -9,5 +9,7 @@ import { AiModelService } from '@/modules/ai/ai.model.service';
   imports: [ClassifierModule, AttachmentsModule],
   controllers: [AiController],
   providers: [AiModelService, ReplyService],
+  // Exported so the embeddings worker can reuse embedDocuments().
+  exports: [AiModelService],
 })
 export class AiModule {}
