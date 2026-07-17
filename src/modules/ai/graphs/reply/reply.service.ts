@@ -5,6 +5,7 @@ import { Logger } from '@nestjs/common';
 import { AiModelService } from '@/modules/ai/ai.model.service';
 import { buildReplyGraph } from '@/modules/ai/graphs/reply/reply-graph.factory';
 import { PrismaService } from '@/database/prisma.service';
+import { Intent } from '@/modules/ai/classifier/classifier.types';
 
 @Injectable()
 export class ReplyService {
@@ -29,13 +30,24 @@ export class ReplyService {
     emailId: string,
     tenantId: string,
     emailBody: string,
+    options?: {
+      /** Classifier's verdict — routes the matcher (missing = recommendation path). */
+      intent?: Intent;
+      /** Itemized client needs, if an extractor provided them. */
+      requirements?: string[];
+      /** Products the user rejected on a previous attempt — the matcher
+       *  is forbidden from recommending them again on retry. */
+      excludedByUser?: string[];
+    },
   ): Promise<ReplyGraphStateType> {
     try {
       const finalState = await this.graph.invoke({
         emailId,
         tenantId,
         emailBody,
-        excludedByUser: [],
+        intent: options?.intent,
+        requirements: options?.requirements,
+        excludedByUser: options?.excludedByUser ?? [],
       });
 
       this.logger.log(`Reply pipeline finished for email ${emailId}`);

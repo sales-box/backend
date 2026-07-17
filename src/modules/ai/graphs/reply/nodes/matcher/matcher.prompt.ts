@@ -41,6 +41,9 @@ export const MATCHER_USER_PROMPT = `
     Extracted client requirements:
     {requirements}
 
+    Products the user has explicitly excluded — NEVER recommend any of these:
+    {excludedProducts}
+
     Product knowledge chunks (each starts with its ID — cite these IDs):
     {productChunks}
 

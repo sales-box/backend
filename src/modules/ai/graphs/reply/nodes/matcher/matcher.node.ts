@@ -327,6 +327,12 @@ export async function matcherNode(
         ? state.requirements.map((r) => `- ${r}`).join('\n')
         : 'None extracted — derive them from the email.',
     )
+    .replace(
+      '{excludedProducts}',
+      state.excludedByUser?.length
+        ? state.excludedByUser.map((p) => `- ${p}`).join('\n')
+        : 'None.',
+    )
     .replace('{productChunks}', chunkBlock);
 
   const path = routeByIntent(state.intent);
@@ -341,6 +347,38 @@ export async function matcherNode(
         { role: 'user', content: userMessage },
       ],
     });
+
+    // Trust, but verify: the prompt forbids excluded products, and code
+    // checks anyway — same pattern as citations. If the model recommended
+    // an excluded product, don't pass it through: null it, zero the
+    // confidence, and say why, so the Supervisor/user sees an honest miss
+    // instead of a silently repeated rejection.
+    const excluded = new Set(
+      (state.excludedByUser ?? []).map((p) => p.trim().toLowerCase()),
+    );
+    if (excluded.has(llm.recommendedProduct.trim().toLowerCase())) {
+      logger.warn(
+        `model recommended excluded product "${llm.recommendedProduct}" despite instructions`,
+      );
+      matchResult = enrich(
+        {
+          ...llm,
+          confidence: 0,
+          reasoning: `The best-fitting product ("${llm.recommendedProduct}") was excluded by the user and no alternative was found. Original reasoning: ${llm.reasoning}`,
+        },
+        {
+          resultType: 'recommendation',
+          recommendedProduct: null,
+          exclusions: [
+            ...llm.exclusions,
+            { product: llm.recommendedProduct, reason: 'Excluded by the user' },
+          ],
+        },
+        chunks,
+      );
+      return { matchResult };
+    }
+
     matchResult = enrich(
       llm,
       {
