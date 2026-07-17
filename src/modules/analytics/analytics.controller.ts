@@ -16,6 +16,8 @@ import {
   ApiTags,
   ApiOperation,
   ApiResponse,
+  ApiQuery,
+  ApiParam,
 } from '@nestjs/swagger';
 import { AnalyticsService } from './analytics.service';
 import { AnalyticsSummary } from './types/analytics.types';
@@ -51,6 +53,14 @@ export class AnalyticsController {
   }
 
   @Get('summary')
+  @ApiOperation({ summary: 'Get the analytics dashboard summary' })
+  @ApiQuery({
+    name: 'days',
+    required: false,
+    type: Number,
+    description: 'Look-back window in days (default 30)',
+  })
+  @ApiResponse({ status: 200, description: 'Aggregated analytics summary.' })
   async getSummary(
     @Query('days', new DefaultValuePipe(30), ParseIntPipe) days: number,
     @Req() req: AuthenticatedRequest,
@@ -62,6 +72,19 @@ export class AnalyticsController {
   }
 
   @Get('gaps/alerts')
+  @ApiOperation({
+    summary: 'List knowledge gaps that crossed the alert threshold',
+  })
+  @ApiQuery({
+    name: 'threshold',
+    required: false,
+    type: Number,
+    description: 'Minimum occurrence count to alert on (default 3)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Knowledge gaps at or above the threshold.',
+  })
   async getAlerts(
     @Query('threshold', new DefaultValuePipe(3), ParseIntPipe)
     threshold: number,
@@ -94,6 +117,9 @@ export class AnalyticsController {
   // but a tenant-scoped resolveGap(tenantId, id) should replace this once the
   // AnalyticsService supports it (coordinate with Mohamed Khaled).
   @Patch('gaps/:id/resolve')
+  @ApiOperation({ summary: 'Mark a knowledge gap as resolved' })
+  @ApiParam({ name: 'id', description: 'Knowledge gap id' })
+  @ApiResponse({ status: 200, description: 'The resolved knowledge gap.' })
   async resolveGap(@Param('id') id: string): Promise<KnowledgeGap> {
     return this.analyticsService.resolveGap(id);
   }

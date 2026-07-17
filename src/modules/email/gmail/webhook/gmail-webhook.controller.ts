@@ -8,6 +8,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
+import { ApiTags, ApiOperation, ApiOkResponse } from '@nestjs/swagger';
 import { Queue } from 'bullmq';
 import { GmailWebhookGuard } from '@/modules/email/gmail/webhook/gmail-webhook.guard';
 import {
@@ -19,6 +20,7 @@ import { GmailPubSubNotificationDto } from './dtos/gmail-pub-sub-notification.dt
 import { GmailParserService } from '../gmail-parser.service';
 import { DecodedGmailHistory } from '../gmail.types';
 
+@ApiTags('gmail')
 @Controller('gmail/webhook')
 export class GmailWebhookController {
   private readonly logger = new Logger(GmailWebhookController.name);
@@ -29,6 +31,13 @@ export class GmailWebhookController {
   ) {}
 
   @Post()
+  @ApiOperation({
+    summary:
+      'Gmail Pub/Sub push receiver (called by Google, not interactively)',
+    description:
+      'Verified by GmailWebhookGuard (Pub/Sub token). Decodes the notification and enqueues the email for classification.',
+  })
+  @ApiOkResponse({ description: 'Notification accepted and enqueued.' })
   @HttpCode(HttpStatus.OK)
   @UseGuards(GmailWebhookGuard)
   async handleIncomingNotification(@Body() body: GmailPubSubNotificationDto) {
