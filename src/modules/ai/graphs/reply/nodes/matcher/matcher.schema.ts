@@ -10,35 +10,29 @@ export const ExclusionSchema = z.object({
 });
 
 /**
- * What the LLM fills in. Deliberately does NOT include
- * basedOnLowConfidenceSource — that flag is a fact the retrieval query
- * already returns deterministically (documents.is_low_confidence), so the
- * node sets it in code. Never ask the model a question the database has
- * already answered.
+ * Two flat schemas instead of one nullable one — code routes by intent and
+ * hands the model the right form. The answer form has NO product field at
+ * all, so "answered a question but pitched a product anyway" is impossible
+ * by construction, not by a guard. Flat (not a discriminated union) because
+ * branched anyOf schemas are where mid-size models fill forms unreliably.
  */
-export const MatcherSchema = z.object({
-  resultType: z
-    .enum(['recommendation', 'answer'])
-    .describe(
-      'recommendation = the email asks what to buy and WE picked a product for their requirements | answer = the email asks a technical/support question and we answered it from the documents without choosing a product',
-    ),
+export const RecommendationSchema = z.object({
   recommendedProduct: z
     .string()
-    .nullable()
     .describe(
-      'Product name ONLY when resultType is recommendation. MUST be null when resultType is answer — even if the client named a product themselves, we did not choose it, so nothing goes here',
+      'Exact product name as written in the provided chunks — never invented',
     ),
   reasoning: z
     .string()
     .describe(
-      'Short explanation of the decision, grounded strictly in the cited chunks — no outside knowledge',
+      'Short explanation of why this product fits, grounded strictly in the cited chunks — no outside knowledge',
     ),
   confidence: z
     .number()
     .min(0)
     .max(1)
     .describe(
-      'For recommendation: how well the product fits the stated requirements (1 = every requirement confirmed by the chunks). For answer: whether the chunks actually contain the answer (1 = answered directly, low = improvising from loosely related chunks). Do not blend the two meanings',
+      'How well the product fits the stated requirements (1 = every requirement confirmed by the chunks). Lower it when requirements are unconfirmed',
     ),
   citedChunks: z
     .array(z.string())
@@ -52,14 +46,42 @@ export const MatcherSchema = z.object({
     ),
 });
 
-export type MatcherOutput = z.infer<typeof MatcherSchema>;
+export const AnswerSchema = z.object({
+  reasoning: z
+    .string()
+    .describe(
+      "The answer to the client's question, grounded strictly in the cited chunks — or a plain statement that the documents do not contain the answer",
+    ),
+  confidence: z
+    .number()
+    .min(0)
+    .max(1)
+    .describe(
+      'Whether the chunks actually contain the answer (1 = answered directly, low = improvising from loosely related chunks)',
+    ),
+  citedChunks: z
+    .array(z.string())
+    .describe(
+      'IDs of the chunks this answer is based on. Only IDs from the provided chunks — never invent one',
+    ),
+});
+
+export type RecommendationOutput = z.infer<typeof RecommendationSchema>;
+export type AnswerOutput = z.infer<typeof AnswerSchema>;
 export type ExclusionOutput = z.infer<typeof ExclusionSchema>;
 
 /**
- * What the matcher node returns into graph state: the LLM's output plus
- * two code-computed additions.
+ * What the matcher node returns into graph state: the LLM's output merged
+ * with code-computed fields. resultType and recommendedProduct-nullability
+ * are set by CODE (routed by intent), never declared by the model.
  */
-export type MatchResult = MatcherOutput & {
+export type MatchResult = {
+  resultType: 'recommendation' | 'answer';
+  recommendedProduct: string | null;
+  reasoning: string;
+  confidence: number;
+  citedChunks: string[];
+  exclusions: ExclusionOutput[];
   /** True if any cited chunk belongs to a document flagged by the
    *  knowledge-base quality gate. From the DB, never from the model. */
   basedOnLowConfidenceSource: boolean;

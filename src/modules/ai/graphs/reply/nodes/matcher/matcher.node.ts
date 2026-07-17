@@ -2,9 +2,19 @@ import { Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { ReplyGraphDependencies } from '@/modules/ai/graphs/reply/reply-graph.factory';
 import type { ReplyGraphStateType } from '@/modules/ai/graphs/reply/reply-graph.state';
-import { MatcherSchema, MatchResult } from './matcher.schema';
-import { MATCHER_SYSTEM_PROMPT, MATCHER_USER_PROMPT } from './matcher.prompt';
+import {
+  RecommendationSchema,
+  AnswerSchema,
+  MatchResult,
+  ExclusionOutput,
+} from './matcher.schema';
+import {
+  MATCHER_RECOMMEND_SYSTEM_PROMPT,
+  MATCHER_ANSWER_SYSTEM_PROMPT,
+  MATCHER_USER_PROMPT,
+} from './matcher.prompt';
 import { wrapUntrustedContent } from '@/common/security/untrusted-content.wrapper';
+import type { Intent } from '@/modules/ai/classifier/classifier.types';
 
 const logger = new Logger('MatcherNode');
 
@@ -220,8 +230,56 @@ export async function retrieveChunks(
   return expandNeighbours(topHits, tenantId, deps.prisma);
 }
 
+type MatchPath = 'recommendation' | 'answer';
+
 /**
- * The matcher node: retrieve (tenant-scoped) → one LLM call → MatchResult.
+ * CODE decides the path from the classifier's intent — never the model.
+ * A model routing itself can misroute itself, invisibly.
+ * 'sensitive' takes the answer path: the safest thing an auto-drafter can
+ * do with a sensitive email is answer facts without pitching anything.
+ * Missing intent falls back to recommendation (the pre-fork behavior)
+ * until the caller contract (S-AI-7) supplies it.
+ */
+export function routeByIntent(intent: Intent | undefined): MatchPath {
+  if (intent === 'support' || intent === 'follow-up' || intent === 'sensitive')
+    return 'answer';
+  return 'recommendation'; // 'product inquiry', 'demo request', or unknown
+}
+
+/** Merge an LLM result with the code-computed fields all paths share:
+ *  validated citations, the DB quality flag, and the chunk texts. */
+function enrich(
+  base: { reasoning: string; confidence: number; citedChunks: string[] },
+  extra: {
+    resultType: MatchPath;
+    recommendedProduct: string | null;
+    exclusions: ExclusionOutput[];
+  },
+  chunks: RetrievedChunk[],
+): MatchResult {
+  const byId = new Map(chunks.map((c) => [c.id, c]));
+  // Cited IDs must be real. Drop anything the model invented.
+  const citedChunks = base.citedChunks.filter((id) => byId.has(id));
+  return {
+    ...extra,
+    reasoning: base.reasoning,
+    confidence: base.confidence,
+    citedChunks,
+    // From the DB flag set by the knowledge-base quality gate — computed
+    // here, never asked of the model.
+    basedOnLowConfidenceSource: citedChunks.some(
+      (id) => byId.get(id)!.isLowConfidence,
+    ),
+    citedChunkDetails: citedChunks.map((id) => ({
+      id,
+      content: byId.get(id)!.content ?? '',
+    })),
+  };
+}
+
+/**
+ * The matcher node: retrieve (tenant-scoped, shared) → route by intent →
+ * one LLM call with the path's own flat schema → MatchResult.
  * A chain step, not an agent — no model-decided control flow.
  */
 export async function matcherNode(
@@ -271,37 +329,43 @@ export async function matcherNode(
     )
     .replace('{productChunks}', chunkBlock);
 
-  const llmResult = await deps.aiModelService.generateStructured({
-    schema: MatcherSchema,
-    runName: 'MatcherNode',
-    messages: [
-      { role: 'system', content: MATCHER_SYSTEM_PROMPT },
-      { role: 'user', content: userMessage },
-    ],
-  });
+  const path = routeByIntent(state.intent);
 
-  // Code-side guards — never trust the model on rules code can enforce:
-  // an "answer" claims no product choice, whatever the model filled in.
-  const recommendedProduct =
-    llmResult.resultType === 'answer' ? null : llmResult.recommendedProduct;
-  // Cited IDs must be real. Drop anything the model invented.
-  const byId = new Map(chunks.map((c) => [c.id, c]));
-  const citedChunks = llmResult.citedChunks.filter((id) => byId.has(id));
-
-  const matchResult: MatchResult = {
-    ...llmResult,
-    recommendedProduct,
-    citedChunks,
-    // From the DB flag set by the knowledge-base quality gate — computed
-    // here, never asked of the model.
-    basedOnLowConfidenceSource: citedChunks.some(
-      (id) => byId.get(id)!.isLowConfidence,
-    ),
-    citedChunkDetails: citedChunks.map((id) => ({
-      id,
-      content: byId.get(id)!.content ?? '',
-    })),
-  };
+  let matchResult: MatchResult;
+  if (path === 'recommendation') {
+    const llm = await deps.aiModelService.generateStructured({
+      schema: RecommendationSchema,
+      runName: 'MatcherRecommend',
+      messages: [
+        { role: 'system', content: MATCHER_RECOMMEND_SYSTEM_PROMPT },
+        { role: 'user', content: userMessage },
+      ],
+    });
+    matchResult = enrich(
+      llm,
+      {
+        resultType: 'recommendation',
+        recommendedProduct: llm.recommendedProduct,
+        exclusions: llm.exclusions,
+      },
+      chunks,
+    );
+  } else {
+    // The answer form has no product field — nothing to wrongly fill.
+    const llm = await deps.aiModelService.generateStructured({
+      schema: AnswerSchema,
+      runName: 'MatcherAnswer',
+      messages: [
+        { role: 'system', content: MATCHER_ANSWER_SYSTEM_PROMPT },
+        { role: 'user', content: userMessage },
+      ],
+    });
+    matchResult = enrich(
+      llm,
+      { resultType: 'answer', recommendedProduct: null, exclusions: [] },
+      chunks,
+    );
+  }
 
   return { matchResult };
 }

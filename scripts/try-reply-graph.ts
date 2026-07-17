@@ -1,15 +1,34 @@
 /**
- * Stage 5 verification: the full reply graph end to end —
- * START → match (retrieve + LLM) → compose → END.
+ * Full reply graph end to end — START → match (retrieve + LLM) → compose.
+ * Runs BOTH matcher paths: a buying email (recommendation) and a support
+ * question (answer).
  *
  * Invoked directly, not over HTTP: nothing calls draftReply yet
  * (/ai/process is S-AI-7). Run from backend/:
- *   node --env-file=.env -r ts-node/register/transpile-only scripts/try-reply-graph.ts
+ *   node --env-file=.env -r tsconfig-paths/register -r ts-node/register/transpile-only scripts/try-reply-graph.ts
  */
 import { ConfigService } from '@nestjs/config';
 import { AiModelService } from '../src/modules/ai/ai.model.service';
 import { PrismaService } from '../src/database/prisma.service';
 import { buildReplyGraph } from '../src/modules/ai/graphs/reply/reply-graph.factory';
+import type { Intent } from '../src/modules/ai/classifier/classifier.types';
+
+const SCENARIOS: { name: string; intent: Intent; emailBody: string }[] = [
+  {
+    name: 'RECOMMENDATION path (product inquiry)',
+    intent: 'product inquiry',
+    emailBody:
+      'Hi, we are looking for someone experienced with React and Angular ' +
+      'to help build our web dashboard. Do you have anyone who fits?',
+  },
+  {
+    name: 'ANSWER path (support question)',
+    intent: 'support',
+    emailBody:
+      'Quick question: does your engineer have experience with Django, ' +
+      'and which databases has he worked with?',
+  },
+];
 
 async function main() {
   const config = new ConfigService(process.env);
@@ -25,38 +44,31 @@ async function main() {
 
     const graph = buildReplyGraph({ aiModelService, prisma });
 
-    // The dev corpus is a resume, so the "product" being matched is a
-    // person's skills — fine for proving the pipeline shape.
-    const finalState = await graph.invoke({
-      emailId: 'test-email-1',
-      tenantId,
-      emailBody:
-        'Hi, we are looking for someone experienced with React and Angular ' +
-        'to help build our web dashboard. Do you have anyone who fits?',
-      excludedByUser: [],
-    });
+    for (const s of SCENARIOS) {
+      console.log(`\n════════ ${s.name} ════════`);
+      const finalState = await graph.invoke({
+        emailId: 'test-email-1',
+        tenantId,
+        emailBody: s.emailBody,
+        intent: s.intent,
+        excludedByUser: [],
+      });
 
-    console.log('=== matchResult ===');
-    const m = finalState.matchResult;
-    console.log(
-      JSON.stringify(
-        {
-          ...m,
-          citedChunkDetails: m?.citedChunkDetails.map((c) => ({
-            id: c.id,
-            content: c.content.slice(0, 60) + '…',
-          })),
-        },
-        null,
-        2,
-      ),
-    );
-
-    console.log('\n=== composer draft ===');
-    console.log(finalState.composerResult?.draftText);
-    console.log('\n=== composer claims ===');
-    for (const claim of finalState.composerResult?.claims ?? []) {
-      console.log(`  [${claim.status}] ${claim.text}`);
+      const m = finalState.matchResult;
+      console.log(`resultType:          ${m?.resultType}`);
+      console.log(`recommendedProduct:  ${m?.recommendedProduct}`);
+      console.log(`confidence:          ${m?.confidence}`);
+      console.log(`reasoning:           ${m?.reasoning}`);
+      console.log(
+        `citedChunks:         ${m?.citedChunks.length} of ${m?.citedChunkDetails.length} details`,
+      );
+      console.log(`lowConfidenceSource: ${m?.basedOnLowConfidenceSource}`);
+      console.log(`--- composer draft ---`);
+      console.log(finalState.composerResult?.draftText);
+      console.log(`--- claims ---`);
+      for (const claim of finalState.composerResult?.claims ?? []) {
+        console.log(`  [${claim.status}] ${claim.text}`);
+      }
     }
   } finally {
     await prisma.$disconnect();
