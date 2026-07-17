@@ -199,11 +199,7 @@ supervise(input: SupervisorInput): SupervisorOutput
 // productConfidence. Flagged claims are counted but never downgrade the
 // label alone (per Business Story §7.5).
 //
-// Thresholds: see PRODUCT_CONFIDENCE_AUTO_THRESHOLD (0.85) /
-// PRODUCT_CONFIDENCE_REVIEW_THRESHOLD (0.6) in supervisor.service.ts.
-// ⚠️ The 85/60 vs 80/60 discrepancy between the handoff doc and an earlier
-// code version must be confirmed with the team before merging PR2. Update
-// [DATE] and the values below once resolved:
-// auto_worthy : productConfidence >= 0.85 (confirmed [DATE])
+// Thresholds confirmed with the team 2026-07-17 (80/60, not 85/60):
+// auto_worthy : productConfidence >= 0.80
 // needs_review : productConfidence >= 0.60
 // handle_manually : productConfidence < 0.60 OR hallucinationDetected

@@ -3,11 +3,8 @@ import { SupervisorInput, SupervisorOutput } from './supervisor.types';
 
 @Injectable()
 export class SupervisorService {
-  // ⚠️ DECISION PENDING: confirm these two thresholds with the team against
-  // CONTRACTS.md before merging this PR. Values below are a PLACEHOLDER
-  // using the handoff's 85/60 — swap to 80/60 only if the team confirms
-  // that's the intentionally updated number, not a stale leftover.
-  private readonly PRODUCT_CONFIDENCE_AUTO_THRESHOLD = 0.85;
+  // Confirmed with the team 2026-07-17: thresholds are 80/60 (not 85/60).
+  private readonly PRODUCT_CONFIDENCE_AUTO_THRESHOLD = 0.8;
   private readonly PRODUCT_CONFIDENCE_REVIEW_THRESHOLD = 0.6;
 
   // ── Private helpers (internal details; only `supervise` is public) ─────
