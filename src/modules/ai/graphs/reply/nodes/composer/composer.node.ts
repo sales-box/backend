@@ -6,6 +6,7 @@ import {
 } from '@/modules/ai/graphs/reply/nodes/composer/composer.prompt';
 import { ComposerSchema } from '@/modules/ai/graphs/reply/nodes/composer/composer.schema';
 import { wrapUntrustedContent } from '@/common/security/untrusted-content.wrapper';
+import { requirementsFromState } from '@/modules/ai/graphs/reply/nodes/matcher/matcher.node';
 
 export async function composerNode(
   state: ReplyGraphStateType,
@@ -34,9 +35,9 @@ export async function composerNode(
     .replace('{emailBody}', body)
     .replace(
       '{requirements}',
-      state.requirements?.length
-        ? state.requirements.map((r) => `- ${r}`).join('\n')
-        : 'None provided',
+      requirementsFromState(state)
+        .map((r) => `- ${r}`)
+        .join('\n') || 'None provided',
     )
     .replace('{recommendedProduct}', productLine)
     .replace('{matcherReasoning}', match?.reasoning ?? 'N/A')

@@ -75,6 +75,34 @@ assessDocumentQuality(extractedTextLength: number, fileSizeBytes: number, chunkC
 // isLowConfidence/qualityReason immediately so the admin sees the warning at
 // the door (e.g. scanned PDFs with almost no extractable text).
 
+## Attachments Module
+
+// ── Role 5 · Rana (Attachments Cache & Security) ──────────────────────────
+parseAttachments(accountEmail: string, email: EmailRef): Promise<ParsedAttachment[]>
+parseAttachmentCached(accountEmail: string, messageId: string, attachment: AttachmentRef): Promise<ParsedAttachment>
+//
+// type ParsedAttachment = {
+// filename: string;
+// type: 'pdf' | 'image' | 'docx' | 'xlsx' | 'pptx' | 'unsupported';
+// text?: string; // ALWAYS wrapped in <untrusted_content> — never raw
+// base64?: string; // images only; raw base64, deliberately NOT wrapped
+// structured?: string; // xlsx only; JSON string of sheets (kept JSON.parse-able, not wrapped)
+// skipped?: boolean;
+// reason?: 'exceeds_size_limit' | 'unsupported_type' | 'parse_error' | 'unexpected_system_error';
+// lowQuality: boolean; // NEW — pdf extracted text below MIN_PDF_TEXT_LENGTH (100 chars)
+// fallbackToVision: boolean; // NEW — weak PDF was re-read by Vision (pages screenshot → analyzeImage)
+// }
+//
+// Wrapping (Nagy's wrapUntrustedContent — never reimplemented here):
+// - pdf/docx/pptx extracted text → source='attachment_text'
+// - Vision output (direct image OCR + weak-PDF fallback) → source='vision_extracted'
+// - image base64 is NOT wrapped — only extracted TEXT is wrapped
+//
+// Caching: parsed results are cached in Redis (global CACHE_MANAGER) keyed by
+// attachmentId, TTL 24h. Only successful parses are cached (skipped/parse_error
+// results are never cached so retries stay possible). Cache down ≠ crash:
+// reads/writes fail soft and parsing proceeds normally.
+
 ## Analytics Module
 
 // ── Role 4 · Salma (baseline tenant isolation) ────────────────────────────

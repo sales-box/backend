@@ -1,5 +1,6 @@
 import { AiModelService } from '@/modules/ai/ai.model.service';
 import { ReplyGraphState } from '@/modules/ai/graphs/reply/reply-graph.state';
+import { extractorNode } from '@/modules/ai/graphs/reply/nodes/extractor/extractor.node';
 import {
   StateGraph,
   START,
@@ -20,9 +21,11 @@ export interface ReplyGraphDependencies {
 
 export function buildReplyGraph(deps: ReplyGraphDependencies) {
   return new StateGraph(ReplyGraphState)
+    .addNode('extract', (state) => extractorNode(state, deps.aiModelService))
     .addNode('match', (state) => matcherNode(state, deps))
     .addNode('compose', (state) => composerNode(state, deps.aiModelService))
-    .addEdge(START, 'match')
+    .addEdge(START, 'extract')
+    .addEdge('extract', 'match')
     .addEdge('match', 'compose')
     .addEdge('compose', END)
     .compile({ checkpointer: deps.checkpointer });

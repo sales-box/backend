@@ -52,6 +52,8 @@ async function main() {
         emailBody: s.emailBody,
         intent: s.intent,
         excludedByUser: [],
+        attachmentsText: [],
+        externalContentText: [],
       });
 
       const m = finalState.matchResult;

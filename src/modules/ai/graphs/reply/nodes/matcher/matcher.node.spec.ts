@@ -54,6 +54,9 @@ function makeState(
     composerResult: undefined,
     finalDraft: undefined,
     excludedByUser: [],
+    attachmentsText: [],
+    externalContentText: [],
+    extractorResult: undefined,
     ...over,
   };
 }

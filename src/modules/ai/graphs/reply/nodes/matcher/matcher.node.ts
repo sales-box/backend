@@ -246,6 +246,25 @@ export function routeByIntent(intent: Intent | undefined): MatchPath {
   return 'recommendation'; // 'product inquiry', 'demo request', or unknown
 }
 
+/**
+ * The matcher's view of "what does the client need": explicit requirements
+ * win, then the extractor node's structured output, then nothing (the
+ * caller falls back to the raw email). Exported so the composer can show
+ * the same list the matcher searched with.
+ */
+export function requirementsFromState(state: ReplyGraphStateType): string[] {
+  if (state.requirements?.length) return state.requirements;
+  const ex = state.extractorResult;
+  if (!ex) return [];
+  return [
+    ...ex.features,
+    ...(ex.constraints ? [`constraint: ${ex.constraints}`] : []),
+    ...(ex.scale ? [`scale: ${ex.scale}`] : []),
+    ...(ex.budgetHint ? [`budget: ${ex.budgetHint}`] : []),
+    ...(ex.timeline ? [`timeline: ${ex.timeline}`] : []),
+  ];
+}
+
 /** Merge an LLM result with the code-computed fields all paths share:
  *  validated citations, the DB quality flag, and the chunk texts. */
 function enrich(
@@ -286,10 +305,11 @@ export async function matcherNode(
   state: ReplyGraphStateType,
   deps: Pick<ReplyGraphDependencies, 'prisma' | 'aiModelService'>,
 ): Promise<Partial<ReplyGraphStateType>> {
-  // Requirements are the distilled question; the raw email is the fallback
-  // until the extractor contract lands.
-  const queryText = state.requirements?.length
-    ? state.requirements.join('\n')
+  // The distilled needs (explicit or extractor-derived) are the search
+  // query; the raw email is the fallback when neither exists.
+  const requirements = requirementsFromState(state);
+  const queryText = requirements.length
+    ? requirements.join('\n')
     : state.emailBody;
 
   const chunks = await retrieveChunks(state.tenantId, queryText, deps);
@@ -323,8 +343,8 @@ export async function matcherNode(
     .replace('{emailBody}', wrapUntrustedContent(state.emailBody, 'email_body'))
     .replace(
       '{requirements}',
-      state.requirements?.length
-        ? state.requirements.map((r) => `- ${r}`).join('\n')
+      requirements.length
+        ? requirements.map((r) => `- ${r}`).join('\n')
         : 'None extracted — derive them from the email.',
     )
     .replace(
