@@ -174,3 +174,32 @@ classify(emailBody: string): Promise<ClassificationResult>
 //
 // Trigger: POST /gmail/webhook (Pub/Sub push) -> enqueues a classify job.
 // No public REST surface — this stage is background-only.
+
+## Supervisor Module
+
+// ── Role 2 · Khaled (Supervisor, AI Phase §2) ─────────────────────────────
+supervise(input: SupervisorInput): SupervisorOutput
+// Pure, deterministic aggregator — ZERO LLM calls. Runs AFTER reply-graph
+// finishes (not a graph node). Combines Classifier's GeneralAnalysis row +
+// the graph's final state (extractorResult, matcherResult, composerResult)
+// + ClientContext.history.length into one routing decision.
+//
+// type SupervisorOutput = {
+// productConfidence: number; // weighted blend: classifier(30%) + extraction(30%) + matcher(40%)
+// clientHistoryConfidence: number; // 0.4 baseline for new clients; min(1, history.length / 5) for known
+// label: 'auto_worthy' | 'needs_review' | 'handle_manually';
+// hallucinationDetected: boolean;
+// flaggedClaimsCount: number;
+// draftAvailable: boolean; // always false when hallucinationDetected
+// knowledgeGapSuggestion: string | null; // non-null when matchConfidence < 0.3
+// }
+//
+// Hallucination is a VETO, not a score: any composer claim with
+// status='hallucinated' forces label='handle_manually' regardless of
+// productConfidence. Flagged claims are counted but never downgrade the
+// label alone (per Business Story §7.5).
+//
+// Thresholds confirmed with the team 2026-07-17 (80/60, not 85/60):
+// auto_worthy : productConfidence >= 0.80
+// needs_review : productConfidence >= 0.60
+// handle_manually : productConfidence < 0.60 OR hallucinationDetected
