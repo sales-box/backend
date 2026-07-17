@@ -20,7 +20,7 @@ export type ParsedAttachment = {
   lowQuality: boolean;
   fallbackToVision: boolean;
 };
-interface AttachmentRef {
+export interface AttachmentRef {
   filename: string;
   mimeType: string;
   size: number;

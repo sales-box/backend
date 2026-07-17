@@ -1,20 +1,18 @@
-import { CompiledStateGraph } from '@langchain/langgraph';
 import { ReplyGraphStateType } from '@/modules/ai/graphs/reply/reply-graph.state';
 import { Injectable } from '@nestjs/common';
-import { Logger } from '@nestjs/common';
 import { AiModelService } from '@/modules/ai/ai.model.service';
 import { buildReplyGraph } from '@/modules/ai/graphs/reply/reply-graph.factory';
-
+import { AttachmentsService } from '@/modules/attachments/attachments.service';
+import { flattenParsedAttachments } from '@/modules/ai/graphs/reply/nodes/extractor/attachment-flattener';
+import { AttachmentRef } from '@/modules/attachments/attachments.service';
 @Injectable()
 export class ReplyService {
-  private readonly logger = new Logger(ReplyService.name);
-  private readonly graph: CompiledStateGraph<
-    ReplyGraphStateType,
-    Partial<ReplyGraphStateType>,
-    string
-  >;
+  private readonly graph: ReturnType<typeof buildReplyGraph>;
 
-  constructor(private readonly aiModelService: AiModelService) {
+  constructor(
+    private readonly aiModelService: AiModelService,
+    private readonly attachmentsService: AttachmentsService,
+  ) {
     this.graph = buildReplyGraph({ aiModelService: this.aiModelService });
   }
 
@@ -22,23 +20,26 @@ export class ReplyService {
     emailId: string,
     tenantId: string,
     emailBody: string,
+    accountEmail: string,
+    emailRef: { id: string; attachments: AttachmentRef[] }, // ← NEW: Gmail attachment refs
+    intent?: string,
   ): Promise<ReplyGraphStateType> {
-    try {
-      const finalState = await this.graph.invoke({
-        emailId,
-        tenantId,
-        emailBody,
-        excludedByUser: [],
-      });
+    const parsedAttachments = await this.attachmentsService.parseAttachments(
+      accountEmail,
+      emailRef,
+    );
+    const attachmentsText = flattenParsedAttachments(parsedAttachments);
 
-      this.logger.log(`Reply pipeline finished for email ${emailId}`);
-      return finalState as ReplyGraphStateType;
-    } catch (error) {
-      this.logger.error(
-        `Error occurred while drafting reply for email ${emailId}: ${error instanceof Error ? error.message : String(error)}`,
-      );
+    const finalState = await this.graph.invoke({
+      emailId,
+      tenantId,
+      emailBody,
+      intent,
+      attachmentsText,
+      externalContentText: [],
+      excludedByUser: [],
+    });
 
-      throw error;
-    }
+    return finalState;
   }
 }
