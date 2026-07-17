@@ -1,5 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { GmailClientProvider } from '../emails/gmail-client.provider';
+import { AttachmentCacheRepository } from './attachment-cache.repository';
+import { LlmClientService } from '../../common/llm/llm-client.service';
+import { wrapUntrustedContent } from '../../common/security/untrusted-content.wrapper';
 import * as pdfParse from 'pdf-parse';
 import * as mammoth from 'mammoth';
 import * as ExcelJS from 'exceljs';
@@ -14,6 +17,8 @@ export type ParsedAttachment = {
   structured?: string;
   skipped?: boolean;
   reason?: string;
+  lowQuality: boolean;
+  fallbackToVision: boolean;
 };
 interface AttachmentRef {
   filename: string;
@@ -28,6 +33,8 @@ interface EmailRef {
 
 //------------constants-------------
 const MAX_SIZE_BYTES = 10 * 1024 * 1024; //10MB
+const MIN_PDF_TEXT_LENGTH = 100;
+const VISION_PROMPT = 'Extract all readable text from this image.';
 const MIME_DOCX =
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const MIME_XLSX =
@@ -38,7 +45,11 @@ const MIME_PPTX =
 @Injectable()
 export class AttachmentsService {
   private readonly logger = new Logger(AttachmentsService.name);
-  constructor(private readonly gmailClientProvider: GmailClientProvider) {}
+  constructor(
+    private readonly gmailClientProvider: GmailClientProvider,
+    private readonly attachmentCache: AttachmentCacheRepository,
+    private readonly llm: LlmClientService,
+  ) {}
 
   async downloadAttachment(
     accountEmail: string,
@@ -116,7 +127,33 @@ export class AttachmentsService {
     return slideTexts.join('\n\n');
   }
 
-  async parseAttachment(
+  async parseAttachmentCached(
+    accountEmail: string,
+    messageId: string,
+    attachment: AttachmentRef,
+  ): Promise<ParsedAttachment> {
+    const cached = await this.attachmentCache.get(attachment.attachmentId);
+    if (cached) {
+      this.logger.log(
+        `Cache hit for attachment ${attachment.attachmentId} (${attachment.filename})`,
+      );
+      return cached;
+    }
+
+    const parsed = await this.parseAttachmentFresh(
+      accountEmail,
+      messageId,
+      attachment,
+    );
+    // Only successful parses are cached — skipped/parse_error results must
+    // stay retryable (a transient Gmail/parser failure is not immutable).
+    if (!parsed.skipped) {
+      await this.attachmentCache.set(attachment.attachmentId, parsed);
+    }
+    return parsed;
+  }
+
+  private async parseAttachmentFresh(
     accountEmail: string,
     messageId: string,
     attachment: AttachmentRef,
@@ -130,6 +167,8 @@ export class AttachmentsService {
         type: 'unsupported',
         skipped: true,
         reason: `exceeds_size_limit`,
+        lowQuality: false,
+        fallbackToVision: false,
       };
     }
     const mime = attachment.mimeType.toLowerCase();
@@ -145,6 +184,8 @@ export class AttachmentsService {
         type: 'unsupported',
         skipped: true,
         reason: `unsupported_type`,
+        lowQuality: false,
+        fallbackToVision: false,
       };
     }
     try {
@@ -155,32 +196,63 @@ export class AttachmentsService {
       );
 
       if (isPdf) {
-        const text = await this.parsePdf(buffer);
+        const rawText = await this.parsePdf(buffer);
+        const isWeak = rawText.trim().length < MIN_PDF_TEXT_LENGTH;
+
+        if (isWeak) {
+          const screenshot = await this.screenshotFirstPage(buffer);
+          const visionText = await this.llm.analyzeImage(
+            screenshot,
+            VISION_PROMPT,
+            'image/png',
+          );
+          return {
+            filename: attachment.filename,
+            type: 'pdf',
+            text: wrapUntrustedContent(visionText, 'vision_extracted'),
+            skipped: false,
+            lowQuality: true,
+            fallbackToVision: true,
+          };
+        }
+
         return {
           filename: attachment.filename,
           type: 'pdf',
-          text,
+          text: wrapUntrustedContent(rawText, 'attachment_text'),
           skipped: false,
+          lowQuality: false,
+          fallbackToVision: false,
         };
       }
 
       if (isImage) {
         const base64 = this.parseImage(buffer);
+        const visionText = await this.llm.analyzeImage(
+          base64,
+          VISION_PROMPT,
+          mime,
+        );
         return {
           filename: attachment.filename,
           type: 'image',
           base64,
+          text: wrapUntrustedContent(visionText, 'vision_extracted'),
           skipped: false,
+          lowQuality: false,
+          fallbackToVision: false,
         };
       }
 
       if (isDocx) {
-        const text = await this.parseDocx(buffer);
+        const rawText = await this.parseDocx(buffer);
         return {
           filename: attachment.filename,
           type: 'docx',
-          text,
+          text: wrapUntrustedContent(rawText, 'attachment_text'),
           skipped: false,
+          lowQuality: false,
+          fallbackToVision: false,
         };
       }
 
@@ -191,16 +263,20 @@ export class AttachmentsService {
           type: 'xlsx',
           structured,
           skipped: false,
+          lowQuality: false,
+          fallbackToVision: false,
         };
       }
 
       if (isPptx) {
-        const text = await this.parsePptx(buffer);
+        const rawText = await this.parsePptx(buffer);
         return {
           filename: attachment.filename,
           type: 'pptx',
-          text,
+          text: wrapUntrustedContent(rawText, 'attachment_text'),
           skipped: false,
+          lowQuality: false,
+          fallbackToVision: false,
         };
       }
 
@@ -223,7 +299,20 @@ export class AttachmentsService {
         type,
         skipped: true,
         reason: 'parse_error',
+        lowQuality: false,
+        fallbackToVision: false,
       };
+    }
+  }
+
+  private async screenshotFirstPage(pdfBuffer: Buffer): Promise<string> {
+    const parser = new pdfParse.PDFParse({ data: pdfBuffer });
+    try {
+      const result = await parser.getScreenshot({ first: 1, scale: 2 });
+      const page = result.pages[0];
+      return Buffer.from(page.data).toString('base64');
+    } finally {
+      await parser.destroy();
     }
   }
 
@@ -237,7 +326,7 @@ export class AttachmentsService {
 
     const results = await Promise.allSettled(
       email.attachments.map((att) =>
-        this.parseAttachment(accountEmail, email.id, att),
+        this.parseAttachmentCached(accountEmail, email.id, att),
       ),
     );
 
@@ -258,6 +347,8 @@ export class AttachmentsService {
           type: 'unsupported',
           skipped: true,
           reason: 'unexpected_system_error',
+          lowQuality: false,
+          fallbackToVision: false,
         });
       }
     }
