@@ -3,7 +3,20 @@ import { AiOrchestratorService } from './ai-orchestrator.service';
 
 function makeDeps() {
   return {
-    prisma: { generalAnalysis: { findUnique: jest.fn(), create: jest.fn() } },
+    prisma: {
+      generalAnalysis: {
+        findUnique: jest.fn(),
+        create: jest.fn(),
+        update: jest
+          .fn()
+          .mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+            Promise.resolve({
+              ...BASE_CLASSIFICATION,
+              ...data,
+            }),
+          ),
+      },
+    },
     gmailProvider: { fetchMessage: jest.fn() },
     classifierService: { classify: jest.fn() },
     clientsService: { getClientContext: jest.fn() },
@@ -85,7 +98,9 @@ describe('AiOrchestratorService', () => {
         'tenant1',
       );
 
-      expect(result.classification).toEqual(BASE_CLASSIFICATION);
+      expect(result.classification).toEqual(
+        expect.objectContaining(BASE_CLASSIFICATION),
+      );
       expect(result.requirements).toEqual(BASE_FINAL_STATE.extractorResult);
       expect(result.draft).toEqual(BASE_FINAL_STATE.composerResult);
       expect(result.confidence.label).toBe('auto_worthy');
@@ -185,7 +200,9 @@ describe('AiOrchestratorService', () => {
         'tenant1',
       );
 
-      expect(result.classification).toEqual(BASE_CLASSIFICATION);
+      expect(result.classification).toEqual(
+        expect.objectContaining(BASE_CLASSIFICATION),
+      );
     });
   });
 

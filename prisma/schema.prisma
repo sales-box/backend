@@ -8,8 +8,9 @@ generator erd {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
 model Client {
@@ -116,18 +117,22 @@ model WebhookSubscription {
 // Keyed by messageId (not Interaction): no Interaction/Client row exists yet
 // at webhook time — client identity resolution happens later, on-demand.
 model GeneralAnalysis {
-  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  messageId        String   @unique @map("message_id")
-  threadId         String?  @map("thread_id")
-  accountEmail     String   @map("account_email")
-  tenantId         String?  @map("tenant_id") @db.Uuid
-  isUrgent         Boolean  @map("is_urgent")
-  urgencyReason    String?  @map("urgency_reason")
-  intent           String
-  intentConfidence Float    @map("intent_confidence")
-  reasoning        String?
-  promptVersion    String   @map("prompt_version")
-  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id                      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  messageId               String    @unique @map("message_id")
+  threadId                String?   @map("thread_id")
+  accountEmail            String    @map("account_email")
+  tenantId                String?   @map("tenant_id") @db.Uuid
+  isUrgent                Boolean   @map("is_urgent")
+  urgencyReason           String?   @map("urgency_reason")
+  intent                  String
+  intentConfidence        Float     @map("intent_confidence")
+  reasoning               String?
+  promptVersion           String    @map("prompt_version")
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  productConfidence       Float?    @map("product_confidence")
+  clientHistoryConfidence Float?    @map("client_history_confidence")
+  supervisorLabel         String?   @map("supervisor_label")
+  reviewedAt              DateTime? @map("reviewed_at") @db.Timestamptz(6)
 
   @@index([tenantId, isUrgent])
   @@map("general_analysis")

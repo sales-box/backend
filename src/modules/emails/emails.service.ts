@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { google } from 'googleapis';
 import { EmailService } from '@/modules/email/email.service';
 import { GmailClientProvider } from './gmail-client.provider';
+import { PrismaService } from '@/database/prisma.service';
 
 @Injectable()
 export class EmailsService {
@@ -10,6 +11,7 @@ export class EmailsService {
   constructor(
     private readonly emailService: EmailService,
     private readonly gmailClientProvider: GmailClientProvider,
+    private readonly prisma: PrismaService,
   ) {}
 
   async fetchThreadsForClient(
@@ -96,15 +98,101 @@ export class EmailsService {
   async getInboxStatsForSe(
     email: string,
     tenantId?: string,
-  ): Promise<{ totalEmails: number; syncedAt: string }> {
+  ): Promise<{
+    totalEmails: number;
+    syncedAt: string;
+    urgentCount: number;
+    intentBreakdown: Record<string, number>;
+    reviewedBreakdown: { green: number; yellow: number; red: number };
+    notYetReviewedCount: number;
+  }> {
     const gmail = await this.gmailClientProvider.getClientForAccount(
       email,
       tenantId,
     );
     const { data } = await gmail.users.threads.list({ userId: 'me' });
+    const activeThreads = data.threads || [];
+    const activeThreadIds = activeThreads
+      .map((t) => t.id)
+      .filter((id): id is string => !!id);
+
+    interface AnalysisRow {
+      threadId: string | null;
+      isUrgent: boolean;
+      intent: string;
+      supervisorLabel: string | null;
+      reviewedAt: Date | null;
+    }
+
+    let analyses: AnalysisRow[] = [];
+
+    if (tenantId) {
+      const rawAnalyses = await this.prisma.$queryRaw<unknown[]>`
+        SELECT DISTINCT ON (thread_id)
+          thread_id as "threadId",
+          is_urgent as "isUrgent",
+          intent,
+          supervisor_label as "supervisorLabel",
+          reviewed_at as "reviewedAt"
+        FROM general_analysis
+        WHERE tenant_id = ${tenantId}::uuid AND account_email = ${email}
+        ORDER BY thread_id, created_at DESC
+      `;
+      analyses = rawAnalyses as AnalysisRow[];
+    } else {
+      const rawAnalyses = await this.prisma.$queryRaw<unknown[]>`
+        SELECT DISTINCT ON (thread_id)
+          thread_id as "threadId",
+          is_urgent as "isUrgent",
+          intent,
+          supervisor_label as "supervisorLabel",
+          reviewed_at as "reviewedAt"
+        FROM general_analysis
+        WHERE tenant_id IS NULL AND account_email = ${email}
+        ORDER BY thread_id, created_at DESC
+      `;
+      analyses = rawAnalyses as AnalysisRow[];
+    }
+
+    const activeThreadIdsSet = new Set(activeThreadIds);
+    const filteredAnalyses = analyses.filter(
+      (a) => a.threadId && activeThreadIdsSet.has(a.threadId),
+    );
+
+    let urgentCount = 0;
+    const intentBreakdown: Record<string, number> = {};
+    const reviewedBreakdown = { green: 0, yellow: 0, red: 0 };
+
+    for (const a of filteredAnalyses) {
+      if (a.isUrgent) {
+        urgentCount++;
+      }
+      if (a.intent) {
+        intentBreakdown[a.intent] = (intentBreakdown[a.intent] || 0) + 1;
+      }
+      if (a.reviewedAt !== null && a.reviewedAt !== undefined) {
+        const label = a.supervisorLabel;
+        if (label === 'green' || label === 'yellow' || label === 'red') {
+          reviewedBreakdown[label]++;
+        }
+      }
+    }
+
+    let notYetReviewedCount = 0;
+    for (const threadId of activeThreadIds) {
+      const a = filteredAnalyses.find((x) => x.threadId === threadId);
+      if (!a || a.reviewedAt === null || a.reviewedAt === undefined) {
+        notYetReviewedCount++;
+      }
+    }
+
     return {
-      totalEmails: data.threads?.length ?? 0,
+      totalEmails: activeThreads.length,
       syncedAt: new Date().toISOString(),
+      urgentCount,
+      intentBreakdown,
+      reviewedBreakdown,
+      notYetReviewedCount,
     };
   }
 

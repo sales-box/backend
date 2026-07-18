@@ -44,6 +44,10 @@ describe('EmailsController', () => {
       const mockResult = {
         totalEmails: 15,
         syncedAt: '2023-07-01T12:00:00.000Z',
+        urgentCount: 3,
+        intentBreakdown: { demo: 2, pricing: 1 },
+        reviewedBreakdown: { green: 1, yellow: 1, red: 1 },
+        notYetReviewedCount: 12,
       };
       mockEmailsService.getInboxStatsForSe.mockResolvedValue(mockResult);
 
