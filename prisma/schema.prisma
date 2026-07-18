@@ -159,6 +159,8 @@ model Document {
   chunks          DocumentChunk[]
   tenantId        String?         @map("tenant_id") @db.Uuid
   tenant          Tenant?         @relation(fields: [tenantId], references: [id])
+  qualityScore    Int?            @map("quality_score")
+  qualityReport   Json?           @map("quality_report")
 
   @@unique([tenantId, filename, productName], map: "uq_documents_file")
   @@map("documents")

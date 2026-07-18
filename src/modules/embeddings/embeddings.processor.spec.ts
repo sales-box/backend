@@ -26,6 +26,7 @@ describe('EmbeddingsProcessor', () => {
     const proc = new EmbeddingsProcessor(
       { $queryRaw: queryRaw, $executeRaw: executeRaw } as never,
       { embedDocuments } as never,
+      { add: jest.fn().mockResolvedValue({}) } as never,
     );
 
     const result = await proc.process(makeJob('doc-1'));
@@ -41,6 +42,7 @@ describe('EmbeddingsProcessor', () => {
     const proc = new EmbeddingsProcessor(
       { $queryRaw: queryRaw, $executeRaw: jest.fn() } as never,
       { embedDocuments } as never,
+      { add: jest.fn().mockResolvedValue({}) } as never,
     );
 
     const result = await proc.process(makeJob('doc-1'));

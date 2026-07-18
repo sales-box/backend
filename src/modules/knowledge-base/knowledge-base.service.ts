@@ -10,8 +10,8 @@ import { extname } from 'node:path';
 import { DocumentStatus } from '@prisma/client';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { getEncoding, type Tiktoken } from 'js-tiktoken';
-import { PDFParse } from 'pdf-parse';
 import { PrismaService } from '../../database/prisma.service';
+import { resolveLoader, SUPPORTED_EXTENSIONS } from './loaders/loader-registry';
 import type { PaginationOptions } from '../../database/pagination/pagination.types';
 import { UploadResponseDto } from './dto/upload-response.dto';
 import {
@@ -31,14 +31,6 @@ export interface DocumentQuality {
   isLowConfidence: boolean;
   qualityReason: string | null;
 }
-
-type FileType = 'pdf' | 'txt' | 'md';
-
-const ALLOWED_TYPES: Record<string, FileType> = {
-  '.pdf': 'pdf',
-  '.txt': 'txt',
-  '.md': 'md',
-};
 
 export interface IngestInput {
   filename: string;
@@ -75,9 +67,12 @@ export class KnowledgeBaseService {
     { filename, buffer }: IngestInput,
     owner?: UploadOwner,
   ): Promise<UploadResponseDto> {
-    const fileType = this.resolveFileType(filename);
-    const text = await this.extractText(buffer, fileType);
+    const ext = this.resolveExt(filename);
+    const loader = resolveLoader(ext)!;
+    const { text } = await loader.load(buffer);
     const chunks = await this.chunk(text);
+    // fileType stored as the extension sans dot, e.g. 'pdf', 'docx'.
+    const fileType = ext.slice(1);
     const quality = this.assessDocumentQuality(
       (text ?? '').trim().length,
       buffer.length,
@@ -121,33 +116,14 @@ export class KnowledgeBaseService {
     return { isLowConfidence: false, qualityReason: null };
   }
 
-  private resolveFileType(filename: string): FileType {
+  private resolveExt(filename: string): string {
     const ext = extname(filename ?? '').toLowerCase();
-    const fileType = ALLOWED_TYPES[ext];
-    if (!fileType) {
+    if (!resolveLoader(ext)) {
       throw new BadRequestException(
-        `Unsupported file type "${ext || 'unknown'}". Allowed: .pdf, .txt, .md`,
+        `Unsupported file type "${ext || 'unknown'}". Allowed: ${SUPPORTED_EXTENSIONS.join(', ')}`,
       );
     }
-    return fileType;
-  }
-
-  private async extractText(
-    buffer: Buffer,
-    fileType: FileType,
-  ): Promise<string> {
-    if (fileType === 'pdf') {
-      try {
-        const parser = new PDFParse({ data: buffer });
-        const { text } = await parser.getText();
-        return text ?? '';
-      } catch {
-        // Corrupt or mislabelled PDFs are a client error, not a server crash.
-        throw new BadRequestException('Invalid or corrupted PDF file');
-      }
-    }
-    // txt / md are plain UTF-8.
-    return buffer.toString('utf-8');
+    return ext;
   }
 
   private countTokens = (text: string): number =>
@@ -173,7 +149,7 @@ export class KnowledgeBaseService {
 
   private async persist(
     filename: string,
-    fileType: FileType,
+    fileType: string,
     chunks: Chunk[],
     quality: DocumentQuality,
     owner?: UploadOwner,
@@ -269,6 +245,8 @@ export class KnowledgeBaseService {
           processingError: true,
           isLowConfidence: true,
           qualityReason: true,
+          qualityScore: true,
+          qualityReport: true,
         },
         orderBy: { uploadDate: 'desc' },
       },

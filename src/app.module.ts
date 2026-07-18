@@ -27,6 +27,7 @@ import { ExternalContentModule } from './modules/external-content/external-conte
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AiModule } from './modules/ai/ai.module';
 import { EmbeddingsModule } from './modules/embeddings/embeddings.module';
+import { QualityModule } from './modules/knowledge-base/quality/quality.module';
 import { TenantsModule } from './modules/tenants/tenants.module';
 import { PaymentModule } from './modules/payments/payment.module';
 import { LlmModule } from './common/llm/llm.module';
@@ -118,6 +119,7 @@ const isProd = process.env.NODE_ENV === 'production';
     AnalyticsModule,
     AiModule,
     EmbeddingsModule,
+    QualityModule,
     TenantsModule,
     PaymentModule,
     LlmModule,
