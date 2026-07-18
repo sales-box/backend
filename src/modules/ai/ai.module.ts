@@ -8,6 +8,7 @@ import { AiController } from '@/modules/ai/ai.controller';
 import { ReplyService } from '@/modules/ai/graphs/reply/reply.service';
 import { AiModelService } from '@/modules/ai/ai.model.service';
 import { AiOrchestratorService } from './ai-orchestrator.service';
+import { AuthModule } from '@/modules/auth/auth.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { AiOrchestratorService } from './ai-orchestrator.service';
     AttachmentsModule,
     ClientsModule,
     GmailModule,
+    AuthModule,
   ],
   controllers: [AiController],
   providers: [AiModelService, ReplyService, AiOrchestratorService],
