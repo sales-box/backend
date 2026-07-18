@@ -40,8 +40,10 @@ describe('GmailWebhookController', () => {
       decoded,
       expect.objectContaining({
         jobId: 'se@acme.com#4711',
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 5000 },
+        // 5 attempts spaced 15s→2min: wide enough for a free-tier LLM quota
+        // window to reopen instead of burning all retries inside one minute.
+        attempts: 5,
+        backoff: { type: 'exponential', delay: 15000 },
       }),
     );
     expect(result).toEqual({ ok: true });

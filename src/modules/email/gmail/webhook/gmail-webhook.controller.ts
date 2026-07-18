@@ -54,10 +54,14 @@ export class GmailWebhookController {
     // dedup (the "exactly once" guarantee) is the DB-unique messageId in
     // general_analysis — two layers with different lifetimes.
     // "#" separator: BullMQ rejects ":" in custom job ids (Redis key separator).
+    // 5 attempts spaced 15s→2min (15/30/60/120): wide enough for a free-tier
+    // LLM quota window to reopen, instead of burning every retry inside the
+    // same rate-limited minute. A batch that still fails re-heals on the NEXT
+    // notification, because the frozen baseline re-diffs the same messages.
     await this.classifierQueue.add(CLASSIFY_EMAIL_JOB, jobData, {
       jobId: `${decoded.emailAddress}#${decoded.historyId}`,
-      attempts: 3,
-      backoff: { type: 'exponential', delay: 5000 },
+      attempts: 5,
+      backoff: { type: 'exponential', delay: 15000 },
       removeOnComplete: 100,
       removeOnFail: 500,
     });

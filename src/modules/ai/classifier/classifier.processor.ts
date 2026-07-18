@@ -37,13 +37,27 @@ function isMessageGoneError(error: unknown): boolean {
 }
 
 /**
+ * Provider rate-limit (429). LlmClientService re-wraps API errors into a plain
+ * Error ("LLM Generation Error: 429 status code ..."), so the HTTP status only
+ * survives in the message text — hence the regex fallback.
+ */
+function isRateLimitError(error: unknown): boolean {
+  if (httpStatusOf(error) === 429) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b429\b/.test(message);
+}
+
+/**
  * Background half of the AI pipeline (design doc §0): consumes webhook jobs,
  * diffs Gmail history, and classifies each new inbox message exactly once.
  * Failure contract: throwing lets BullMQ retry the whole job; the unique
  * messageId makes retries cheap (already-stored messages are skipped), and
  * the baseline only advances after a fully clean pass.
  */
-@Processor(CLASSIFIER_QUEUE)
+// Limiter: hard ceiling on job pickup so a burst of notifications can never
+// outrun the LLM provider's quota (free-tier RPM is small). Per-message calls
+// inside one job are bounded separately by the stop-on-429 rule in process().
+@Processor(CLASSIFIER_QUEUE, { limiter: { max: 10, duration: 60_000 } })
 export class ClassifierProcessor extends WorkerHost {
   private readonly logger = new Logger(ClassifierProcessor.name);
 
@@ -109,6 +123,19 @@ export class ClassifierProcessor extends WorkerHost {
       try {
         if (await this.classifyOne(messageId, account)) classified += 1;
       } catch (error) {
+        // Quota exhausted: every further call this minute would 429 too, so
+        // stop NOW instead of burning one failed call per remaining message.
+        // Rows stored before this point survive (messageId-unique dedup), the
+        // baseline stays frozen, and the BullMQ backoff retry resumes exactly
+        // where we stopped once the provider window reopens.
+        if (isRateLimitError(error)) {
+          this.logger.warn(
+            `LLM provider rate-limited after ${classified} classified; deferring the rest of the batch to a retry`,
+          );
+          throw new Error(
+            'Classifier hit the LLM provider rate limit; batch deferred',
+          );
+        }
         failed += 1;
         this.logger.error(
           `Classification failed for a message: ${error instanceof Error ? error.message : String(error)}`,
