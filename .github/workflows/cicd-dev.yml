@@ -142,4 +142,5 @@ jobs:
             docker compose pull
             docker compose run --rm backend npx -y prisma@6.19.3 migrate deploy
             docker compose up -d --force-recreate --remove-orphans
+            docker exec -it salesbox-ollama ollama pull nomic-embed-text
             docker image prune -af
