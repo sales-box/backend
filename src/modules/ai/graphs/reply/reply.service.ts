@@ -6,20 +6,26 @@ import { PrismaService } from '@/database/prisma.service';
 import { AttachmentsService } from '@/modules/attachments/attachments.service';
 import { flattenParsedAttachments } from '@/modules/ai/graphs/reply/nodes/extractor/attachment-flattener';
 import { AttachmentRef } from '@/modules/attachments/attachments.service';
+import { MemorySaver, InMemoryStore } from '@langchain/langgraph';
 
 @Injectable()
 export class ReplyService {
-  private readonly graph: ReturnType<typeof buildReplyGraph>;
+  private readonly graph: ReturnType<
+    ReturnType<typeof buildReplyGraph>['compile']
+  >;
 
   constructor(
     private readonly aiModelService: AiModelService,
     private readonly prisma: PrismaService,
     private readonly attachmentsService: AttachmentsService,
   ) {
+    const checkpointer = new MemorySaver();
+    const store = new InMemoryStore();
+
     this.graph = buildReplyGraph({
       aiModelService: this.aiModelService,
       prisma: this.prisma,
-    });
+    }).compile({ checkpointer, store });
   }
 
   async draftReply(
@@ -46,16 +52,26 @@ export class ReplyService {
     );
     const attachmentsText = flattenParsedAttachments(parsedAttachments);
 
-    const finalState = await this.graph.invoke({
-      emailId,
-      tenantId,
-      emailBody,
-      intent,
-      requirements: options?.requirements,
-      excludedByUser: options?.excludedByUser ?? [],
-      attachmentsText,
-      externalContentText: [],
-    });
+    const config = {
+      configurable: {
+        thread_id: emailId,
+      },
+    };
+
+    const finalState = await this.graph.invoke(
+      {
+        tenantId,
+        threadId: emailId,
+        messageId: emailId,
+        emailBody,
+        intent,
+        requirements: options?.requirements,
+        excludedByUser: options?.excludedByUser ?? [],
+        attachmentsText,
+        externalContentText: [],
+      },
+      config,
+    );
 
     return finalState;
   }

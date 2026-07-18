@@ -1,4 +1,4 @@
-import { MemorySaver } from '@langchain/langgraph';
+import { MemorySaver, InMemoryStore } from '@langchain/langgraph';
 import { ConfigService } from '@nestjs/config';
 import { AiModelService } from '@/modules/ai/ai.model.service';
 import { buildReplyGraph } from '@/modules/ai/graphs/reply/reply-graph.factory';
@@ -11,8 +11,9 @@ const config = new ConfigService(process.env);
 const aiModelService = new AiModelService(config);
 const prisma = new PrismaService();
 
-export const studioGraph = buildReplyGraph({
-  aiModelService,
-  prisma,
+const replyGraph = buildReplyGraph({ aiModelService, prisma });
+
+export const studioGraph = replyGraph.compile({
   checkpointer: new MemorySaver(),
+  store: new InMemoryStore(),
 });
