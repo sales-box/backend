@@ -1,19 +1,36 @@
-import { Controller, Post, NotImplementedException } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { JwtAuthGuard } from '@/modules/auth/jwt-auth.guard';
+import type { AuthenticatedRequest } from '@/modules/auth/jwt-auth.guard';
+import { AiOrchestratorService } from './ai-orchestrator.service';
+import { ProcessEmailDto } from './dto/process-email.dto';
 
 /**
- * Placeholder for the future AI-processing endpoint.
+ * AI processing endpoint — runs the full 4-agent pipeline for a single email:
+ * classify → extract → match → compose → supervise → route.
  */
 @ApiTags('ai')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
 @Controller('ai')
 export class AiController {
-  @Throttle({ default: { limit: 10, ttl: 60000 } }) // 10 requests per minute per IP
+  constructor(private readonly orchestrator: AiOrchestratorService) {}
+
+  @Throttle({ default: { limit: 10, ttl: 60000 } }) // 10 req/min per IP
   @Post('process')
   @ApiOperation({
-    summary: 'AI processing (placeholder — not implemented yet)',
+    summary:
+      'Run the full AI pipeline for one email: classify, extract, match, draft, and route.',
   })
-  process(): never {
-    throw new NotImplementedException('AI processing is not implemented yet');
+  async process(
+    @Req() req: AuthenticatedRequest,
+    @Body() body: ProcessEmailDto,
+  ) {
+    return this.orchestrator.processEmail(
+      body.messageId,
+      body.accountEmail,
+      req.user.tenantId!,
+    );
   }
 }
