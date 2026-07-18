@@ -203,3 +203,19 @@ supervise(input: SupervisorInput): SupervisorOutput
 // auto_worthy : productConfidence >= 0.80
 // needs_review : productConfidence >= 0.60
 // handle_manually : productConfidence < 0.60 OR hallucinationDetected
+
+## AI Orchestration
+
+// ── Role 2 · Khaled (Orchestration, /ai/process) ──────────────────────────
+POST /ai/process { messageId: string, accountEmail: string }
+→ { classification, requirements, draft: ComposerOutput | null, confidence: SupervisorOutput }
+
+Auth: JwtAuthGuard, tenantId taken from the verified JWT (never from the body).
+Classifier: fast path reads GeneralAnalysis by messageId; falls back to a live
+classify() call if the background webhook hasn't processed it yet, then
+persists the result itself (P2002 race → re-read, never double-classify).
+Matcher: still a fixed placeholder (matchConfidence: 0.5) pending Karim's PR (#84).
+Failure isolation: any exception from draftReply() is caught, never
+re-thrown — the orchestrator forces a hallucinated claim into the Supervisor
+input so computeLabel() (PR2) naturally routes to handle_manually instead of
+the request failing with a generic 500.

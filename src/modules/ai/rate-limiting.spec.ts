@@ -9,6 +9,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import fastifyMultipart from '@fastify/multipart';
 import type { FastifyInstance } from 'fastify';
 import { AiController } from './ai.controller';
+import { AiOrchestratorService } from './ai-orchestrator.service';
 import { KnowledgeBaseController } from '../knowledge-base/knowledge-base.controller';
 import { KnowledgeBaseService } from '../knowledge-base/knowledge-base.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -40,6 +41,12 @@ describe('route rate limiting', () => {
         // The upload handler is never reached before the throttle blocks it, so a
         // stub service is enough to let the controller be constructed.
         { provide: KnowledgeBaseService, useValue: { ingest: jest.fn() } },
+        // AiController now requires AiOrchestratorService — stub it out since
+        // this suite only tests throttle behaviour (the handler is never called).
+        {
+          provide: AiOrchestratorService,
+          useValue: { processEmail: jest.fn() },
+        },
       ],
     })
       // This suite tests THROTTLING only — bypass the KB auth guard so requests
