@@ -3,7 +3,6 @@ import { Injectable } from '@nestjs/common';
 import { AiModelService } from '@/modules/ai/ai.model.service';
 import { buildReplyGraph } from '@/modules/ai/graphs/reply/reply-graph.factory';
 import { PrismaService } from '@/database/prisma.service';
-import { Intent } from '@/modules/ai/classifier/classifier.types';
 import { AttachmentsService } from '@/modules/attachments/attachments.service';
 import { flattenParsedAttachments } from '@/modules/ai/graphs/reply/nodes/extractor/attachment-flattener';
 import { AttachmentRef } from '@/modules/attachments/attachments.service';
@@ -29,9 +28,11 @@ export class ReplyService {
     emailBody: string,
     accountEmail: string,
     emailRef: { id: string; attachments: AttachmentRef[] },
+    // Positional to match the orchestrator caller (AiOrchestratorService).
+    // A plain string: the classifier's intent comes from a GeneralAnalysis
+    // DB row. routeByIntent narrows it (unknown → recommendation path).
+    intent?: string,
     options?: {
-      /** Classifier's verdict — routes the matcher (missing = recommendation path). */
-      intent?: Intent;
       /** Explicit itemized needs — overrides the extractor's derivation. */
       requirements?: string[];
       /** Products the user rejected on a previous attempt — the matcher
@@ -49,7 +50,7 @@ export class ReplyService {
       emailId,
       tenantId,
       emailBody,
-      intent: options?.intent,
+      intent,
       requirements: options?.requirements,
       excludedByUser: options?.excludedByUser ?? [],
       attachmentsText,

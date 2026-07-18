@@ -14,7 +14,6 @@ import {
   MATCHER_USER_PROMPT,
 } from './matcher.prompt';
 import { wrapUntrustedContent } from '@/common/security/untrusted-content.wrapper';
-import type { Intent } from '@/modules/ai/classifier/classifier.types';
 
 const logger = new Logger('MatcherNode');
 
@@ -240,7 +239,7 @@ type MatchPath = 'recommendation' | 'answer';
  * Missing intent falls back to recommendation (the pre-fork behavior)
  * until the caller contract (S-AI-7) supplies it.
  */
-export function routeByIntent(intent: Intent | undefined): MatchPath {
+export function routeByIntent(intent: string | undefined): MatchPath {
   if (intent === 'support' || intent === 'follow-up' || intent === 'sensitive')
     return 'answer';
   return 'recommendation'; // 'product inquiry', 'demo request', or unknown

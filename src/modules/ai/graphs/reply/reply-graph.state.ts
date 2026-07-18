@@ -1,17 +1,15 @@
 import { Annotation } from '@langchain/langgraph';
 import { ComposerOutput } from './nodes/composer/composer.schema';
 import { MatchResult } from './nodes/matcher/matcher.schema';
-import { Intent } from '@/modules/ai/classifier/classifier.types';
 import { ExtractorOutput } from './nodes/extractor/extractor.schema';
 
 export const ReplyGraphState = Annotation.Root({
   emailId: Annotation<string>(),
   tenantId: Annotation<string>(),
   emailBody: Annotation<string>(),
-  // Classifier's verdict for this email. Typed as Intent (a string subtype,
-  // so the extractor's plain-string reads still compile). Missing intent =
-  // the matcher falls back to the recommendation path.
-  intent: Annotation<Intent | undefined>(),
+  // Classifier's verdict, from a GeneralAnalysis DB row (a plain string).
+  // routeByIntent narrows it; an unknown/missing value → recommendation path.
+  intent: Annotation<string | undefined>(),
   // Explicit itemized needs. Optional override — when absent, the matcher
   // derives needs from extractorResult, then falls back to the email body.
   requirements: Annotation<string[] | undefined>(),
