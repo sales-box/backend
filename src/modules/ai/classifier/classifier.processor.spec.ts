@@ -195,6 +195,51 @@ describe('ClassifierProcessor', () => {
     expect(prisma.webhookSubscription.update).not.toHaveBeenCalled();
   });
 
+  it('stops the batch on the FIRST provider rate-limit (429) instead of hammering every message', async () => {
+    const prisma = makePrisma();
+    const gmail = makeGmail(['m1', 'm2', 'm3']);
+    // LlmClientService wraps provider errors into a plain Error whose message
+    // carries the status text — this mirrors the real shape.
+    const classifier = {
+      classify: jest
+        .fn()
+        .mockRejectedValue(
+          new Error('LLM Generation Error: 429 status code (no body)'),
+        ),
+    } as unknown as ClassifierService;
+    const processor = new ClassifierProcessor(prisma, gmail, classifier);
+
+    await expect(processor.process(makeJob(jobData))).rejects.toThrow(
+      /rate.?limit/i,
+    );
+    // ONE probe, not one 429 per message in the batch.
+    expect(classifier.classify).toHaveBeenCalledTimes(1);
+    expect(prisma.webhookSubscription.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps partial progress when the rate-limit hits mid-batch (stored rows survive for the retry)', async () => {
+    const prisma = makePrisma();
+    const gmail = makeGmail(['m1', 'm2', 'm3']);
+    const classifier = {
+      classify: jest
+        .fn()
+        .mockResolvedValueOnce(CLASSIFICATION)
+        .mockRejectedValueOnce(
+          new Error('LLM Generation Error: 429 status code (no body)'),
+        ),
+    } as unknown as ClassifierService;
+    const processor = new ClassifierProcessor(prisma, gmail, classifier);
+
+    await expect(processor.process(makeJob(jobData))).rejects.toThrow(
+      /rate.?limit/i,
+    );
+    // m1 stored before the 429 — the BullMQ retry will skip it via the
+    // messageId-unique dedup and resume from m2.
+    expect(prisma.generalAnalysis.create).toHaveBeenCalledTimes(1);
+    expect(classifier.classify).toHaveBeenCalledTimes(2);
+    expect(prisma.webhookSubscription.update).not.toHaveBeenCalled();
+  });
+
   it('skips messages with no classifiable text AND still advances the baseline', async () => {
     const prisma = makePrisma();
     const gmail = {
