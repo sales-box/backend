@@ -34,6 +34,21 @@ export class EmailsController {
       properties: {
         totalEmails: { type: 'number' },
         syncedAt: { type: 'string', format: 'date-time' },
+        urgentCount: { type: 'number' },
+        intentBreakdown: {
+          type: 'object',
+          additionalProperties: { type: 'number' },
+        },
+        reviewedBreakdown: {
+          type: 'object',
+          properties: {
+            green: { type: 'number' },
+            yellow: { type: 'number' },
+            red: { type: 'number' },
+          },
+          required: ['green', 'yellow', 'red'],
+        },
+        notYetReviewedCount: { type: 'number' },
       },
     },
   })

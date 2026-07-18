@@ -161,8 +161,25 @@ export class AiOrchestratorService {
 
     const supervision = this.supervisorService.supervise(supervisorInput);
 
+    const labelMapping: Record<string, string> = {
+      auto_worthy: 'green',
+      needs_review: 'yellow',
+      handle_manually: 'red',
+    };
+    const supervisorLabel = labelMapping[supervision.label] || null;
+
+    const updatedClassification = await this.prisma.generalAnalysis.update({
+      where: { id: classification.id },
+      data: {
+        productConfidence: supervision.productConfidence,
+        clientHistoryConfidence: supervision.clientHistoryConfidence,
+        supervisorLabel,
+        reviewedAt: new Date(),
+      },
+    });
+
     return {
-      classification,
+      classification: updatedClassification,
       requirements: finalState?.extractorResult ?? null,
       draft: supervision.draftAvailable
         ? (finalState?.composerResult ?? null)
