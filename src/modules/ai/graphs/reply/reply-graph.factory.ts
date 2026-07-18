@@ -8,18 +8,25 @@ import {
   BaseCheckpointSaver,
 } from '@langchain/langgraph';
 import { composerNode } from '@/modules/ai/graphs/reply/nodes/composer/composer.node';
+import { matcherNode } from '@/modules/ai/graphs/reply/nodes/matcher/matcher.node';
+import { PrismaService } from '@/database/prisma.service';
 
 export interface ReplyGraphDependencies {
   aiModelService: AiModelService;
+  // Required, not optional: the matcher node's retrieval SQL cannot run
+  // without it, and a required field makes the compiler find every caller.
+  prisma: PrismaService;
   checkpointer?: BaseCheckpointSaver;
 }
 
 export function buildReplyGraph(deps: ReplyGraphDependencies) {
   return new StateGraph(ReplyGraphState)
     .addNode('extract', (state) => extractorNode(state, deps.aiModelService))
+    .addNode('match', (state) => matcherNode(state, deps))
     .addNode('compose', (state) => composerNode(state, deps.aiModelService))
     .addEdge(START, 'extract')
-    .addEdge('extract', 'compose')
+    .addEdge('extract', 'match')
+    .addEdge('match', 'compose')
     .addEdge('compose', END)
     .compile({ checkpointer: deps.checkpointer });
 }

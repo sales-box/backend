@@ -24,6 +24,9 @@ const validEnv = {
   LLM_BASE_URL: 'https://api.groq.com/openai/v1',
   LLM_MODEL: 'llama-3.3-70b-versatile',
   VISION_MODEL: 'meta-llama/llama-4-scout-17b-16e-instruct',
+  EMBEDDING_API_KEY: 'ollama',
+  EMBEDDING_BASE_URL: 'http://localhost:11434/v1',
+  EMBEDDING_MODEL: 'nomic-embed-text',
 };
 
 describe('validateEnv', () => {
@@ -47,6 +50,9 @@ describe('validateEnv', () => {
     'LLM_BASE_URL',
     'LLM_MODEL',
     'VISION_MODEL',
+    'EMBEDDING_API_KEY',
+    'EMBEDDING_BASE_URL',
+    'EMBEDDING_MODEL',
   ])('throws at startup when %s is missing', (key) => {
     const env = { ...validEnv };
     delete (env as Record<string, unknown>)[key];

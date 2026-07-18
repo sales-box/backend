@@ -8,6 +8,9 @@ export function buildOpenApiDocument(app: INestApplication): OpenAPIObject {
     .setDescription('Backend API for the Inbox Sales Copilot')
     .setVersion('0.1.0')
     .addCookieAuth('session')
+    // Controllers reference @ApiBearerAuth(); without this registration the
+    // scheme is undefined and Swagger UI's Authorize button can't offer it.
+    .addBearerAuth()
     .build();
   return SwaggerModule.createDocument(app, config);
 }

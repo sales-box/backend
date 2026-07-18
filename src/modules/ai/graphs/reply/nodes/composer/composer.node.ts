@@ -6,18 +6,42 @@ import {
 } from '@/modules/ai/graphs/reply/nodes/composer/composer.prompt';
 import { ComposerSchema } from '@/modules/ai/graphs/reply/nodes/composer/composer.schema';
 import { wrapUntrustedContent } from '@/common/security/untrusted-content.wrapper';
+import { requirementsFromState } from '@/modules/ai/graphs/reply/nodes/matcher/matcher.node';
 
 export async function composerNode(
   state: ReplyGraphStateType,
   aiModelService: AiModelService,
 ): Promise<Partial<ReplyGraphStateType>> {
   const body = wrapUntrustedContent(state.emailBody, 'email_body');
+  const match = state.matchResult;
 
-  const userMessage = COMPOSER_USER_PROMPT.replace('{emailBody}', body)
-    .replace('{requirements}', 'No requirements yet (mock)')
-    .replace('{recommendedProduct}', 'N/A')
-    .replace('{matcherReasoning}', 'N/A')
-    .replace('{citedChunks}', 'No chunks available');
+  // recommendedProduct is null on the answer path — the client asked a
+  // question and no product was chosen. Never interpolate "N/A" into a
+  // customer-facing draft; instruct the model instead.
+  const productLine = match?.recommendedProduct
+    ? match.recommendedProduct
+    : 'None — answer the client’s question; do not pitch a product.';
+
+  const chunksBlock = match?.citedChunkDetails.length
+    ? match.citedChunkDetails
+        .map((c) => `[chunk ${c.id}]\n${c.content}`)
+        .join('\n\n')
+    : 'No chunks available';
+
+  const userMessage = COMPOSER_USER_PROMPT.replace(
+    '{intent}',
+    state.intent ?? 'unknown',
+  )
+    .replace('{emailBody}', body)
+    .replace(
+      '{requirements}',
+      requirementsFromState(state)
+        .map((r) => `- ${r}`)
+        .join('\n') || 'None provided',
+    )
+    .replace('{recommendedProduct}', productLine)
+    .replace('{matcherReasoning}', match?.reasoning ?? 'N/A')
+    .replace('{productChunks}', chunksBlock);
 
   const composerResult = await aiModelService.generateStructured({
     schema: ComposerSchema,

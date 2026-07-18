@@ -21,5 +21,7 @@ import { AuthModule } from '@/modules/auth/auth.module';
   ],
   controllers: [AiController],
   providers: [AiModelService, ReplyService, AiOrchestratorService],
+  // Exported so the embeddings worker can reuse embedDocuments().
+  exports: [AiModelService],
 })
 export class AiModule {}

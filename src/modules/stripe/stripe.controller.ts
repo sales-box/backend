@@ -4,7 +4,12 @@ import * as fastify from 'fastify';
 import Stripe from 'stripe';
 import { StripeService } from './stripe.service';
 import { PaymentService } from '../payments/payment.service';
-import { ApiTags } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiHeader,
+  ApiOkResponse,
+} from '@nestjs/swagger';
 
 interface RequestWithRawBody extends fastify.FastifyRequest {
   rawBody?: Buffer;
@@ -19,6 +24,17 @@ export class StripeController {
   ) {}
 
   @Post('webhook')
+  @ApiOperation({
+    summary: 'Stripe webhook receiver (called by Stripe, not interactively)',
+    description:
+      'Signature-verified against STRIPE_WEBHOOK_SECRET. Handles payment_intent.succeeded, payment_intent.payment_failed and charge.refunded.',
+  })
+  @ApiHeader({
+    name: 'stripe-signature',
+    description: 'Stripe signature header',
+    required: true,
+  })
+  @ApiOkResponse({ description: 'Event received and processed.' })
   @HttpCode(200)
   async webhook(
     @Req() request: RequestWithRawBody,

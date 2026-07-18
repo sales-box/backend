@@ -160,7 +160,7 @@ model Document {
   tenantId        String?         @map("tenant_id") @db.Uuid
   tenant          Tenant?         @relation(fields: [tenantId], references: [id])
 
-  @@unique([filename, productName], map: "uq_documents_file")
+  @@unique([tenantId, filename, productName], map: "uq_documents_file")
   @@map("documents")
 }
 
@@ -170,7 +170,7 @@ model DocumentChunk {
   document   Document                     @relation(fields: [documentId], references: [id], onDelete: Cascade)
   chunkIndex Int?                         @map("chunk_index")
   content    String?
-  embedding  Unsupported("vector(1536)")?
+  embedding  Unsupported("vector(768)")?
   tokenCount Int?                         @map("token_count")
   metadata   Json?
 

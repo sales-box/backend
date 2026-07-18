@@ -1,7 +1,7 @@
 import z from 'zod';
 import { Injectable, Logger } from '@nestjs/common';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { ChatOpenAI } from '@langchain/openai';
+import { ChatOpenAI, OpenAIEmbeddings } from '@langchain/openai';
 import { ConfigService } from '@nestjs/config';
 
 export type MessageInput = {
@@ -19,6 +19,7 @@ export interface GenerateStructuredParams<T extends z.ZodTypeAny> {
 export class AiModelService {
   private readonly logger = new Logger(AiModelService.name);
   private readonly chatModel: BaseChatModel;
+  private readonly embeddings: OpenAIEmbeddings;
 
   constructor(private readonly config: ConfigService) {
     this.chatModel = new ChatOpenAI({
@@ -28,6 +29,19 @@ export class AiModelService {
         baseURL: this.config.getOrThrow<string>('LLM_BASE_URL'),
       },
       temperature: 0,
+      maxRetries: 3,
+      timeout: 15000,
+    });
+
+    // Embeddings use a separate provider from chat: Groq (LLM_BASE_URL)
+    // serves no /embeddings endpoint. Ollama's endpoint is OpenAI-compatible,
+    // so the same SDK class works — only the baseURL and model differ.
+    this.embeddings = new OpenAIEmbeddings({
+      apiKey: this.config.getOrThrow<string>('EMBEDDING_API_KEY'),
+      model: this.config.getOrThrow<string>('EMBEDDING_MODEL'),
+      configuration: {
+        baseURL: this.config.getOrThrow<string>('EMBEDDING_BASE_URL'),
+      },
       maxRetries: 3,
       timeout: 15000,
     });
@@ -57,13 +71,14 @@ export class AiModelService {
     }
   }
 
-  // Placeholder methods for embedding functionality, to be implemented later
-  embedQuery(): Promise<number[]> {
-    throw new Error('Not implemented');
+  /** Embed a single query string → one 768-dim vector (nomic-embed-text). */
+  async embedQuery(text: string): Promise<number[]> {
+    return this.embeddings.embedQuery(text);
   }
 
-  embedDocuments(): Promise<number[][]> {
-    throw new Error('Not implemented');
+  /** Embed many texts in one request → one vector per text, same order. */
+  async embedDocuments(texts: string[]): Promise<number[][]> {
+    return this.embeddings.embedDocuments(texts);
   }
 
   getChatModel(): BaseChatModel {
