@@ -10,6 +10,50 @@ jest.mock('pdf-parse', () => ({
   })),
 }));
 
+jest.mock('mammoth', () => ({
+  extractRawText: jest.fn().mockResolvedValue({
+    value: 'Docx extracted text content for testing purposes.',
+  }),
+}));
+
+const mockEachRow = jest.fn((cb: (row: { values: unknown[] }) => void) => {
+  cb({ values: [null, 'Name', 'Price', 'SKU'] });
+  cb({ values: [null, 'Widget', '9.99', 'W-001'] });
+});
+const mockEachSheet = jest.fn(
+  (cb: (ws: { name: string; eachRow: typeof mockEachRow }) => void) => {
+    cb({ name: 'Sheet1', eachRow: mockEachRow });
+  },
+);
+jest.mock('exceljs', () => ({
+  Workbook: jest.fn().mockImplementation(() => ({
+    xlsx: {
+      load: jest.fn().mockResolvedValue(undefined),
+    },
+    eachSheet: mockEachSheet,
+  })),
+}));
+
+jest.mock('jszip', () => ({
+  __esModule: true,
+  default: {
+    loadAsync: jest.fn().mockResolvedValue({
+      files: {
+        'ppt/slides/slide1.xml': {
+          async: jest
+            .fn()
+            .mockResolvedValue(
+              '<a:t>Hello World</a:t><a:t>Slide content</a:t>',
+            ),
+        },
+        'ppt/slides/slide2.xml': {
+          async: jest.fn().mockResolvedValue('<a:t>Second slide text</a:t>'),
+        },
+      },
+    }),
+  },
+}));
+
 describe('KnowledgeBaseService', () => {
   let service: KnowledgeBaseService;
   let tx: {
@@ -169,6 +213,92 @@ describe('KnowledgeBaseService', () => {
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('ingests a .docx file using mammoth', async () => {
+    const res = await service.ingest({
+      filename: 'proposal.docx',
+      mimetype:
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      buffer: Buffer.from('fake-docx'),
+    });
+    expect(res.status).toBe(DocumentStatus.completed);
+    expect(res.chunksCreated).toBeGreaterThan(0);
+    expect(res.filename).toBe('proposal.docx');
+  });
+
+  it('ingests a .xlsx file using ExcelJS', async () => {
+    const res = await service.ingest({
+      filename: 'catalog.xlsx',
+      mimetype:
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      buffer: Buffer.from('fake-xlsx'),
+    });
+    expect(res.status).toBe(DocumentStatus.completed);
+    expect(res.chunksCreated).toBeGreaterThan(0);
+    expect(res.filename).toBe('catalog.xlsx');
+  });
+
+  it('ingests a .pptx file using JSZip', async () => {
+    const res = await service.ingest({
+      filename: 'deck.pptx',
+      mimetype:
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      buffer: Buffer.from('fake-pptx'),
+    });
+    expect(res.status).toBe(DocumentStatus.completed);
+    expect(res.chunksCreated).toBeGreaterThan(0);
+    expect(res.filename).toBe('deck.pptx');
+  });
+
+  it('maps .ppt extension to pptx parser', async () => {
+    const res = await service.ingest({
+      filename: 'legacy.ppt',
+      mimetype: 'application/vnd.ms-powerpoint',
+      buffer: Buffer.from('fake-ppt'),
+    });
+    expect(res.status).toBe(DocumentStatus.completed);
+    expect(res.filename).toBe('legacy.ppt');
+  });
+
+  it('rejects a corrupt DOCX with 400', async () => {
+    const mammoth: { extractRawText: jest.Mock } = jest.requireMock('mammoth');
+    mammoth.extractRawText.mockRejectedValueOnce(new Error('corrupt zip'));
+    await expect(
+      service.ingest({
+        filename: 'bad.docx',
+        mimetype: 'application/octet-stream',
+        buffer: Buffer.from('garbage'),
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rejects a corrupt XLSX with 400', async () => {
+    const ExcelJS: { Workbook: jest.Mock } = jest.requireMock('exceljs');
+    ExcelJS.Workbook.mockImplementationOnce(() => ({
+      xlsx: { load: jest.fn().mockRejectedValue(new Error('bad xlsx')) },
+      eachSheet: jest.fn(),
+    }));
+    await expect(
+      service.ingest({
+        filename: 'bad.xlsx',
+        mimetype: 'application/octet-stream',
+        buffer: Buffer.from('garbage'),
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rejects a corrupt PPTX with 400', async () => {
+    const jszip: { default: { loadAsync: jest.Mock } } =
+      jest.requireMock('jszip');
+    jszip.default.loadAsync.mockRejectedValueOnce(new Error('bad zip'));
+    await expect(
+      service.ingest({
+        filename: 'bad.pptx',
+        mimetype: 'application/octet-stream',
+        buffer: Buffer.from('garbage'),
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('marks empty content as failed with zero chunks', async () => {

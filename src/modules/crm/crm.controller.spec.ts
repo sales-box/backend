@@ -11,6 +11,7 @@ describe('CrmController', () => {
   const mockCrmService = {
     getCrmStatus: jest.fn(),
     connectCrm: jest.fn(),
+    disconnectCrm: jest.fn(),
   };
 
   const tenantId = 'tenant-123';
@@ -68,6 +69,22 @@ describe('CrmController', () => {
 
       expect(res).toEqual(expectedResult);
       expect(mockCrmService.connectCrm).toHaveBeenCalledWith(tenantId, dto);
+    });
+  });
+
+  describe('disconnectCrm', () => {
+    it('calls crmService.disconnectCrm with tenantId from JWT', async () => {
+      const expectedResult = {
+        message: 'CRM disconnected — removed 2 imported clients.',
+        removedClients: 2,
+        status: 'disconnected',
+      };
+      mockCrmService.disconnectCrm.mockResolvedValue(expectedResult);
+
+      const res = await controller.disconnectCrm(mockReq);
+
+      expect(res).toEqual(expectedResult);
+      expect(mockCrmService.disconnectCrm).toHaveBeenCalledWith(tenantId);
     });
   });
 });

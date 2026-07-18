@@ -11,6 +11,9 @@ import { DocumentStatus } from '@prisma/client';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { getEncoding, type Tiktoken } from 'js-tiktoken';
 import { PDFParse } from 'pdf-parse';
+import * as mammoth from 'mammoth';
+import * as ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 import { PrismaService } from '../../database/prisma.service';
 import type { PaginationOptions } from '../../database/pagination/pagination.types';
 import { UploadResponseDto } from './dto/upload-response.dto';
@@ -32,12 +35,16 @@ export interface DocumentQuality {
   qualityReason: string | null;
 }
 
-type FileType = 'pdf' | 'txt' | 'md';
+type FileType = 'pdf' | 'txt' | 'md' | 'docx' | 'xlsx' | 'pptx';
 
 const ALLOWED_TYPES: Record<string, FileType> = {
   '.pdf': 'pdf',
   '.txt': 'txt',
   '.md': 'md',
+  '.docx': 'docx',
+  '.xlsx': 'xlsx',
+  '.pptx': 'pptx',
+  '.ppt': 'pptx',
 };
 
 export interface IngestInput {
@@ -126,7 +133,7 @@ export class KnowledgeBaseService {
     const fileType = ALLOWED_TYPES[ext];
     if (!fileType) {
       throw new BadRequestException(
-        `Unsupported file type "${ext || 'unknown'}". Allowed: .pdf, .txt, .md`,
+        `Unsupported file type "${ext || 'unknown'}". Allowed: .pdf, .txt, .md, .docx, .xlsx, .pptx`,
       );
     }
     return fileType;
@@ -142,10 +149,62 @@ export class KnowledgeBaseService {
         const { text } = await parser.getText();
         return text ?? '';
       } catch {
-        // Corrupt or mislabelled PDFs are a client error, not a server crash.
         throw new BadRequestException('Invalid or corrupted PDF file');
       }
     }
+
+    if (fileType === 'docx') {
+      try {
+        const result = await mammoth.extractRawText({ buffer });
+        return result.value;
+      } catch {
+        throw new BadRequestException('Invalid or corrupted DOCX file');
+      }
+    }
+
+    if (fileType === 'xlsx') {
+      try {
+        const workbook = new ExcelJS.Workbook();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        await workbook.xlsx.load(buffer as any);
+        const lines: string[] = [];
+        workbook.eachSheet((worksheet) => {
+          lines.push(`## ${worksheet.name}`);
+          worksheet.eachRow((row) => {
+            const values = Array.isArray(row.values) ? row.values.slice(1) : [];
+            lines.push(values.map(String).join('\t'));
+          });
+        });
+        return lines.join('\n');
+      } catch {
+        throw new BadRequestException('Invalid or corrupted XLSX file');
+      }
+    }
+
+    if (fileType === 'pptx') {
+      try {
+        const zip = await JSZip.loadAsync(buffer);
+        const slideKeys = Object.keys(zip.files)
+          .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+          .sort();
+        const slideTexts: string[] = [];
+        for (const slideKey of slideKeys) {
+          const xmlContent = await zip.files[slideKey].async('string');
+          const textMatches: string[] =
+            xmlContent.match(/<a:t[^>]*>[^<]+<\/a:t>/g) ?? [];
+          const slideText = textMatches
+            .map((tag: string) => tag.replace(/<[^>]+>/g, '').trim())
+            .filter(Boolean)
+            .join(' ');
+          const slideNumber = slideKey.match(/slide(\d+)/)?.[1] ?? '?';
+          slideTexts.push(`## Slide ${slideNumber}\n${slideText}`);
+        }
+        return slideTexts.join('\n\n');
+      } catch {
+        throw new BadRequestException('Invalid or corrupted PPTX file');
+      }
+    }
+
     // txt / md are plain UTF-8.
     return buffer.toString('utf-8');
   }

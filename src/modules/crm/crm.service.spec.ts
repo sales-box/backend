@@ -16,7 +16,15 @@ import { BadRequestException } from '@nestjs/common';
 
 describe('CrmService', () => {
   let queue: { add: jest.Mock };
-  let prisma: { crmConnection: { findUnique: jest.Mock; upsert: jest.Mock } };
+  let prisma: {
+    crmConnection: {
+      findUnique: jest.Mock;
+      upsert: jest.Mock;
+      delete: jest.Mock;
+    };
+    client: { deleteMany: jest.Mock };
+    $transaction: jest.Mock;
+  };
   let crypto: { encrypt: jest.Mock; decrypt: jest.Mock };
   let factory: { getAdapterForTenant: jest.Mock };
   let clientsService: { getOrCreateClient: jest.Mock };
@@ -30,7 +38,13 @@ describe('CrmService', () => {
       crmConnection: {
         findUnique: jest.fn(),
         upsert: jest.fn(),
+        delete: jest.fn(),
       },
+      client: {
+        deleteMany: jest.fn(),
+      },
+      // Execute the array of prisma operations, mirroring $transaction([...]).
+      $transaction: jest.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
     };
     crypto = {
       encrypt: jest.fn().mockReturnValue('encrypted-api-key'),
@@ -119,6 +133,47 @@ describe('CrmService', () => {
           apiKey: 'key',
         }),
       ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('disconnectCrm', () => {
+    it('is idempotent — no connection means nothing to remove', async () => {
+      prisma.crmConnection.findUnique.mockResolvedValue(null);
+
+      const result = await service.disconnectCrm(tenantId);
+
+      expect(result).toEqual({
+        message: 'No CRM connection to disconnect.',
+        removedClients: 0,
+        status: 'disconnected',
+      });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(prisma.crmConnection.delete).not.toHaveBeenCalled();
+    });
+
+    it('deletes the connection and CRM-imported clients in one transaction', async () => {
+      prisma.crmConnection.findUnique.mockResolvedValue({
+        tenantId,
+        status: 'connected',
+      });
+      prisma.client.deleteMany.mockResolvedValue({ count: 3 });
+      prisma.crmConnection.delete.mockResolvedValue({ tenantId });
+
+      const result = await service.disconnectCrm(tenantId);
+
+      expect(result).toEqual({
+        message: 'CRM disconnected — removed 3 imported clients.',
+        removedClients: 3,
+        status: 'disconnected',
+      });
+      // Only CRM-sourced clients (crmId set) are removed.
+      expect(prisma.client.deleteMany).toHaveBeenCalledWith({
+        where: { tenantId, crmId: { not: null } },
+      });
+      expect(prisma.crmConnection.delete).toHaveBeenCalledWith({
+        where: { tenantId },
+      });
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     });
   });
 

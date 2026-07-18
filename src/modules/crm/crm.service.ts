@@ -128,6 +128,39 @@ export class CrmService {
     };
   }
 
+  async disconnectCrm(tenantId: string) {
+    const connection = await this.prisma.crmConnection.findUnique({
+      where: { tenantId },
+    });
+
+    // Idempotent: disconnecting an already-disconnected tenant is not an error.
+    if (!connection) {
+      return {
+        message: 'No CRM connection to disconnect.',
+        removedClients: 0,
+        status: 'disconnected',
+      };
+    }
+    const [removed] = await this.prisma.$transaction([
+      this.prisma.client.deleteMany({
+        where: { tenantId, crmId: { not: null } },
+      }),
+      this.prisma.crmConnection.delete({
+        where: { tenantId },
+      }),
+    ]);
+
+    this.logger.log(
+      `Disconnected CRM for tenant ${tenantId} — removed ${removed.count} imported client(s)`,
+    );
+
+    return {
+      message: `CRM disconnected — removed ${removed.count} imported clients.`,
+      removedClients: removed.count,
+      status: 'disconnected',
+    };
+  }
+
   async enqueueContactSync(
     tenantId: string,
     client: ClientRecord,
