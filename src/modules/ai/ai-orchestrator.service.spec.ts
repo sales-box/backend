@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { AiOrchestratorService } from './ai-orchestrator.service';
 
 function makeDeps() {
@@ -148,7 +149,6 @@ describe('AiOrchestratorService', () => {
     });
 
     it('handles P2002 race — re-reads the row the background processor wrote', async () => {
-      const { Prisma } = await import('@prisma/client');
       const deps = makeDeps();
       deps.gmailProvider.fetchMessage.mockResolvedValue(BASE_PARSED_MESSAGE);
       deps.prisma.generalAnalysis.findUnique
