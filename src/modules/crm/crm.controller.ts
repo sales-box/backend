@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { CrmService } from './crm.service';
 import { ConnectCrmDto } from './dto/connect-crm.dto';
@@ -32,5 +40,14 @@ export class CrmController {
     @Body() body: ConnectCrmDto,
   ) {
     return this.crmService.connectCrm(req.user.tenantId!, body);
+  }
+
+  @Delete(':id/crm/disconnect')
+  @ApiOkResponse({
+    description:
+      'Disconnect the CRM: remove the stored key and delete imported contacts',
+  })
+  async disconnectCrm(@Req() req: AuthenticatedRequest) {
+    return this.crmService.disconnectCrm(req.user.tenantId!);
   }
 }

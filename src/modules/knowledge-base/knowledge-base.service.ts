@@ -10,8 +10,11 @@ import { extname } from 'node:path';
 import { DocumentStatus } from '@prisma/client';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { getEncoding, type Tiktoken } from 'js-tiktoken';
+import { PDFParse } from 'pdf-parse';
+import * as mammoth from 'mammoth';
+import * as ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 import { PrismaService } from '../../database/prisma.service';
-import { resolveLoader, SUPPORTED_EXTENSIONS } from './loaders/loader-registry';
 import type { PaginationOptions } from '../../database/pagination/pagination.types';
 import { UploadResponseDto } from './dto/upload-response.dto';
 import {
@@ -31,6 +34,18 @@ export interface DocumentQuality {
   isLowConfidence: boolean;
   qualityReason: string | null;
 }
+
+type FileType = 'pdf' | 'txt' | 'md' | 'docx' | 'xlsx' | 'pptx';
+
+const ALLOWED_TYPES: Record<string, FileType> = {
+  '.pdf': 'pdf',
+  '.txt': 'txt',
+  '.md': 'md',
+  '.docx': 'docx',
+  '.xlsx': 'xlsx',
+  '.pptx': 'pptx',
+  '.ppt': 'pptx',
+};
 
 export interface IngestInput {
   filename: string;
@@ -67,12 +82,9 @@ export class KnowledgeBaseService {
     { filename, buffer }: IngestInput,
     owner?: UploadOwner,
   ): Promise<UploadResponseDto> {
-    const ext = this.resolveExt(filename);
-    const loader = resolveLoader(ext)!;
-    const { text } = await loader.load(buffer);
+    const fileType = this.resolveFileType(filename);
+    const text = await this.extractText(buffer, fileType);
     const chunks = await this.chunk(text);
-    // fileType stored as the extension sans dot, e.g. 'pdf', 'docx'.
-    const fileType = ext.slice(1);
     const quality = this.assessDocumentQuality(
       (text ?? '').trim().length,
       buffer.length,
@@ -116,14 +128,85 @@ export class KnowledgeBaseService {
     return { isLowConfidence: false, qualityReason: null };
   }
 
-  private resolveExt(filename: string): string {
+  private resolveFileType(filename: string): FileType {
     const ext = extname(filename ?? '').toLowerCase();
-    if (!resolveLoader(ext)) {
+    const fileType = ALLOWED_TYPES[ext];
+    if (!fileType) {
       throw new BadRequestException(
-        `Unsupported file type "${ext || 'unknown'}". Allowed: ${SUPPORTED_EXTENSIONS.join(', ')}`,
+        `Unsupported file type "${ext || 'unknown'}". Allowed: .pdf, .txt, .md, .docx, .xlsx, .pptx`,
       );
     }
-    return ext;
+    return fileType;
+  }
+
+  private async extractText(
+    buffer: Buffer,
+    fileType: FileType,
+  ): Promise<string> {
+    if (fileType === 'pdf') {
+      try {
+        const parser = new PDFParse({ data: buffer });
+        const { text } = await parser.getText();
+        return text ?? '';
+      } catch {
+        throw new BadRequestException('Invalid or corrupted PDF file');
+      }
+    }
+
+    if (fileType === 'docx') {
+      try {
+        const result = await mammoth.extractRawText({ buffer });
+        return result.value;
+      } catch {
+        throw new BadRequestException('Invalid or corrupted DOCX file');
+      }
+    }
+
+    if (fileType === 'xlsx') {
+      try {
+        const workbook = new ExcelJS.Workbook();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        await workbook.xlsx.load(buffer as any);
+        const lines: string[] = [];
+        workbook.eachSheet((worksheet) => {
+          lines.push(`## ${worksheet.name}`);
+          worksheet.eachRow((row) => {
+            const values = Array.isArray(row.values) ? row.values.slice(1) : [];
+            lines.push(values.map(String).join('\t'));
+          });
+        });
+        return lines.join('\n');
+      } catch {
+        throw new BadRequestException('Invalid or corrupted XLSX file');
+      }
+    }
+
+    if (fileType === 'pptx') {
+      try {
+        const zip = await JSZip.loadAsync(buffer);
+        const slideKeys = Object.keys(zip.files)
+          .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+          .sort();
+        const slideTexts: string[] = [];
+        for (const slideKey of slideKeys) {
+          const xmlContent = await zip.files[slideKey].async('string');
+          const textMatches: string[] =
+            xmlContent.match(/<a:t[^>]*>[^<]+<\/a:t>/g) ?? [];
+          const slideText = textMatches
+            .map((tag: string) => tag.replace(/<[^>]+>/g, '').trim())
+            .filter(Boolean)
+            .join(' ');
+          const slideNumber = slideKey.match(/slide(\d+)/)?.[1] ?? '?';
+          slideTexts.push(`## Slide ${slideNumber}\n${slideText}`);
+        }
+        return slideTexts.join('\n\n');
+      } catch {
+        throw new BadRequestException('Invalid or corrupted PPTX file');
+      }
+    }
+
+    // txt / md are plain UTF-8.
+    return buffer.toString('utf-8');
   }
 
   private countTokens = (text: string): number =>
@@ -149,7 +232,7 @@ export class KnowledgeBaseService {
 
   private async persist(
     filename: string,
-    fileType: string,
+    fileType: FileType,
     chunks: Chunk[],
     quality: DocumentQuality,
     owner?: UploadOwner,
