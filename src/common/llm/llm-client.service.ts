@@ -30,52 +30,71 @@ export class LlmClientService {
     schema: object;
     temperature?: number;
   }): Promise<T> {
-    try {
-      const response = await this.client.chat.completions.create({
-        model: this.model,
-        temperature: params.temperature ?? 0.2,
-        messages: [
-          { role: 'system', content: params.systemPrompt },
-          { role: 'user', content: params.userMessage },
-        ],
-        tools: [
-          {
-            type: 'function',
-            function: {
-              name: 'structured_output',
-              description: 'Generate structured output matching the schema',
-              parameters: params.schema as Record<string, unknown>,
+    const maxRetries = 2;
+    const backoffMs = [1000, 3000];
+    let attempt = 0;
+
+    while (true) {
+      try {
+        const response = await this.client.chat.completions.create({
+          model: this.model,
+          temperature: params.temperature ?? 0.2,
+          messages: [
+            { role: 'system', content: params.systemPrompt },
+            { role: 'user', content: params.userMessage },
+          ],
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'structured_output',
+                description: 'Generate structured output matching the schema',
+                parameters: params.schema as Record<string, unknown>,
+              },
             },
+          ],
+          tool_choice: {
+            type: 'function',
+            function: { name: 'structured_output' },
           },
-        ],
-        tool_choice: {
-          type: 'function',
-          function: { name: 'structured_output' },
-        },
-      });
+        });
 
-      const toolCall = response.choices[0]?.message?.tool_calls?.find(
-        (call) =>
-          call.type === 'function' &&
-          call.function.name === 'structured_output',
-      );
-
-      if (!toolCall || toolCall.type !== 'function') {
-        throw new Error(
-          'LLM response does not contain a structured_output tool call.',
+        const toolCall = response.choices[0]?.message?.tool_calls?.find(
+          (call) =>
+            call.type === 'function' &&
+            call.function.name === 'structured_output',
         );
-      }
 
-      return JSON.parse(toolCall.function.arguments) as T;
-    } catch (error: any) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      const errorStack = error instanceof Error ? error.stack : undefined;
-      this.logger.error(
-        `Structured LLM generation failed: ${errorMessage}`,
-        errorStack,
-      );
-      throw new Error(`LLM Generation Error: ${errorMessage}`);
+        if (!toolCall || toolCall.type !== 'function') {
+          throw new Error(
+            'LLM response does not contain a structured_output tool call.',
+          );
+        }
+
+        return JSON.parse(toolCall.function.arguments) as T;
+      } catch (error) {
+        const err = error as { status?: number; message?: string };
+        const isRateLimit =
+          err && (err.status === 429 || String(err.message).includes('429'));
+        if (isRateLimit && attempt < maxRetries) {
+          const delay = backoffMs[attempt];
+          attempt++;
+          this.logger.warn(
+            `Rate limit (429) hit in structured LLM generation. Retrying attempt ${attempt}/${maxRetries} after ${delay}ms...`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        const errorStack = error instanceof Error ? error.stack : undefined;
+        this.logger.error(
+          `Structured LLM generation failed: ${errorMessage}`,
+          errorStack,
+        );
+        throw new Error(`LLM Generation Error: ${errorMessage}`);
+      }
     }
   }
 

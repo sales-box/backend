@@ -57,7 +57,7 @@ function isRateLimitError(error: unknown): boolean {
 // Limiter: hard ceiling on job pickup so a burst of notifications can never
 // outrun the LLM provider's quota (free-tier RPM is small). Per-message calls
 // inside one job are bounded separately by the stop-on-429 rule in process().
-@Processor(CLASSIFIER_QUEUE, { limiter: { max: 10, duration: 60_000 } })
+@Processor(CLASSIFIER_QUEUE, { limiter: { max: 5, duration: 60_000 } })
 export class ClassifierProcessor extends WorkerHost {
   private readonly logger = new Logger(ClassifierProcessor.name);
 
