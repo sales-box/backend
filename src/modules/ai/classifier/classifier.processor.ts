@@ -149,9 +149,40 @@ export class ClassifierProcessor extends WorkerHost {
       );
     }
 
+    let sentNewHistoryId = newHistoryId;
+    try {
+      const sentResult = await this.gmailProvider.fetchNewSentThreadIds(
+        emailAddress,
+        subscription.lastHistoryId,
+      );
+      sentNewHistoryId = sentResult.newHistoryId;
+      if (sentResult.threadIds.length > 0) {
+        await this.prisma.generalAnalysis.updateMany({
+          where: {
+            threadId: { in: sentResult.threadIds },
+            accountEmail: account.email,
+            tenantId: account.tenantId,
+            reviewedAt: null,
+          },
+          data: { reviewedAt: new Date() },
+        });
+      }
+    } catch (error) {
+      if (!isHistoryExpiredError(error)) throw error;
+      // history_expired here just means nothing to re-anchor for SENT this
+      // round — the INBOX baseline handling below still applies.
+    }
+
+    // Baseline must advance past whichever diff saw further into history.
+    // historyId is a numeric string; compare numerically, not lexically.
+    const finalHistoryId =
+      BigInt(sentNewHistoryId) > BigInt(newHistoryId)
+        ? sentNewHistoryId
+        : newHistoryId;
+
     await this.prisma.webhookSubscription.update({
       where: { connectedAccountId: account.id },
-      data: { lastHistoryId: newHistoryId },
+      data: { lastHistoryId: finalHistoryId },
     });
     return { classified };
   }

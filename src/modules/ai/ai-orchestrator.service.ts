@@ -174,7 +174,6 @@ export class AiOrchestratorService {
         productConfidence: supervision.productConfidence,
         clientHistoryConfidence: supervision.clientHistoryConfidence,
         supervisorLabel,
-        reviewedAt: new Date(),
       },
     });
 

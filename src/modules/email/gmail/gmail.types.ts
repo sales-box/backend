@@ -7,3 +7,8 @@ export interface NewMessagesResult {
   messageIds: string[];
   newHistoryId: string;
 }
+
+export interface NewSentThreadsResult {
+  threadIds: string[];
+  newHistoryId: string;
+}

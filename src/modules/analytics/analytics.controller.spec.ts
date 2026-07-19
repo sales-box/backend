@@ -31,6 +31,7 @@ describe('AnalyticsController', () => {
             resolveGap: jest.fn(),
             upsertKnowledgeGap: jest.fn(),
             getActivityFeed: jest.fn(),
+            getTeamStats: jest.fn(),
           },
         },
       ],
@@ -184,6 +185,28 @@ describe('AnalyticsController', () => {
 
       expect(service.getActivityFeed).toHaveBeenCalledWith('tenant-a', query);
       expect(result).toEqual(mockFeed);
+    });
+  });
+
+  describe('getTeamStats', () => {
+    it('should call getTeamStats with tenantId from request token', async () => {
+      const mockStats = [
+        {
+          email: 'se@example.com',
+          status: 'verified',
+          grantedAt: new Date(),
+          verifiedAt: new Date(),
+          lastLoginAt: new Date(),
+          emailsReceived: 10,
+          repliesSent: 8,
+          replyRate: 0.8,
+        },
+      ];
+      (service.getTeamStats as jest.Mock).mockResolvedValue(mockStats);
+
+      const result = await controller.getTeamStats(reqFor('tenant-a'));
+      expect(service.getTeamStats).toHaveBeenCalledWith('tenant-a');
+      expect(result).toEqual(mockStats);
     });
   });
 });

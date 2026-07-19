@@ -54,6 +54,9 @@ function makeGmail(ids: string[] = ['m1'], newHistoryId = '200') {
       .fn()
       .mockResolvedValue({ messageIds: ids, newHistoryId }),
     fetchMessage: jest.fn().mockResolvedValue(PARSED),
+    fetchNewSentThreadIds: jest
+      .fn()
+      .mockResolvedValue({ threadIds: [], newHistoryId }),
   } as unknown as GmailProvider;
 }
 
@@ -166,6 +169,9 @@ describe('ClassifierProcessor', () => {
           Object.assign(new Error('Not Found'), { code: 404 }),
         ),
       fetchMessage: jest.fn(),
+      fetchNewSentThreadIds: jest
+        .fn()
+        .mockResolvedValue({ threadIds: [], newHistoryId: '150' }),
     } as unknown as GmailProvider;
     const processor = new ClassifierProcessor(prisma, gmail, makeClassifier());
 
@@ -253,6 +259,9 @@ describe('ClassifierProcessor', () => {
         textPlain: '> quoted only',
         textHtml: '',
       }),
+      fetchNewSentThreadIds: jest
+        .fn()
+        .mockResolvedValue({ threadIds: [], newHistoryId: '200' }),
     } as unknown as GmailProvider;
     const classifier = makeClassifier();
     const processor = new ClassifierProcessor(prisma, gmail, classifier);
@@ -282,6 +291,9 @@ describe('ClassifierProcessor', () => {
         textPlain: '',
         textHtml: '',
       }),
+      fetchNewSentThreadIds: jest
+        .fn()
+        .mockResolvedValue({ threadIds: [], newHistoryId: '200' }),
     } as unknown as GmailProvider;
     const classifier = makeClassifier();
     const processor = new ClassifierProcessor(prisma, gmail, classifier);
@@ -306,6 +318,9 @@ describe('ClassifierProcessor', () => {
           Promise.reject(Object.assign(new Error('Not Found'), { code: 404 })),
         )
         .mockResolvedValueOnce(PARSED),
+      fetchNewSentThreadIds: jest
+        .fn()
+        .mockResolvedValue({ threadIds: [], newHistoryId: '200' }),
     } as unknown as GmailProvider;
     const classifier = makeClassifier();
     const processor = new ClassifierProcessor(prisma, gmail, classifier);
@@ -331,6 +346,9 @@ describe('ClassifierProcessor', () => {
         .mockRejectedValue(
           Object.assign(new Error('backend error'), { code: 500 }),
         ),
+      fetchNewSentThreadIds: jest
+        .fn()
+        .mockResolvedValue({ threadIds: [], newHistoryId: '200' }),
     } as unknown as GmailProvider;
     const processor = new ClassifierProcessor(prisma, gmail, makeClassifier());
 
@@ -375,5 +393,49 @@ describe('ClassifierProcessor', () => {
 
     await expect(processor.process(makeJob(jobData))).rejects.toThrow();
     expect(prisma.webhookSubscription.update).not.toHaveBeenCalled();
+  });
+
+  it('marks corresponding general analysis rows as reviewed when thread replies are detected on the SENT label', async () => {
+    const prisma = makePrisma({
+      generalAnalysis: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({}),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    });
+
+    const gmail = {
+      fetchNewMessageIds: jest
+        .fn()
+        .mockResolvedValue({ messageIds: ['m1'], newHistoryId: '200' }),
+      fetchMessage: jest.fn().mockResolvedValue(PARSED),
+      fetchNewSentThreadIds: jest
+        .fn()
+        .mockResolvedValue({ threadIds: ['t_sent'], newHistoryId: '250' }),
+    } as unknown as GmailProvider;
+
+    const classifier = makeClassifier();
+    const processor = new ClassifierProcessor(prisma, gmail, classifier);
+
+    await processor.process(makeJob(jobData));
+
+    expect(gmail.fetchNewSentThreadIds).toHaveBeenCalledWith(
+      'se@acme.com',
+      '100',
+    );
+    expect(prisma.generalAnalysis.updateMany).toHaveBeenCalledWith({
+      where: {
+        threadId: { in: ['t_sent'] },
+        accountEmail: 'se@acme.com',
+        tenantId: 'tenant-1',
+        reviewedAt: null,
+      },
+      data: { reviewedAt: expect.any(Date) },
+    });
+
+    expect(prisma.webhookSubscription.update).toHaveBeenCalledWith({
+      where: { connectedAccountId: 'acct-1' },
+      data: { lastHistoryId: '250' },
+    });
   });
 });
