@@ -118,6 +118,7 @@ describe('ClientsService', () => {
       });
       mockClientFindFirst
         .mockResolvedValueOnce(null) // no CRM-ID match in DB
+        .mockResolvedValueOnce(null) // no Individual match in DB
         .mockResolvedValueOnce({ id: 'client-domain' }); // Domain match
 
       const result = await service.resolveClientIdentity(
@@ -130,7 +131,7 @@ describe('ClientsService', () => {
         matchedBy: 'domain',
         existingClientId: 'client-domain',
       });
-      expect(mockClientFindFirst).toHaveBeenCalledTimes(2);
+      expect(mockClientFindFirst).toHaveBeenCalledTimes(3);
       expect(mockClientFindFirst).toHaveBeenLastCalledWith({
         where: {
           tenantId,
@@ -357,8 +358,10 @@ describe('ClientsService', () => {
 
       expect(result).toEqual({
         isNewClient: true,
+        matchedBy: null,
         clientId: null,
         status: 'unknown',
+        name: '',
         company: '',
         crmId: null,
         history: [],
@@ -407,8 +410,10 @@ describe('ClientsService', () => {
 
       expect(result).toEqual({
         isNewClient: false,
+        matchedBy: 'individual',
         clientId: 'client-123',
         status: 'active',
+        name: 'John Doe',
         company: 'Stark Industries',
         crmId: 'crm-789',
         history: mockInteractions.slice(0, 5).map((item) => ({
@@ -419,6 +424,52 @@ describe('ClientsService', () => {
           classification: item.classification,
           recommendation: item.recommendation,
         })),
+      });
+    });
+
+    it('should return mapped client context for domain match (effectively new client with empty name and history)', async () => {
+      const mockInteractions = Array.from({ length: 3 }, (_, i) => ({
+        id: `int-${i}`,
+        date: new Date(`2026-07-08T10:0${i}:00.000Z`),
+        type: 'email',
+        subject: `Subject ${i}`,
+        aiSummary: `Summary ${i}`,
+        classification: `class-${i}`,
+        recommendation: `rec-${i}`,
+      }));
+
+      const mockClient = {
+        id: 'client-company-matched',
+        tenantId,
+        email: 'another@acme.com',
+        name: 'Alice Smith',
+        company: 'Acme Corp',
+        status: 'active',
+        crmId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        interactions: mockInteractions,
+      };
+
+      mockClientFindFirst
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(mockClient)
+        .mockResolvedValueOnce(mockClient);
+
+      const result = await service.getClientContext(
+        tenantId,
+        'newperson@acme.com',
+      );
+
+      expect(result).toEqual({
+        isNewClient: true,
+        matchedBy: 'domain',
+        clientId: 'client-company-matched',
+        status: 'active',
+        name: '',
+        company: 'Acme Corp',
+        crmId: null,
+        history: [],
       });
     });
   });

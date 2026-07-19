@@ -56,7 +56,26 @@ export class ClientsService {
       }
     }
 
-    // 2. Domain check
+    // 2. Individual check
+    try {
+      const matchedClient = await this.prisma.client.findFirst({
+        where: { tenantId, email },
+      });
+      if (matchedClient) {
+        return {
+          matchedBy: 'individual',
+          existingClientId: matchedClient.id,
+        };
+      }
+    } catch (error) {
+      this.logger.error(
+        `resolveClientIdentity individual check failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    // 3. Domain check
     const parts = email.split('@');
     const domain = parts.length > 1 ? parts[1].toLowerCase() : null;
     const freeEmails = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com'];
@@ -83,25 +102,6 @@ export class ClientsService {
           }`,
         );
       }
-    }
-
-    // 3. Individual check
-    try {
-      const matchedClient = await this.prisma.client.findFirst({
-        where: { tenantId, email },
-      });
-      if (matchedClient) {
-        return {
-          matchedBy: 'individual',
-          existingClientId: matchedClient.id,
-        };
-      }
-    } catch (error) {
-      this.logger.error(
-        `resolveClientIdentity individual check failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
     }
 
     return {
@@ -235,8 +235,10 @@ export class ClientsService {
       if (!resolved.existingClientId) {
         return {
           isNewClient: true,
+          matchedBy: null,
           clientId: null,
           status: 'unknown',
+          name: '',
           company: '',
           crmId: null,
           history: [],
@@ -256,35 +258,51 @@ export class ClientsService {
       if (!client) {
         return {
           isNewClient: true,
+          matchedBy: null,
           clientId: null,
           status: 'unknown',
+          name: '',
           company: '',
           crmId: null,
           history: [],
         };
       }
 
+      // A 'domain' match means we found a DIFFERENT person at the same
+      // company — not this specific client. Their interaction history
+      // does not belong to the person we're actually emailing, so treat
+      // this as effectively a new (unverified) relationship for
+      // confidence purposes, while still surfacing the company-level
+      // name/company for display.
+      const isEffectivelyNew = resolved.matchedBy === 'domain';
+
       return {
-        isNewClient: false,
+        isNewClient: isEffectivelyNew,
+        matchedBy: resolved.matchedBy,
         clientId: client.id,
         status: client.status,
+        name: isEffectivelyNew ? '' : client.name || '',
         company: client.company || '',
         crmId: client.crmId,
-        history: client.interactions.map((interaction) => ({
-          date: interaction.date.toISOString(),
-          type: interaction.type,
-          subject: interaction.subject,
-          summary: interaction.aiSummary,
-          classification: interaction.classification,
-          recommendation: interaction.recommendation,
-        })),
+        history: isEffectivelyNew
+          ? []
+          : client.interactions.map((interaction) => ({
+              date: interaction.date.toISOString(),
+              type: interaction.type,
+              subject: interaction.subject,
+              summary: interaction.aiSummary,
+              classification: interaction.classification,
+              recommendation: interaction.recommendation,
+            })),
       };
     } catch (error) {
       this.logger.error(error);
       return {
         isNewClient: true,
+        matchedBy: null,
         clientId: null,
         status: 'unknown',
+        name: '',
         company: '',
         crmId: null,
         history: [],
