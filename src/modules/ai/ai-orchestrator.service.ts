@@ -139,6 +139,7 @@ export class AiOrchestratorService {
     } catch (error) {
       this.logger.error(
         `draftReply failed for message ${messageId}: ${error instanceof Error ? error.message : String(error)}`,
+        error instanceof Error ? error.stack : undefined,
       );
       // finalState stays null — handled below, NOT re-thrown.
     }
@@ -169,8 +170,7 @@ export class AiOrchestratorService {
             timelineInferred: true,
           },
       matcherOutput: {
-        // TODO(karim): replace with real matcherResult once PR #84 lands in state.
-        matchConfidence: finalState ? 0.5 : 0,
+        matchConfidence: finalState?.matchResult?.confidence ?? 0,
       },
       composerOutput: {
         draftText: finalState?.composerResult?.draftText ?? '',
@@ -219,6 +219,12 @@ export class AiOrchestratorService {
         ? (finalState?.composerResult ?? null)
         : null,
       confidence: supervision,
+      client: {
+        name: clientContext.name || null,
+        company: clientContext.company || null,
+        status: clientContext.status,
+        isNewClient: clientContext.isNewClient,
+      },
     };
   }
 

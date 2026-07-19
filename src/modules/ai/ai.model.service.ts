@@ -51,7 +51,13 @@ export class AiModelService {
         baseURL: this.config.getOrThrow<string>('EMBEDDING_BASE_URL'),
       },
       maxRetries: 3,
-      timeout: 15000,
+      // embedQuery() is now a mandatory call on every draftReply
+      // (matcherNode.semanticSearch, PR #84) — not the trivial isolated
+      // call that passed at 991ms. Real in-pipeline embedding requests
+      // were hitting this 15s ceiling and failing as a generic
+      // "Connection error.", matching the observed 11-15s failure window
+      // in draftReply. Raised to match the ChatOpenAI timeout below.
+      timeout: 45000,
     });
   }
 
@@ -80,11 +86,27 @@ export class AiModelService {
   }
 
   async embedQuery(text: string): Promise<number[]> {
-    return this.embeddings.embedQuery(text);
+    try {
+      return await this.embeddings.embedQuery(text);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const stack = error instanceof Error ? error.stack : undefined;
+
+      this.logger.error(`Error embedding query: ${message}`, stack);
+      throw new Error(`Error embedding query: ${message}`);
+    }
   }
 
   async embedDocuments(texts: string[]): Promise<number[][]> {
-    return this.embeddings.embedDocuments(texts);
+    try {
+      return await this.embeddings.embedDocuments(texts);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const stack = error instanceof Error ? error.stack : undefined;
+
+      this.logger.error(`Error embedding documents: ${message}`, stack);
+      throw new Error(`Error embedding documents: ${message}`);
+    }
   }
 
   getChatModel(): BaseChatModel {
