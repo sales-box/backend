@@ -12,6 +12,7 @@ import { AiModelService } from '../src/modules/ai/ai.model.service';
 import { PrismaService } from '../src/database/prisma.service';
 import { buildReplyGraph } from '../src/modules/ai/graphs/reply/reply-graph.factory';
 import type { Intent } from '../src/modules/ai/classifier/classifier.types';
+import { MemorySaver, InMemoryStore } from '@langchain/langgraph';
 
 const SCENARIOS: { name: string; intent: Intent; emailBody: string }[] = [
   {
@@ -42,19 +43,31 @@ async function main() {
     if (!tenant.length) throw new Error('no documents in DB');
     const tenantId = tenant[0].tenantId;
 
-    const graph = buildReplyGraph({ aiModelService, prisma });
+    const checkpointer = new MemorySaver();
+    const store = new InMemoryStore();
+    const graph = buildReplyGraph({ aiModelService, prisma }).compile({
+      checkpointer,
+      store,
+    });
 
     for (const s of SCENARIOS) {
       console.log(`\n════════ ${s.name} ════════`);
-      const finalState = await graph.invoke({
-        emailId: 'test-email-1',
-        tenantId,
-        emailBody: s.emailBody,
-        intent: s.intent,
-        excludedByUser: [],
-        attachmentsText: [],
-        externalContentText: [],
-      });
+      const finalState = await graph.invoke(
+        {
+          emailId: 'test-email-1',
+          tenantId,
+          emailBody: s.emailBody,
+          intent: s.intent,
+          excludedByUser: [],
+          attachmentsText: [],
+          externalContentText: [],
+        },
+        {
+          configurable: {
+            thread_id: 'test-thread-1',
+          },
+        },
+      );
 
       const m = finalState.matchResult;
       console.log(`resultType:          ${m?.resultType}`);
