@@ -264,6 +264,38 @@ describe('AiOrchestratorService', () => {
         makeOrchestrator(deps).processEmail('msg1', 'se@tenant.com', 'tenant1'),
       ).resolves.not.toThrow();
     });
+
+    it('gracefully degrades when getOrRunClassification throws', async () => {
+      const deps = makeDeps();
+      deps.gmailProvider.fetchMessage.mockResolvedValue(BASE_PARSED_MESSAGE);
+      deps.prisma.generalAnalysis.findUnique.mockRejectedValue(
+        new Error('DB connection failed'),
+      );
+      deps.clientsService.getClientContext.mockResolvedValue(
+        BASE_CLIENT_CONTEXT,
+      );
+      deps.replyService.draftReply.mockResolvedValue(BASE_FINAL_STATE);
+      deps.supervisorService.supervise.mockReturnValue({
+        label: 'handle_manually',
+        draftAvailable: false,
+      });
+
+      const result = await makeOrchestrator(deps).processEmail(
+        'msg1',
+        'se@tenant.com',
+        'tenant1',
+      );
+
+      expect(result.classification).toEqual(
+        expect.objectContaining({
+          id: '',
+          intent: 'support',
+          intentConfidence: 0.0,
+          isUrgent: false,
+        }),
+      );
+      expect(deps.prisma.generalAnalysis.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('extractSenderEmail (via processEmail integration)', () => {

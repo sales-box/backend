@@ -192,6 +192,86 @@ describe('LlmClientService', () => {
         'LLM Generation Error: LLM response does not contain a structured_output tool call.',
       );
     });
+
+    it('retries on 429 rate limit error and succeeds on subsequent attempt', async () => {
+      const mockRateLimitError = new Error('Rate limit exceeded 429');
+      (mockRateLimitError as Error & { status: number }).status = 429;
+
+      const mockSuccessResult = {
+        choices: [
+          {
+            message: {
+              tool_calls: [
+                {
+                  type: 'function',
+                  function: {
+                    name: 'structured_output',
+                    arguments: JSON.stringify({ ok: true }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      };
+
+      mockCreateCompletion
+        .mockRejectedValueOnce(mockRateLimitError)
+        .mockResolvedValueOnce(mockSuccessResult);
+
+      const setTimeoutSpy = jest
+        .spyOn(global, 'setTimeout')
+        .mockImplementation((cb: Parameters<typeof setTimeout>[0]) => {
+          if (typeof cb === 'function') cb();
+          return 0 as unknown as ReturnType<typeof setTimeout>;
+        });
+
+      const res = await service.generateStructured({
+        systemPrompt: 'test',
+        userMessage: 'test',
+        schema: {},
+      });
+
+      expect(res).toEqual({ ok: true });
+      expect(mockCreateCompletion).toHaveBeenCalledTimes(2);
+      expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 1000);
+      setTimeoutSpy.mockRestore();
+    });
+
+    it('retries on 429 rate limit error and fails after exceeding max retries', async () => {
+      const mockRateLimitError = new Error('Rate limit exceeded 429');
+      (mockRateLimitError as Error & { status: number }).status = 429;
+
+      mockCreateCompletion.mockRejectedValue(mockRateLimitError);
+
+      const setTimeoutSpy = jest
+        .spyOn(global, 'setTimeout')
+        .mockImplementation((cb: Parameters<typeof setTimeout>[0]) => {
+          if (typeof cb === 'function') cb();
+          return 0 as unknown as ReturnType<typeof setTimeout>;
+        });
+
+      await expect(
+        service.generateStructured({
+          systemPrompt: 'test',
+          userMessage: 'test',
+          schema: {},
+        }),
+      ).rejects.toThrow('LLM Generation Error: Rate limit exceeded 429');
+
+      expect(mockCreateCompletion).toHaveBeenCalledTimes(3);
+      expect(setTimeoutSpy).toHaveBeenNthCalledWith(
+        1,
+        expect.any(Function),
+        1000,
+      );
+      expect(setTimeoutSpy).toHaveBeenNthCalledWith(
+        2,
+        expect.any(Function),
+        3000,
+      );
+      setTimeoutSpy.mockRestore();
+    });
   });
 
   describe('analyzeImage', () => {

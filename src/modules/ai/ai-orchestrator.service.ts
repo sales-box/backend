@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, GeneralAnalysis } from '@prisma/client';
 import { PrismaService } from '@/database/prisma.service';
 import { GmailProvider } from '@/modules/email/gmail/gmail-provider.service';
 import { ClassifierService } from '@/modules/ai/classifier/classifier.service';
@@ -85,12 +85,37 @@ export class AiOrchestratorService {
     const clientEmail = this.extractSenderEmail(parsed.from ?? '');
 
     // 2. Classifier — cached DB row (fast path) or live classify() (fallback).
-    const classification = await this.getOrRunClassification(
-      messageId,
-      accountEmail,
-      tenantId,
-      emailBody,
-    );
+    let classification: GeneralAnalysis;
+    try {
+      classification = await this.getOrRunClassification(
+        messageId,
+        accountEmail,
+        tenantId,
+        emailBody,
+      );
+    } catch (error) {
+      this.logger.error(
+        `getOrRunClassification failed for message ${messageId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      classification = {
+        id: '',
+        messageId,
+        threadId: null,
+        accountEmail,
+        tenantId,
+        isUrgent: false,
+        urgencyReason: 'Classification failed',
+        intent: 'support',
+        intentConfidence: 0.0,
+        reasoning: 'Fallback due to classification failure',
+        promptVersion: 'fallback',
+        createdAt: new Date(),
+        productConfidence: null,
+        clientHistoryConfidence: null,
+        supervisorLabel: null,
+        reviewedAt: null,
+      };
+    }
 
     // 3. Client history — zero new code, already-existing service.
     const clientContext = await this.clientsService.getClientContext(
@@ -168,14 +193,24 @@ export class AiOrchestratorService {
     };
     const supervisorLabel = labelMapping[supervision.label] || null;
 
-    const updatedClassification = await this.prisma.generalAnalysis.update({
-      where: { id: classification.id },
-      data: {
+    let updatedClassification: GeneralAnalysis = classification;
+    if (classification.id) {
+      updatedClassification = await this.prisma.generalAnalysis.update({
+        where: { id: classification.id },
+        data: {
+          productConfidence: supervision.productConfidence,
+          clientHistoryConfidence: supervision.clientHistoryConfidence,
+          supervisorLabel,
+        },
+      });
+    } else {
+      updatedClassification = {
+        ...classification,
         productConfidence: supervision.productConfidence,
         clientHistoryConfidence: supervision.clientHistoryConfidence,
         supervisorLabel,
-      },
-    });
+      };
+    }
 
     return {
       classification: updatedClassification,
