@@ -79,6 +79,10 @@ model ConnectedAccount {
   tenant              Tenant?              @relation(fields: [tenantId], references: [id])
   createdAt           DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  // Stamped on EVERY successful OAuth login (SE or admin), unlike
+  // AllowlistEntry.verifiedAt which is set once on first activation only.
+  // This is the real "is this person actively using the product" signal.
+  lastLoginAt         DateTime?            @map("last_login_at") @db.Timestamptz(6)
   webhookSubscription WebhookSubscription?
 
   @@unique([tenantId, email])
@@ -135,6 +139,9 @@ model GeneralAnalysis {
   reviewedAt              DateTime? @map("reviewed_at") @db.Timestamptz(6)
 
   @@index([tenantId, isUrgent])
+  // Supports AnalyticsService.getTeamStats — groupBy(accountEmail) scoped
+  // by tenant, run on every Analytics "team" page load.
+  @@index([tenantId, accountEmail])
   @@map("general_analysis")
 }
 

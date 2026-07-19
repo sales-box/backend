@@ -33,6 +33,15 @@ describe('AnalyticsService', () => {
               create: jest.fn(),
               update: jest.fn(),
             },
+            allowlistEntry: {
+              findMany: jest.fn(),
+            },
+            connectedAccount: {
+              findMany: jest.fn(),
+            },
+            generalAnalysis: {
+              groupBy: jest.fn(),
+            },
           },
         },
       ],
@@ -398,6 +407,103 @@ describe('AnalyticsService', () => {
       const query = { page: 1, limit: 50, date: 'invalid-date' };
       await expect(service.getActivityFeed('tenant-a', query)).rejects.toThrow(
         BadRequestException,
+      );
+    });
+  });
+
+  describe('getTeamStats', () => {
+    it('should throw BadRequestException if tenantId is missing or empty', async () => {
+      await expect(service.getTeamStats('')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('should query allowlist, connected accounts, and general analysis correctly and return stats', async () => {
+      const mockAllowlist = [
+        {
+          email: 'se1@example.com',
+          status: 'verified',
+          grantedAt: new Date('2026-07-01'),
+          verifiedAt: new Date('2026-07-02'),
+        },
+        {
+          email: 'se2@example.com',
+          status: 'granted',
+          grantedAt: new Date('2026-07-05'),
+          verifiedAt: null,
+        },
+      ];
+      const mockConnected = [
+        { email: 'se1@example.com', lastLoginAt: new Date('2026-07-15') },
+      ];
+      const mockReceived = [
+        { accountEmail: 'se1@example.com', _count: { _all: 5 } },
+        { accountEmail: 'se2@example.com', _count: { _all: 2 } },
+      ];
+      const mockSent = [
+        { accountEmail: 'se1@example.com', _count: { _all: 3 } },
+      ];
+
+      (prisma.allowlistEntry.findMany as jest.Mock).mockResolvedValue(
+        mockAllowlist,
+      );
+      (prisma.connectedAccount.findMany as jest.Mock).mockResolvedValue(
+        mockConnected,
+      );
+      (prisma.generalAnalysis.groupBy as jest.Mock)
+        .mockResolvedValueOnce(mockReceived) // first call for emailsReceived
+        .mockResolvedValueOnce(mockSent); // second call for repliesSent
+
+      const result = await service.getTeamStats('tenant-a');
+
+      expect(prisma.allowlistEntry.findMany).toHaveBeenCalledWith({
+        where: { tenantId: 'tenant-a' },
+        select: {
+          email: true,
+          status: true,
+          grantedAt: true,
+          verifiedAt: true,
+        },
+        orderBy: { grantedAt: 'desc' },
+      });
+
+      expect(prisma.connectedAccount.findMany).toHaveBeenCalledWith({
+        where: { tenantId: 'tenant-a' },
+        select: { email: true, lastLoginAt: true },
+      });
+
+      expect(prisma.generalAnalysis.groupBy).toHaveBeenCalledTimes(2);
+
+      expect(result).toEqual([
+        {
+          email: 'se1@example.com',
+          status: 'verified',
+          grantedAt: mockAllowlist[0].grantedAt,
+          verifiedAt: mockAllowlist[0].verifiedAt,
+          lastLoginAt: mockConnected[0].lastLoginAt,
+          emailsReceived: 5,
+          repliesSent: 3,
+          replyRate: 0.6,
+        },
+        {
+          email: 'se2@example.com',
+          status: 'granted',
+          grantedAt: mockAllowlist[1].grantedAt,
+          verifiedAt: null,
+          lastLoginAt: null,
+          emailsReceived: 2,
+          repliesSent: 0,
+          replyRate: 0,
+        },
+      ]);
+    });
+
+    it('should throw InternalServerErrorException if a database query fails', async () => {
+      (prisma.allowlistEntry.findMany as jest.Mock).mockRejectedValue(
+        new Error('DB failure'),
+      );
+      await expect(service.getTeamStats('tenant-a')).rejects.toThrow(
+        InternalServerErrorException,
       );
     });
   });

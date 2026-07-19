@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma, KnowledgeGap } from '@prisma/client';
-import { AnalyticsSummary } from './types/analytics.types';
+import { AnalyticsSummary, TeamMemberStats } from './types/analytics.types';
 import { ActivityFeedQueryDto } from './dto/activity-feed-query.dto';
 
 @Injectable()
@@ -90,6 +90,102 @@ export class AnalyticsService {
       throw new InternalServerErrorException(
         'Could not compute analytics summary',
       );
+    }
+  }
+
+  /**
+   * Per-SE activity for the tenant's Team/Analytics pages.
+   *
+   * tenantId is REQUIRED here (unlike getAnalyticsSummary's optional param,
+   * which is a legacy accommodation for pre-multi-tenant rows). This method
+   * has no legitimate "all tenants" mode — a missing tenantId must be a
+   * compile error, not a query that silently falls back to `where: {}` and
+   * returns every tenant's SE stats. Every call site is the AnalyticsController,
+   * which only ever passes req.user.tenantId! after AdminTenantGuard has
+   * already confirmed it's non-null — never a client-suppliable value.
+   */
+  async getTeamStats(tenantId: string): Promise<TeamMemberStats[]> {
+    // Defense in depth: the type system says tenantId is required, but a
+    // future caller could still pass an empty string. Empty string is
+    // falsy but NOT the same as "field omitted" to Prisma's `where` —
+    // catch it explicitly rather than letting `where: { tenantId: '' }`
+    // quietly return zero rows and look like "this tenant has no team"
+    // instead of the caller bug it actually is.
+    if (!tenantId) {
+      throw new BadRequestException('tenantId is required');
+    }
+    try {
+      const [allowlistEntries, connectedAccounts, receivedGroups, sentGroups] =
+        await Promise.all([
+          this.prisma.allowlistEntry.findMany({
+            where: { tenantId },
+            select: {
+              email: true,
+              status: true,
+              grantedAt: true,
+              verifiedAt: true,
+            },
+            orderBy: { grantedAt: 'desc' },
+          }),
+          this.prisma.connectedAccount.findMany({
+            where: { tenantId },
+            select: { email: true, lastLoginAt: true },
+          }),
+          // emailsReceived: every GeneralAnalysis row is scoped to a single
+          // account+tenant at write time (classifier.processor.ts), so
+          // grouping by accountEmail here can never mix another tenant's rows in.
+          this.prisma.generalAnalysis.groupBy({
+            by: ['accountEmail'],
+            where: { tenantId },
+            _count: { _all: true },
+          }),
+          // repliesSent: same scope, plus reviewedAt IS NOT NULL — stamped
+          // only when the Gmail history diff confirms an actual SENT message
+          // on the thread, never on the SE merely opening the email.
+          this.prisma.generalAnalysis.groupBy({
+            by: ['accountEmail'],
+            where: { tenantId, reviewedAt: { not: null } },
+            _count: { _all: true },
+          }),
+        ]);
+
+      // All three sources write lowercased/trimmed emails at their own write
+      // sites (AllowlistService.grantAccess, AuthService.upsertConnectedAccount,
+      // classifier.processor.ts's `account.email` which itself came from a
+      // ConnectedAccount row) — so a plain-string map key is safe here without
+      // re-normalizing.
+      const lastLoginByEmail = new Map(
+        connectedAccounts.map((a) => [a.email, a.lastLoginAt]),
+      );
+      const receivedByEmail = new Map(
+        receivedGroups.map((g) => [g.accountEmail, g._count._all]),
+      );
+      const sentByEmail = new Map(
+        sentGroups.map((g) => [g.accountEmail, g._count._all]),
+      );
+
+      return allowlistEntries.map((entry) => {
+        const emailsReceived = receivedByEmail.get(entry.email) ?? 0;
+        const repliesSent = sentByEmail.get(entry.email) ?? 0;
+        return {
+          email: entry.email,
+          status: entry.status,
+          grantedAt: entry.grantedAt,
+          verifiedAt: entry.verifiedAt,
+          lastLoginAt: lastLoginByEmail.get(entry.email) ?? null,
+          emailsReceived,
+          repliesSent,
+          // Guard divide-by-zero explicitly rather than relying on NaN
+          // happening to render as something reasonable downstream.
+          replyRate: emailsReceived > 0 ? repliesSent / emailsReceived : 0,
+        };
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to compute team stats for tenant ${tenantId}`,
+        error,
+      );
+      throw new InternalServerErrorException('Could not compute team stats');
     }
   }
 

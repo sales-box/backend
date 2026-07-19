@@ -126,10 +126,15 @@ export class AuthService {
 
     // Only write refreshToken/scope when Google returns them, so a re-connect
     // that omits them keeps the previously stored values.
+    // lastLoginAt is stamped unconditionally on every call (create AND
+    // update) — unlike AllowlistEntry.verifiedAt (set once, on first
+    // activation), this is meant to move on every login so the dashboard can
+    // show real, current SE activity rather than a one-time badge.
     const account = {
       accessToken: this.crypto.encrypt(tokens.access_token),
       tokenExpiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
       status: 'connected',
+      lastLoginAt: new Date(),
       ...(encryptedRefresh ? { refreshToken: encryptedRefresh } : {}),
       ...(tokens.scope ? { scope: tokens.scope } : {}),
       ...(tenantId ? { tenantId } : {}),

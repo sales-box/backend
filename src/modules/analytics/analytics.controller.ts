@@ -20,7 +20,7 @@ import {
   ApiParam,
 } from '@nestjs/swagger';
 import { AnalyticsService } from './analytics.service';
-import { AnalyticsSummary } from './types/analytics.types';
+import { AnalyticsSummary, TeamMemberStats } from './types/analytics.types';
 import { KnowledgeGap } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { AuthenticatedRequest } from '../auth/jwt-auth.guard';
@@ -69,6 +69,21 @@ export class AnalyticsController {
       days,
       req.user.tenantId ?? undefined,
     );
+  }
+
+  @Get('team')
+  @ApiOperation({
+    summary:
+      'Get per-SE activity for the tenant: logins and reply volume (real signal, not a one-time badge)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Per-SE team stats for the tenant.',
+  })
+  async getTeamStats(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<TeamMemberStats[]> {
+    return this.analyticsService.getTeamStats(req.user.tenantId!);
   }
 
   @Get('gaps/alerts')
