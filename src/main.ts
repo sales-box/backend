@@ -48,9 +48,12 @@ async function bootstrap() {
   });
 
   // CORS for the admin dashboard SPA and Gmail add-on, with cookie credentials.
+  // Methods must be explicit — the default omits DELETE/PATCH/PUT, which
+  // silently fails browser preflight for deletes, gap-resolve, offboard, etc.
   app.enableCors({
     origin: (process.env.CORS_ORIGINS ?? 'http://localhost:5173').split(','),
     credentials: true,
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
 
   // Strict global validation: strip unknown fields and reject them outright,

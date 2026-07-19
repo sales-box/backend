@@ -36,9 +36,17 @@ export class AiModelService {
     // Embeddings use a separate provider from chat: Groq (LLM_BASE_URL)
     // serves no /embeddings endpoint. Ollama's endpoint is OpenAI-compatible,
     // so the same SDK class works — only the baseURL and model differ.
+    // OpenAI text-embedding-3-* return 1536 dims unless a `dimensions` param is
+    // passed; our pgvector column is vector(768). Honour EMBEDDING_DIMENSIONS
+    // when set — native-768 providers (e.g. Ollama nomic-embed-text) leave it
+    // unset and are unaffected.
+    const embeddingDimensions = this.config.get<string>('EMBEDDING_DIMENSIONS');
     this.embeddings = new OpenAIEmbeddings({
       apiKey: this.config.getOrThrow<string>('EMBEDDING_API_KEY'),
       model: this.config.getOrThrow<string>('EMBEDDING_MODEL'),
+      ...(embeddingDimensions
+        ? { dimensions: Number(embeddingDimensions) }
+        : {}),
       configuration: {
         baseURL: this.config.getOrThrow<string>('EMBEDDING_BASE_URL'),
       },

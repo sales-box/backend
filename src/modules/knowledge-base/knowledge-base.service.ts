@@ -328,6 +328,8 @@ export class KnowledgeBaseService {
           processingError: true,
           isLowConfidence: true,
           qualityReason: true,
+          qualityScore: true,
+          qualityReport: true,
         },
         orderBy: { uploadDate: 'desc' },
       },

@@ -364,6 +364,8 @@ describe('KnowledgeBaseService', () => {
         processingError: true,
         isLowConfidence: true,
         qualityReason: true,
+        qualityScore: true,
+        qualityReport: true,
       });
       expect(options).toEqual({ page: 2, limit: 5 });
     });

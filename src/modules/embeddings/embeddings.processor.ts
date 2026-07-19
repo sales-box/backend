@@ -1,9 +1,13 @@
-import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { Processor, WorkerHost, InjectQueue } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
-import { Job } from 'bullmq';
+import { Job, Queue } from 'bullmq';
 import { PrismaService } from '../../database/prisma.service';
 import { AiModelService } from '../ai/ai.model.service';
 import { EMBEDDINGS_QUEUE, EmbedDocumentJobData } from './embeddings.constants';
+import {
+  QUALITY_QUEUE,
+  EVALUATE_QUALITY_JOB,
+} from '../knowledge-base/quality/quality.constants';
 
 const BATCH_SIZE = 50;
 
@@ -23,6 +27,7 @@ export class EmbeddingsProcessor extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly aiModelService: AiModelService,
+    @InjectQueue(QUALITY_QUEUE) private readonly qualityQueue: Queue,
   ) {
     super();
   }
@@ -61,6 +66,24 @@ export class EmbeddingsProcessor extends WorkerHost {
     }
 
     this.logger.log(`document ${documentId}: embedded ${embedded} chunks`);
+
+    // Chain the deterministic Layer-1 quality evaluation now that embeddings
+    // exist (needed for the dedup step). Fire-and-forget: a failed enqueue must
+    // never fail the embedding job.
+    await this.qualityQueue
+      .add(
+        EVALUATE_QUALITY_JOB,
+        { documentId },
+        { attempts: 3, backoff: { type: 'exponential', delay: 5000 } },
+      )
+      .catch((err) =>
+        this.logger.error(
+          `failed to enqueue quality job for ${documentId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        ),
+      );
+
     return { embedded };
   }
 }
