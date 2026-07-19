@@ -30,16 +30,16 @@ export class AiModelService {
       },
       temperature: 0,
       maxRetries: 3,
-      timeout: 15000,
+      // gemini-3.1-flash-lite is a Gemini 3-series reasoning model with
+      // "thinking" enabled by default. The Composer/Extractor/Matcher
+      // prompts ask for genuine reasoning (claim verification, hallucination
+      // checks) and were timing out at the old 15s ceiling — logged as a
+      // generic "Connection error." with no status code. Raised to give the
+      // model room; revisit downward once/if thinking effort is tuned down
+      // via a Gemini-specific extra_body param.
+      timeout: 45000,
     });
 
-    // Embeddings use a separate provider from chat: Groq (LLM_BASE_URL)
-    // serves no /embeddings endpoint. Ollama's endpoint is OpenAI-compatible,
-    // so the same SDK class works — only the baseURL and model differ.
-    // OpenAI text-embedding-3-* return 1536 dims unless a `dimensions` param is
-    // passed; our pgvector column is vector(768). Honour EMBEDDING_DIMENSIONS
-    // when set — native-768 providers (e.g. Ollama nomic-embed-text) leave it
-    // unset and are unaffected.
     const embeddingDimensions = this.config.get<string>('EMBEDDING_DIMENSIONS');
     this.embeddings = new OpenAIEmbeddings({
       apiKey: this.config.getOrThrow<string>('EMBEDDING_API_KEY'),
@@ -63,7 +63,7 @@ export class AiModelService {
     try {
       const chain = this.chatModel.withStructuredOutput(schema, {
         name: runName,
-        method: 'functionCalling', // TODO: edit when using new models that support structured output natively
+        method: 'functionCalling',
       });
 
       return (await chain.invoke(messages)) as z.infer<T>;
@@ -79,12 +79,10 @@ export class AiModelService {
     }
   }
 
-  /** Embed a single query string → one 768-dim vector (nomic-embed-text). */
   async embedQuery(text: string): Promise<number[]> {
     return this.embeddings.embedQuery(text);
   }
 
-  /** Embed many texts in one request → one vector per text, same order. */
   async embedDocuments(texts: string[]): Promise<number[][]> {
     return this.embeddings.embedDocuments(texts);
   }
