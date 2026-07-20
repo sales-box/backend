@@ -142,6 +142,9 @@ model GeneralAnalysis {
   // Supports AnalyticsService.getTeamStats — groupBy(accountEmail) scoped
   // by tenant, run on every Analytics "team" page load.
   @@index([tenantId, accountEmail])
+  // Supports AnalyticsService.getAnalyticsSummary — window counts, daily
+  // time-series, and month-over-month, all filtered by tenant + created_at.
+  @@index([tenantId, createdAt])
   @@map("general_analysis")
 }
 
