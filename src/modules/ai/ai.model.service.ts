@@ -3,6 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { ChatOpenAI, OpenAIEmbeddings } from '@langchain/openai';
 import { ConfigService } from '@nestjs/config';
+import { createHeaders } from 'portkey-ai';
 
 export type MessageInput = {
   role: 'system' | 'user' | 'assistant';
@@ -23,10 +24,13 @@ export class AiModelService {
 
   constructor(private readonly config: ConfigService) {
     this.chatModel = new ChatOpenAI({
-      apiKey: this.config.getOrThrow<string>('LLM_API_KEY'),
+      apiKey: this.config.getOrThrow<string>('PORTKEY_API_KEY'),
       model: this.config.getOrThrow<string>('LLM_MODEL'),
       configuration: {
         baseURL: this.config.getOrThrow<string>('LLM_BASE_URL'),
+        defaultHeaders: createHeaders({
+          config: this.config.getOrThrow<string>('PORTKEY_CONFIG_ID'),
+        }),
       },
       temperature: 0,
       maxRetries: 3,

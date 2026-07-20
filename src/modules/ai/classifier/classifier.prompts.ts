@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { INTENTS } from './classifier.types';
 
 /** Classification wants consistency, not creativity (design doc §1). */
@@ -7,42 +8,22 @@ export const CLASSIFIER_TEMPERATURE = 0;
  * JSON schema handed to generateStructured. "reasoning" is deliberately FIRST:
  * the model emits fields in schema order, so it justifies before it decides.
  */
-export const CLASSIFIER_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    reasoning: {
-      type: 'string',
-      description:
-        '1-3 short sentences justifying the decision. Fill this first.',
-    },
-    isUrgent: {
-      type: 'boolean',
-      description: 'True when the email needs attention within 1 business day.',
-    },
-    urgencyReason: {
-      type: ['string', 'null'],
-      description:
-        'Concrete urgency signal from the email, or null when not urgent.',
-    },
-    intent: {
-      type: 'string',
-      enum: [...INTENTS],
-    },
-    intentConfidence: {
-      type: 'number',
-      minimum: 0,
-      maximum: 1,
-    },
-  },
-  required: [
-    'reasoning',
-    'isUrgent',
-    'urgencyReason',
-    'intent',
-    'intentConfidence',
-  ],
-} as const;
+export const CLASSIFIER_SCHEMA = z.object({
+  reasoning: z
+    .string()
+    .describe('1-3 short sentences justifying the decision. Fill this first.'),
+  isUrgent: z
+    .boolean()
+    .describe('True when the email needs attention within 1 business day.'),
+  urgencyReason: z
+    .string()
+    .nullable()
+    .describe(
+      'Concrete urgency signal from the email, or null when not urgent.',
+    ),
+  intent: z.enum(INTENTS),
+  intentConfidence: z.number().min(0).max(1),
+});
 
 export const CLASSIFIER_SYSTEM_PROMPT = `You are the email intent classifier for a B2B sales copilot. Companies receive emails from their business clients; you produce exactly one classification per email. Every later pipeline stage builds on your answer, so consistency beats creativity: the same email must always get the same labels.
 

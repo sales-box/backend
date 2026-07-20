@@ -6,7 +6,6 @@ import { ClientsModule } from '@/modules/clients/clients.module';
 import { GmailModule } from '@/modules/email/gmail/gmail.module';
 import { AiController } from '@/modules/ai/ai.controller';
 import { ReplyService } from '@/modules/ai/graphs/reply/reply.service';
-import { AiModelService } from '@/modules/ai/ai.model.service';
 import { AiOrchestratorService } from './ai-orchestrator.service';
 import { AuthModule } from '@/modules/auth/auth.module';
 
@@ -20,8 +19,7 @@ import { AuthModule } from '@/modules/auth/auth.module';
     AuthModule,
   ],
   controllers: [AiController],
-  providers: [AiModelService, ReplyService, AiOrchestratorService],
-  // Exported so the embeddings worker can reuse embedDocuments().
-  exports: [AiModelService],
+  providers: [ReplyService, AiOrchestratorService],
+  exports: [],
 })
 export class AiModule {}

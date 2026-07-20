@@ -26,6 +26,7 @@ import { KnowledgeBaseModule } from './modules/knowledge-base/knowledge-base.mod
 import { ExternalContentModule } from './modules/external-content/external-content.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AiModule } from './modules/ai/ai.module';
+import { AiModelModule } from './modules/ai/ai-model.module';
 import { EmbeddingsModule } from './modules/embeddings/embeddings.module';
 import { QualityModule } from './modules/knowledge-base/quality/quality.module';
 import { TenantsModule } from './modules/tenants/tenants.module';
@@ -117,6 +118,7 @@ const isProd = process.env.NODE_ENV === 'production';
     KnowledgeBaseModule,
     ExternalContentModule,
     AnalyticsModule,
+    AiModelModule,
     AiModule,
     EmbeddingsModule,
     QualityModule,

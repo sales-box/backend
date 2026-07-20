@@ -202,6 +202,14 @@ export class EnvironmentVariables {
 
   @IsString()
   @MinLength(1)
+  PORTKEY_API_KEY!: string;
+
+  @IsString()
+  @MinLength(1)
+  PORTKEY_CONFIG_ID!: string;
+
+  @IsString()
+  @MinLength(1)
   LLM_MODEL!: string;
 
   // Multimodal model for image/attachment analysis (Extractor's vision

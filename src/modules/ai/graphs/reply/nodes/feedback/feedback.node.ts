@@ -73,7 +73,7 @@ async function inferUserPreferences(
   const feedbackResult = await aiModelService.generateStructured({
     schema: UserPreferencesSchema,
     runName: 'FeedbackNode',
-    messages: [{ role: 'system', content: feedbackMessage }],
+    messages: [{ role: 'user', content: feedbackMessage }],
   });
 
   return String(feedbackResult.instructions);

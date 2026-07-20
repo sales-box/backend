@@ -27,6 +27,8 @@ const validEnv = {
   EMBEDDING_API_KEY: 'ollama',
   EMBEDDING_BASE_URL: 'http://localhost:11434/v1',
   EMBEDDING_MODEL: 'nomic-embed-text',
+  PORTKEY_API_KEY: 'test-portkey-key',
+  PORTKEY_CONFIG_ID: 'pc-test-config',
 };
 
 describe('validateEnv', () => {
@@ -53,6 +55,8 @@ describe('validateEnv', () => {
     'EMBEDDING_API_KEY',
     'EMBEDDING_BASE_URL',
     'EMBEDDING_MODEL',
+    'PORTKEY_API_KEY',
+    'PORTKEY_CONFIG_ID',
   ])('throws at startup when %s is missing', (key) => {
     const env = { ...validEnv };
     delete (env as Record<string, unknown>)[key];
