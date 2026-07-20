@@ -50,7 +50,7 @@ jobs:
       GOOGLE_CLIENT_SECRET: ci-google-client-secret
       GOOGLE_REDIRECT_URI: http://localhost:3000/callback
       GOOGLE_SCOPES: profile email
-      TOKEN_ENCRYPTION_KEY: ${{TOKEN_ENCRYPTION_KEY}}
+      TOKEN_ENCRYPTION_KEY: ${{secrets.TOKEN_ENCRYPTION_KEY}}
       FRONTEND_DASHBOARD_URL: http://localhost:5173
       AWS_REGION: us-east-1
       S3_BUCKET: ci-bucket
