@@ -1,4 +1,4 @@
-import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Logger, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '@/modules/auth/jwt-auth.guard';
@@ -15,6 +15,8 @@ import { ProcessEmailDto } from './dto/process-email.dto';
 @UseGuards(JwtAuthGuard)
 @Controller('ai')
 export class AiController {
+  private readonly logger = new Logger(AiController.name);
+
   constructor(private readonly orchestrator: AiOrchestratorService) {}
 
   @Throttle({ default: { limit: 10, ttl: 60000 } }) // 10 req/min per IP
@@ -27,6 +29,12 @@ export class AiController {
     @Req() req: AuthenticatedRequest,
     @Body() body: ProcessEmailDto,
   ) {
+    this.logger.log(
+      `Incoming /ai/process request — messageId: ${body.messageId}, ` +
+        `accountEmail: ${body.accountEmail}, tenantId: ${req.user.tenantId}, ` +
+        `origin: ${req.headers.origin ?? 'unknown'}`,
+    );
+
     return this.orchestrator.processEmail(
       body.messageId,
       body.accountEmail,
