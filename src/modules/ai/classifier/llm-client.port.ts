@@ -1,10 +1,12 @@
+import { z } from 'zod';
+
 export type UntrustedSource =
   'email_body' | 'attachment_text' | 'vision_extracted' | 'google_drive';
 
 export interface GenerateStructuredParams {
   systemPrompt: string;
   userMessage: string;
-  schema: object;
+  schema: z.ZodTypeAny;
   temperature?: number;
 }
 

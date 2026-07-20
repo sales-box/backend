@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { LlmClientService } from '@/common/llm/llm-client.service';
+import { AiModelService } from '@/modules/ai/ai.model.service';
 import { flagSuspiciousContent } from '@/common/security/prompt-injection-prefilter';
 import { wrapUntrustedContent } from '@/common/security/untrusted-content.wrapper';
 import {
@@ -9,19 +9,25 @@ import {
 } from './llm-client.port';
 
 /**
- * Binds the shared LlmClientService (Nagy, DEP-1) to the classifier's
- * LlmClientPort. `generateStructured` delegates unchanged (identical
- * signature). `wrapUntrustedContent` composes both of Nagy's security pieces:
- * the prompt-injection prefilter (layer 1 — logs/flags known attack patterns)
- * and the shared `<untrusted_content>` wrapper (layer 2 — cages the text as
- * data before it reaches the model).
+ * Binds the new AiModelService (Portkey + Langchain) to the classifier's
+ * LlmClientPort. Maps the simple system/user strings into Langchain's
+ * standard message array format.
  */
 @Injectable()
 export class ClassifierLlmClient implements LlmClientPort {
-  constructor(private readonly llm: LlmClientService) {}
+  constructor(private readonly aiModelService: AiModelService) {}
 
-  generateStructured<T>(params: GenerateStructuredParams): Promise<T> {
-    return this.llm.generateStructured<T>(params);
+  async generateStructured<T>(params: GenerateStructuredParams): Promise<T> {
+    const result = await this.aiModelService.generateStructured({
+      schema: params.schema,
+      runName: 'ClassifierAgent',
+      messages: [
+        { role: 'system', content: params.systemPrompt },
+        { role: 'user', content: params.userMessage },
+      ],
+    });
+
+    return result as T;
   }
 
   wrapUntrustedContent(content: string, source: UntrustedSource): string {
