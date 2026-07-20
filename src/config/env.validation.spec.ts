@@ -29,6 +29,7 @@ const validEnv = {
   EMBEDDING_BASE_URL: 'http://localhost:11434/v1',
   EMBEDDING_MODEL: 'nomic-embed-text',
   PORTKEY_API_KEY: 'test-portkey-key',
+  PORTKEY_BASE_URL: 'https://api.portkey.ai/v1',
   PORTKEY_CONFIG_ID: 'pc-test-config',
 };
 
@@ -57,6 +58,7 @@ describe('validateEnv', () => {
     'EMBEDDING_BASE_URL',
     'EMBEDDING_MODEL',
     'PORTKEY_API_KEY',
+    'PORTKEY_BASE_URL',
     'PORTKEY_CONFIG_ID',
   ])('throws at startup when %s is missing', (key) => {
     const env = { ...validEnv };
