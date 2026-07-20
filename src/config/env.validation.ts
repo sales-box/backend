@@ -208,6 +208,9 @@ export class EnvironmentVariables {
   @MinLength(1)
   PORTKEY_API_KEY!: string;
 
+  @IsUrl({ require_tld: false })
+  PORTKEY_BASE_URL!: string;
+
   @IsString()
   @MinLength(1)
   PORTKEY_CONFIG_ID!: string;

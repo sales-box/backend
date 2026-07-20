@@ -28,7 +28,7 @@ export class AiModelService {
       apiKey: this.config.getOrThrow<string>('PORTKEY_API_KEY'),
       model: this.config.getOrThrow<string>('LLM_MODEL'),
       configuration: {
-        baseURL: this.config.getOrThrow<string>('LLM_BASE_URL'),
+        baseURL: this.config.getOrThrow<string>('PORTKEY_BASE_URL'),
         defaultHeaders: createHeaders({
           config: this.config.getOrThrow<string>('PORTKEY_CONFIG_ID'),
         }),
