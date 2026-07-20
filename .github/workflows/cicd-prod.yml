@@ -144,4 +144,4 @@ jobs:
             docker compose run --rm backend npx -y prisma@6.19.3 migrate deploy
             docker compose up -d --force-recreate
             docker image prune -af
-            ./scripts/inspect.sh "${{ github.sha }}"
+            ./scripts/inspect.sh --backend "${{ github.sha }}"
