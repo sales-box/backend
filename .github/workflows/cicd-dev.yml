@@ -137,10 +137,11 @@ jobs:
           username: ec2-user
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+            set -e
             cd /home/ec2-user/app
-            export IMAGE_TAG=${{ github.sha }}
-            docker compose down --remove-orphans
+            export BACKEND_IMAGE_TAG="${{ github.sha }}"
             docker compose pull
             docker compose run --rm backend npx -y prisma@6.19.3 migrate deploy
-            docker compose up -d --force-recreate --remove-orphans
+            docker compose up -d --force-recreate
             docker image prune -af
+            ./scripts/inspect.sh "${{ github.sha }}"
