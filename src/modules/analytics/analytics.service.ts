@@ -17,55 +17,78 @@ export class AnalyticsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getAnalyticsSummary(
-    days: number = 7,
-    tenantId?: string,
+    days: number,
+    tenantId: string,
   ): Promise<AnalyticsSummary> {
     if (!Number.isFinite(days) || days <= 0) {
       throw new BadRequestException('days must be a positive number');
     }
+    // tenantId is REQUIRED — the summary is per-tenant. An omitted tenant is a
+    // caller bug, never a query that silently aggregates across tenants.
+    // AdminTenantGuard guarantees it upstream; this is defense in depth.
+    if (!tenantId) {
+      throw new BadRequestException('tenantId is required');
+    }
 
     try {
-      const since = new Date();
-      since.setDate(since.getDate() - days);
+      const dayMs = 86_400_000;
+      const now = Date.now();
+      const curStart = new Date(now - days * dayMs);
+      const prevStart = new Date(now - 2 * days * dayMs);
 
-      // Baseline tenant isolation: interactions are scoped through their
-      // client. Two companies with the same email volume keep separate
-      // numbers. The full caller-is-admin-of-this-tenant guard is the
-      // Analytics Guard's job — this filter only stops cross-tenant mixing.
-      // TODO(admin-auth): derive tenantId from the JWT claim.
-      const where = {
-        date: { gte: since },
-        ...(tenantId ? { client: { tenantId } } : {}),
-      };
+      // Source of truth = general_analysis: one row per classified inbound
+      // email with a direct tenant_id (no join through client). Interaction is
+      // the per-client timeline, not the processed-email ledger.
+      const cur = { tenantId, createdAt: { gte: curStart } };
+      const aiReviewedWhere = { ...cur, supervisorLabel: { not: null } };
 
-      const [total, byClassificationRaw, confidenceStats, lowConfidenceCount] =
-        await Promise.all([
-          this.prisma.interaction.count({ where }),
-          this.prisma.interaction.groupBy({
-            by: ['classification'],
-            where,
-            _count: { classification: true },
-          }),
-          this.prisma.interaction.aggregate({
-            where,
-            _avg: { productConfidence: true, clientHistoryConfidence: true },
-          }),
-          this.prisma.interaction.count({
-            where: {
-              ...where,
-              OR: [
-                { productConfidence: { lt: 0.6 } },
-                { clientHistoryConfidence: { lt: 0.6 } },
-              ],
-            },
-          }),
-        ]);
+      const [
+        total,
+        prevTotal,
+        byIntentRaw,
+        replyThreadRows,
+        aiReviewedCount,
+        escalatedCount,
+        confidenceStats,
+        dailyCounts,
+      ] = await Promise.all([
+        this.prisma.generalAnalysis.count({ where: cur }),
+        this.prisma.generalAnalysis.count({
+          where: { tenantId, createdAt: { gte: prevStart, lt: curStart } },
+        }),
+        this.prisma.generalAnalysis.groupBy({
+          by: ['intent'],
+          where: cur,
+          _count: { intent: true },
+        }),
+        // Replies counted per DISTINCT thread: reviewedAt is stamped on every
+        // un-reviewed row of a thread when ONE sent message is detected, so
+        // counting rows would multiply a single reply by the thread size.
+        this.prisma.generalAnalysis.findMany({
+          where: { ...cur, reviewedAt: { not: null } },
+          select: { threadId: true },
+          distinct: ['threadId'],
+        }),
+        this.prisma.generalAnalysis.count({ where: aiReviewedWhere }),
+        // supervisorLabel is persisted as 'green' | 'yellow' | 'red' (the
+        // orchestrator maps computeLabel's enum before saving). 'red' is the
+        // escalate-to-human band.
+        this.prisma.generalAnalysis.count({
+          where: { ...cur, supervisorLabel: 'red' },
+        }),
+        // Confidence is written only for emails an SE opened via /ai/process,
+        // so average over the AI-reviewed subset — never over all rows, whose
+        // NULLs would silently skew it.
+        this.prisma.generalAnalysis.aggregate({
+          where: aiReviewedWhere,
+          _avg: { productConfidence: true, clientHistoryConfidence: true },
+        }),
+        this.getDailyCounts(tenantId, curStart, days),
+      ]);
 
       const byClassification: Record<string, number> = {};
-      for (const row of byClassificationRaw) {
-        if (row.classification) {
-          byClassification[row.classification] = row._count.classification;
-        }
+      for (const row of byIntentRaw) {
+        byClassification[row.intent] = row._count.intent;
       }
 
       let averageConfidence = 0;
@@ -79,18 +102,68 @@ export class AnalyticsService {
         averageConfidence = avgHist;
       }
 
+      const repliedThreads = replyThreadRows.filter(
+        (r) => r.threadId !== null,
+      ).length;
+
+      const momChangePct =
+        prevTotal > 0
+          ? Math.round(((total - prevTotal) / prevTotal) * 100)
+          : null;
+
       return {
         totalEmailsProcessed: total,
         byClassification,
         averageConfidence,
-        lowConfidenceCount,
+        lowConfidenceCount: escalatedCount, // back-compat: old FE reads this
+        momChangePct,
+        dailyCounts,
+        replies: { threads: repliedThreads },
+        aiReviewed: { count: aiReviewedCount, escalated: escalatedCount },
       };
     } catch (error) {
+      if (error instanceof BadRequestException) throw error;
       this.logger.error('Failed to compute analytics summary', error);
       throw new InternalServerErrorException(
         'Could not compute analytics summary',
       );
     }
+  }
+
+  /**
+   * Real per-day email volume over the window, bucketed by UTC calendar day
+   * and ZERO-FILLED so the chart spans the whole window with honest gaps
+   * instead of interpolating over missing days.
+   */
+  private async getDailyCounts(
+    tenantId: string,
+    since: Date,
+    days: number,
+  ): Promise<{ date: string; emails: number }[]> {
+    const rows = await this.prisma.$queryRaw<{ day: Date; emails: number }[]>`
+      SELECT (created_at AT TIME ZONE 'UTC')::date AS day, COUNT(*)::int AS emails
+      FROM general_analysis
+      WHERE tenant_id = ${tenantId}::uuid AND created_at >= ${since}
+      GROUP BY 1
+      ORDER BY 1
+    `;
+    const byDay = new Map<string, number>();
+    for (const r of rows) {
+      byDay.set(new Date(r.day).toISOString().slice(0, 10), Number(r.emails));
+    }
+    const startDay = Date.UTC(
+      since.getUTCFullYear(),
+      since.getUTCMonth(),
+      since.getUTCDate(),
+    );
+    const out: { date: string; emails: number }[] = [];
+    for (let i = 0; i <= days; i++) {
+      const key = new Date(startDay + i * 86_400_000)
+        .toISOString()
+        .slice(0, 10);
+      out.push({ date: key.slice(5), emails: byDay.get(key) ?? 0 });
+    }
+    return out;
   }
 
   /**

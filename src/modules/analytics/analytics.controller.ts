@@ -65,10 +65,7 @@ export class AnalyticsController {
     @Query('days', new DefaultValuePipe(30), ParseIntPipe) days: number,
     @Req() req: AuthenticatedRequest,
   ): Promise<AnalyticsSummary> {
-    return this.analyticsService.getAnalyticsSummary(
-      days,
-      req.user.tenantId ?? undefined,
-    );
+    return this.analyticsService.getAnalyticsSummary(days, req.user.tenantId!);
   }
 
   @Get('team')

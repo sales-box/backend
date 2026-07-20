@@ -40,8 +40,12 @@ describe('AnalyticsService', () => {
               findMany: jest.fn(),
             },
             generalAnalysis: {
+              count: jest.fn(),
               groupBy: jest.fn(),
+              findMany: jest.fn(),
+              aggregate: jest.fn(),
             },
+            $queryRaw: jest.fn(),
           },
         },
       ],
@@ -52,83 +56,150 @@ describe('AnalyticsService', () => {
   });
 
   describe('getAnalyticsSummary', () => {
-    it('returns correct byClassification counts from seeded data', async () => {
-      (prisma.interaction.count as jest.Mock)
-        .mockResolvedValueOnce(10)
-        .mockResolvedValueOnce(2);
-      (prisma.interaction.groupBy as jest.Mock).mockResolvedValue([
-        { classification: 'product_inquiry', _count: { classification: 6 } },
-        { classification: 'meeting_request', _count: { classification: 4 } },
+    // count() is called in this order inside Promise.all:
+    //   total, prevTotal, aiReviewedCount, escalatedCount
+    const mockCounts = (
+      total: number,
+      prev: number,
+      aiReviewed: number,
+      escalated: number,
+    ) =>
+      (prisma.generalAnalysis.count as jest.Mock)
+        .mockResolvedValueOnce(total)
+        .mockResolvedValueOnce(prev)
+        .mockResolvedValueOnce(aiReviewed)
+        .mockResolvedValueOnce(escalated);
+
+    it('computes every field from general_analysis', async () => {
+      mockCounts(20, 10, 6, 2);
+      (prisma.generalAnalysis.groupBy as jest.Mock).mockResolvedValue([
+        { intent: 'product inquiry', _count: { intent: 12 } },
+        { intent: 'support', _count: { intent: 8 } },
       ]);
-      (prisma.interaction.aggregate as jest.Mock).mockResolvedValue({
-        _avg: { productConfidence: 0.78, clientHistoryConfidence: 0.78 },
+      // distinct-by-thread already applied by Prisma; null thread excluded
+      (prisma.generalAnalysis.findMany as jest.Mock).mockResolvedValue([
+        { threadId: 't1' },
+        { threadId: 't2' },
+        { threadId: null },
+      ]);
+      (prisma.generalAnalysis.aggregate as jest.Mock).mockResolvedValue({
+        _avg: { productConfidence: 0.8, clientHistoryConfidence: 0.7 },
       });
+      const yday = new Date(Date.now() - 86_400_000);
+      (prisma.$queryRaw as jest.Mock).mockResolvedValue([
+        { day: yday, emails: 5 },
+      ]);
 
-      const result = await service.getAnalyticsSummary(7);
+      const r = await service.getAnalyticsSummary(30, 'tenant-a');
 
-      expect(result.totalEmailsProcessed).toBe(10);
-      expect(result.byClassification).toEqual({
-        product_inquiry: 6,
-        meeting_request: 4,
+      expect(r.totalEmailsProcessed).toBe(20);
+      expect(r.byClassification).toEqual({
+        'product inquiry': 12,
+        support: 8,
       });
-      expect(result.averageConfidence).toBe(0.78);
-      expect(result.lowConfidenceCount).toBe(2);
+      expect(r.averageConfidence).toBeCloseTo(0.75);
+      expect(r.replies).toEqual({ threads: 2 }); // null thread not counted
+      expect(r.aiReviewed).toEqual({ count: 6, escalated: 2 });
+      expect(r.lowConfidenceCount).toBe(2); // back-compat mirror of escalated
+      expect(r.momChangePct).toBe(100); // (20-10)/10
+      expect(r.dailyCounts).toHaveLength(31); // days + 1
+      const ydayKey = yday.toISOString().slice(5, 10);
+      expect(r.dailyCounts.find((d) => d.date === ydayKey)?.emails).toBe(5);
     });
 
-    it('returns all zeros with zero interactions, no crash', async () => {
-      (prisma.interaction.count as jest.Mock).mockResolvedValue(0);
-      (prisma.interaction.groupBy as jest.Mock).mockResolvedValue([]);
-      (prisma.interaction.aggregate as jest.Mock).mockResolvedValue({
+    it('escalated counts only the supervisorLabel red band', async () => {
+      mockCounts(3, 0, 3, 1);
+      (prisma.generalAnalysis.groupBy as jest.Mock).mockResolvedValue([]);
+      (prisma.generalAnalysis.findMany as jest.Mock).mockResolvedValue([]);
+      (prisma.generalAnalysis.aggregate as jest.Mock).mockResolvedValue({
         _avg: { productConfidence: null, clientHistoryConfidence: null },
       });
+      (prisma.$queryRaw as jest.Mock).mockResolvedValue([]);
 
-      const result = await service.getAnalyticsSummary(7);
+      await service.getAnalyticsSummary(30, 'tenant-a');
 
-      expect(result).toEqual({
-        totalEmailsProcessed: 0,
-        byClassification: {},
-        averageConfidence: 0,
-        lowConfidenceCount: 0,
-      });
-    });
-
-    it('throws BadRequestException for negative days', async () => {
-      await expect(service.getAnalyticsSummary(-3)).rejects.toThrow(
-        BadRequestException,
+      const countCalls = (prisma.generalAnalysis.count as jest.Mock).mock
+        .calls as [{ where?: { supervisorLabel?: string } }][];
+      const redCall = countCalls.find(
+        (c) => c[0]?.where?.supervisorLabel === 'red',
       );
-      expect(prisma.interaction.count).not.toHaveBeenCalled();
+      expect(redCall).toBeDefined();
     });
 
-    it('scopes every query to the tenant through the client relation (S3-V11)', async () => {
-      (prisma.interaction.count as jest.Mock).mockResolvedValue(0);
-      (prisma.interaction.groupBy as jest.Mock).mockResolvedValue([]);
-      (prisma.interaction.aggregate as jest.Mock).mockResolvedValue({
-        _avg: { confidence: null },
+    it('momChangePct is null when the previous window is empty', async () => {
+      mockCounts(5, 0, 0, 0);
+      (prisma.generalAnalysis.groupBy as jest.Mock).mockResolvedValue([]);
+      (prisma.generalAnalysis.findMany as jest.Mock).mockResolvedValue([]);
+      (prisma.generalAnalysis.aggregate as jest.Mock).mockResolvedValue({
+        _avg: { productConfidence: null, clientHistoryConfidence: null },
       });
+      (prisma.$queryRaw as jest.Mock).mockResolvedValue([]);
+
+      const r = await service.getAnalyticsSummary(30, 'tenant-a');
+      expect(r.momChangePct).toBeNull(); // never +Infinity or a fake number
+    });
+
+    it('a fresh tenant yields zeros and a zero-filled chart, no crash', async () => {
+      mockCounts(0, 0, 0, 0);
+      (prisma.generalAnalysis.groupBy as jest.Mock).mockResolvedValue([]);
+      (prisma.generalAnalysis.findMany as jest.Mock).mockResolvedValue([]);
+      (prisma.generalAnalysis.aggregate as jest.Mock).mockResolvedValue({
+        _avg: { productConfidence: null, clientHistoryConfidence: null },
+      });
+      (prisma.$queryRaw as jest.Mock).mockResolvedValue([]);
+
+      const r = await service.getAnalyticsSummary(7, 'tenant-a');
+
+      expect(r.totalEmailsProcessed).toBe(0);
+      expect(r.averageConfidence).toBe(0);
+      expect(r.replies.threads).toBe(0);
+      expect(r.dailyCounts).toHaveLength(8);
+      expect(r.dailyCounts.every((d) => d.emails === 0)).toBe(true);
+    });
+
+    it('scopes every general_analysis query to the tenant', async () => {
+      mockCounts(0, 0, 0, 0);
+      (prisma.generalAnalysis.groupBy as jest.Mock).mockResolvedValue([]);
+      (prisma.generalAnalysis.findMany as jest.Mock).mockResolvedValue([]);
+      (prisma.generalAnalysis.aggregate as jest.Mock).mockResolvedValue({
+        _avg: { productConfidence: null, clientHistoryConfidence: null },
+      });
+      (prisma.$queryRaw as jest.Mock).mockResolvedValue([]);
 
       await service.getAnalyticsSummary(7, 'tenant-a');
 
-      type WhereArg = [{ where: { client?: { tenantId: string } } }];
-      const countWhere = (
-        (prisma.interaction.count as jest.Mock).mock.calls as WhereArg[]
-      )[0][0].where;
-      const groupWhere = (
-        (prisma.interaction.groupBy as jest.Mock).mock.calls as WhereArg[]
-      )[0][0].where;
-      const aggWhere = (
-        (prisma.interaction.aggregate as jest.Mock).mock.calls as WhereArg[]
-      )[0][0].where;
-      expect(countWhere.client).toEqual({ tenantId: 'tenant-a' });
-      expect(groupWhere.client).toEqual({ tenantId: 'tenant-a' });
-      expect(aggWhere.client).toEqual({ tenantId: 'tenant-a' });
+      for (const call of (prisma.generalAnalysis.count as jest.Mock).mock
+        .calls as [{ where: { tenantId: string } }][]) {
+        expect(call[0].where.tenantId).toBe('tenant-a');
+      }
+    });
+
+    it('throws BadRequestException for a non-positive window', async () => {
+      await expect(service.getAnalyticsSummary(-3, 'tenant-a')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(prisma.generalAnalysis.count).not.toHaveBeenCalled();
+    });
+
+    it('throws BadRequestException when tenantId is missing', async () => {
+      await expect(service.getAnalyticsSummary(7, '')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(prisma.generalAnalysis.count).not.toHaveBeenCalled();
     });
 
     it('throws InternalServerErrorException on DB error', async () => {
-      (prisma.interaction.count as jest.Mock).mockRejectedValue(
+      (prisma.generalAnalysis.count as jest.Mock).mockRejectedValue(
         new Error('DB Error'),
       );
+      (prisma.generalAnalysis.groupBy as jest.Mock).mockResolvedValue([]);
+      (prisma.generalAnalysis.findMany as jest.Mock).mockResolvedValue([]);
+      (prisma.generalAnalysis.aggregate as jest.Mock).mockResolvedValue({
+        _avg: { productConfidence: null, clientHistoryConfidence: null },
+      });
+      (prisma.$queryRaw as jest.Mock).mockResolvedValue([]);
 
-      await expect(service.getAnalyticsSummary(7)).rejects.toThrow(
+      await expect(service.getAnalyticsSummary(7, 'tenant-a')).rejects.toThrow(
         InternalServerErrorException,
       );
     });
