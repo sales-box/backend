@@ -138,6 +138,7 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             cd /home/ec2-user/app
+            export IMAGE_TAG=${{ github.sha }}
             docker compose down --remove-orphans
             docker compose pull
             docker compose run --rm backend npx -y prisma@6.19.3 migrate deploy
