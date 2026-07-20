@@ -19,7 +19,7 @@ export interface GenerateStructuredParams<T extends z.ZodTypeAny> {
 @Injectable()
 export class AiModelService {
   private readonly logger = new Logger(AiModelService.name);
-  private readonly chatModel: BaseChatModel;
+  private readonly chatModel: ChatOpenAI;
   private readonly embeddings: OpenAIEmbeddings;
 
   constructor(private readonly config: ConfigService) {
@@ -69,24 +69,44 @@ export class AiModelService {
     params: GenerateStructuredParams<T>,
   ): Promise<z.infer<T>> {
     const { schema, messages, runName } = params;
+    const maxRetries = 2;
+    const backoffMs = [1000, 3000];
 
-    try {
-      const chain = this.chatModel.withStructuredOutput(schema, {
-        name: runName,
-        method: 'functionCalling',
-      });
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const chain = this.chatModel.withStructuredOutput(schema, {
+          name: runName,
+          method: 'functionCalling',
+        });
 
-      return (await chain.invoke(messages)) as z.infer<T>;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const stack = error instanceof Error ? error.stack : undefined;
+        return (await chain.invoke(messages)) as z.infer<T>;
+      } catch (error) {
+        const err = error as { status?: number; message?: string };
+        const isRateLimit =
+          err && (err.status === 429 || String(err.message).includes('429'));
 
-      this.logger.error(
-        `Error generating structured output: ${message}`,
-        stack,
-      );
-      throw new Error(`Error generating structured output: ${message}`);
+        if (isRateLimit && attempt < maxRetries) {
+          const delay = backoffMs[attempt];
+          this.logger.warn(
+            `Rate limit (429) hit in AiModelService. Retrying attempt ${attempt + 1}/${maxRetries} after ${delay}ms...`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+
+        const message = error instanceof Error ? error.message : String(error);
+        const stack = error instanceof Error ? error.stack : undefined;
+
+        this.logger.error(
+          `Error generating structured output: ${message}`,
+          stack,
+        );
+        throw new Error(`Error generating structured output: ${message}`);
+      }
     }
+
+    // Unreachable — the loop always returns or throws, but TypeScript needs this.
+    throw new Error('Unexpected: generateStructured loop exited without result');
   }
 
   async embedQuery(text: string): Promise<number[]> {

@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { LlmClientService } from './llm-client.service';
+import { LlmKeyRotator } from './llm-key-rotator.service';
 
 const mockCreateCompletion = jest.fn();
 
@@ -37,6 +38,13 @@ describe('LlmClientService', () => {
               };
               return values[key] ?? null;
             }),
+          },
+        },
+        {
+          provide: LlmKeyRotator,
+          useValue: {
+            getKeys: jest.fn().mockReturnValue(['test-api-key']),
+            next: jest.fn().mockResolvedValue(0),
           },
         },
       ],
