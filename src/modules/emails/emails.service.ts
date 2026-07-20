@@ -1,8 +1,28 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { google } from 'googleapis';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { gmail_v1, google } from 'googleapis';
 import { EmailService } from '@/modules/email/email.service';
 import { GmailClientProvider } from './gmail-client.provider';
 import { PrismaService } from '@/database/prisma.service';
+import { ClientsService } from '@/modules/clients/clients.service';
+import { EmailRowData } from './emails.types';
+import {
+  REVIEW_STATUS_BY_LABEL,
+  ReviewedLabel,
+  isKnownCategory,
+  matchesCategory,
+} from './email-categorizer.util';
+
+interface AnalysisRow {
+  threadId: string | null;
+  isUrgent: boolean;
+  intent: string;
+  supervisorLabel: string | null;
+  reviewedAt: Date | null;
+}
+
+// Keeps the categorized-list endpoint responsive on large inboxes and
+// avoids hammering the Gmail API with one threads.get per match.
+const MAX_CATEGORIZED_RESULTS = 50;
 
 @Injectable()
 export class EmailsService {
@@ -12,6 +32,7 @@ export class EmailsService {
     private readonly emailService: EmailService,
     private readonly gmailClientProvider: GmailClientProvider,
     private readonly prisma: PrismaService,
+    private readonly clientsService: ClientsService,
   ) {}
 
   async fetchThreadsForClient(
@@ -51,7 +72,6 @@ export class EmailsService {
           };
         }
 
-        // Sort messages chronologically by date (oldest to newest)
         const sortedMessages = [...messages].sort((a, b) => {
           return new Date(a.date).getTime() - new Date(b.date).getTime();
         });
@@ -81,7 +101,6 @@ export class EmailsService {
         };
       });
 
-      // Sort threads descending by date (newest/most recent first)
       formattedThreads.sort((a, b) => {
         return new Date(b.date).getTime() - new Date(a.date).getTime();
       });
@@ -116,44 +135,7 @@ export class EmailsService {
       .map((t) => t.id)
       .filter((id): id is string => !!id);
 
-    interface AnalysisRow {
-      threadId: string | null;
-      isUrgent: boolean;
-      intent: string;
-      supervisorLabel: string | null;
-      reviewedAt: Date | null;
-    }
-
-    let analyses: AnalysisRow[] = [];
-
-    if (tenantId) {
-      const rawAnalyses = await this.prisma.$queryRaw<unknown[]>`
-        SELECT DISTINCT ON (thread_id)
-          thread_id as "threadId",
-          is_urgent as "isUrgent",
-          intent,
-          supervisor_label as "supervisorLabel",
-          reviewed_at as "reviewedAt"
-        FROM general_analysis
-        WHERE tenant_id = ${tenantId}::uuid AND account_email = ${email}
-        ORDER BY thread_id, created_at DESC
-      `;
-      analyses = rawAnalyses as AnalysisRow[];
-    } else {
-      const rawAnalyses = await this.prisma.$queryRaw<unknown[]>`
-        SELECT DISTINCT ON (thread_id)
-          thread_id as "threadId",
-          is_urgent as "isUrgent",
-          intent,
-          supervisor_label as "supervisorLabel",
-          reviewed_at as "reviewedAt"
-        FROM general_analysis
-        WHERE tenant_id IS NULL AND account_email = ${email}
-        ORDER BY thread_id, created_at DESC
-      `;
-      analyses = rawAnalyses as AnalysisRow[];
-    }
-
+    const analyses = await this.fetchLatestAnalyses(email, tenantId);
     const activeThreadIdsSet = new Set(activeThreadIds);
     const filteredAnalyses = analyses.filter(
       (a) => a.threadId && activeThreadIdsSet.has(a.threadId),
@@ -194,6 +176,169 @@ export class EmailsService {
       reviewedBreakdown,
       notYetReviewedCount,
     };
+  }
+
+  /**
+   * Powers the InboxOverviewScreen drill-down (urgent / by-intent /
+   * review-status / not-reviewed buttons -> GET /emails/categorized).
+   */
+  async getCategorizedEmailsForSe(
+    email: string,
+    category: string,
+    tenantId?: string,
+  ): Promise<EmailRowData[]> {
+    if (!isKnownCategory(category)) {
+      throw new BadRequestException(`Unknown category: ${category}`);
+    }
+
+    const gmail = await this.gmailClientProvider.getClientForAccount(
+      email,
+      tenantId,
+    );
+    const { data } = await gmail.users.threads.list({ userId: 'me' });
+    const activeThreadIds = (data.threads || [])
+      .map((t) => t.id)
+      .filter((id): id is string => !!id);
+
+    const analyses = await this.fetchLatestAnalyses(email, tenantId);
+    const analysisByThreadId = new Map(
+      analyses
+        .filter((a): a is AnalysisRow & { threadId: string } => !!a.threadId)
+        .map((a) => [a.threadId, a]),
+    );
+
+    const matchingThreadIds = activeThreadIds.filter((threadId) => {
+      const analysis = analysisByThreadId.get(threadId);
+      if (!analysis) {
+        // No analysis row yet -> only the "not-reviewed" bucket claims it.
+        return category === 'not-reviewed';
+      }
+      return matchesCategory(analysis, category);
+    });
+
+    const limitedThreadIds = matchingThreadIds.slice(
+      0,
+      MAX_CATEGORIZED_RESULTS,
+    );
+
+    const rows = await Promise.all(
+      limitedThreadIds.map((threadId) =>
+        this.buildEmailRow(
+          gmail,
+          threadId,
+          tenantId,
+          analysisByThreadId.get(threadId),
+        ),
+      ),
+    );
+
+    return rows
+      .filter((row): row is EmailRowData => row !== null)
+      .sort(
+        (a, b) =>
+          new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+      );
+  }
+
+  /** Single source of truth for the DISTINCT-ON-latest-analysis-per-thread query. */
+  private async fetchLatestAnalyses(
+    email: string,
+    tenantId?: string,
+  ): Promise<AnalysisRow[]> {
+    if (tenantId) {
+      const rawAnalyses = await this.prisma.$queryRaw<unknown[]>`
+        SELECT DISTINCT ON (thread_id)
+          thread_id as "threadId",
+          is_urgent as "isUrgent",
+          intent,
+          supervisor_label as "supervisorLabel",
+          reviewed_at as "reviewedAt"
+        FROM general_analysis
+        WHERE tenant_id = ${tenantId}::uuid AND account_email = ${email}
+        ORDER BY thread_id, created_at DESC
+      `;
+      return rawAnalyses as AnalysisRow[];
+    }
+
+    const rawAnalyses = await this.prisma.$queryRaw<unknown[]>`
+      SELECT DISTINCT ON (thread_id)
+        thread_id as "threadId",
+        is_urgent as "isUrgent",
+        intent,
+        supervisor_label as "supervisorLabel",
+        reviewed_at as "reviewedAt"
+      FROM general_analysis
+      WHERE tenant_id IS NULL AND account_email = ${email}
+      ORDER BY thread_id, created_at DESC
+    `;
+    return rawAnalyses as AnalysisRow[];
+  }
+
+  /** Fetches subject/sender/date from Gmail and best-effort client identity. */
+  private async buildEmailRow(
+    gmail: gmail_v1.Gmail,
+    threadId: string,
+    tenantId: string | undefined,
+    analysis: AnalysisRow | undefined,
+  ): Promise<EmailRowData | null> {
+    try {
+      const { data: thread } = await gmail.users.threads.get({
+        userId: 'me',
+        id: threadId,
+        format: 'metadata',
+        metadataHeaders: ['Subject', 'From', 'Date'],
+      });
+
+      const messages = thread.messages || [];
+      const latestMessage = messages[messages.length - 1];
+      const headers = latestMessage?.payload?.headers || [];
+      const getHeader = (name: string) =>
+        headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())
+          ?.value || '';
+
+      const subject = getHeader('Subject') || '(No Subject)';
+      const dateHeader = getHeader('Date');
+      const timestamp = dateHeader
+        ? new Date(dateHeader).toISOString()
+        : new Date().toISOString();
+      const senderEmail = this.extractEmailAddress(getHeader('From'));
+
+      let clientName = '';
+      let company = '';
+      if (tenantId && senderEmail) {
+        try {
+          const context = await this.clientsService.getClientContext(
+            tenantId,
+            senderEmail,
+          );
+          clientName = context.name;
+          company = context.company;
+        } catch {
+          // Best-effort enrichment — an unresolved client shouldn't hide the email.
+        }
+      }
+
+      const status =
+        analysis?.reviewedAt && analysis.supervisorLabel
+          ? REVIEW_STATUS_BY_LABEL[analysis.supervisorLabel as ReviewedLabel]
+          : undefined;
+
+      return {
+        threadId,
+        clientName: clientName || 'Unknown',
+        company,
+        subjectSnippet: thread.snippet || subject,
+        timestamp,
+        status,
+      };
+    } catch (error) {
+      this.logger.error(
+        `Failed to build email row for thread ${threadId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return null;
+    }
   }
 
   private extractEmailAddress(fromValue: string): string {
