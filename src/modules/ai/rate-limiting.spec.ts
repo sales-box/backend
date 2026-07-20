@@ -74,14 +74,16 @@ describe('route rate limiting', () => {
   const hit = (method: 'GET' | 'POST', url: string) =>
     server.inject({ method, url });
 
-  it('upload route: 5 pass, the 6th is blocked with 429 + retry-after', async () => {
-    for (let i = 1; i <= 5; i++) {
+  it('upload route: 60 pass, the 61st is blocked with 429 + retry-after', async () => {
+    // Raised from 5 to 60/min so bulk KB uploads (the KB holds up to 200 docs)
+    // don't silently lose the overflow to 429 — still a brute-force damper.
+    for (let i = 1; i <= 60; i++) {
       const res = await hit('POST', '/knowledge-base/upload');
-      expect(res.statusCode).not.toBe(429); // within the 5/min limit
+      expect(res.statusCode).not.toBe(429); // within the 60/min limit
     }
-    const sixth = await hit('POST', '/knowledge-base/upload');
-    expect(sixth.statusCode).toBe(429);
-    expect(sixth.headers['retry-after']).toBeDefined();
+    const overflow = await hit('POST', '/knowledge-base/upload');
+    expect(overflow.statusCode).toBe(429);
+    expect(overflow.headers['retry-after']).toBeDefined();
   });
 
   it('AI route: 10 pass, the 11th is blocked with 429 + retry-after', async () => {

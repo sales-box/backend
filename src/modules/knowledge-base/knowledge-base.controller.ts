@@ -34,7 +34,7 @@ import { Throttle } from '@nestjs/throttler';
 export class KnowledgeBaseController {
   constructor(private readonly knowledgeBaseService: KnowledgeBaseService) {}
 
-  @Throttle({ default: { limit: 5, ttl: 60000 } }) // 5 uploads per minute per IP
+  @Throttle({ default: { limit: 60, ttl: 60000 } }) // 60 uploads/min per IP — bulk-friendly for the 200-doc KB, still abuse-limited
   @Post('upload')
   @ApiConsumes('multipart/form-data')
   @ApiBody({
