@@ -1,8 +1,22 @@
 export type AnalyticsSummary = {
   totalEmailsProcessed: number;
   byClassification: Record<string, number>;
+  // Average over the AI-reviewed subset only (confidence is written just for
+  // emails an SE opened via /ai/process). 0 when the subset is empty.
   averageConfidence: number;
+  // Back-compat alias for the old dashboard: mirrors aiReviewed.escalated.
   lowConfidenceCount: number;
+  // Month-over-month change in processed volume: current window vs the equal
+  // window before it. null when there's no previous data (never a fake +12%).
+  momChangePct: number | null;
+  // Real per-day volume across the window, zero-filled, UTC-day buckets.
+  dailyCounts: { date: string; emails: number }[];
+  // Replies actually sent, counted by DISTINCT thread (reviewedAt is stamped
+  // per-thread, so counting rows would multiply one reply by the thread size).
+  replies: { threads: number };
+  // The subset with a supervisor verdict, and how many hit the 'red' (escalate
+  // to human) band — the honest denominator for the escalation rate.
+  aiReviewed: { count: number; escalated: number };
 };
 
 // One row per allowlisted SE for a tenant. Backs GET /analytics/team.
