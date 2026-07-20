@@ -90,20 +90,15 @@ const isProd = process.env.NODE_ENV === 'production';
     }),
     // Rate limiting backed by Redis so limits are shared across all instances.
     ThrottlerModule.forRootAsync({
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
+      inject: [ConfigService, 'REDIS_CLIENT'],
+      useFactory: (config: ConfigService, redis: Redis) => ({
         throttlers: [
           {
             ttl: config.get<number>('THROTTLE_TTL', 60_000),
             limit: config.get<number>('THROTTLE_LIMIT', 100),
           },
         ],
-        storage: new ThrottlerStorageRedisService(
-          new Redis({
-            host: config.get<string>('REDIS_HOST'),
-            port: config.get<number>('REDIS_PORT'),
-          }),
-        ),
+        storage: new ThrottlerStorageRedisService(redis),
       }),
     }),
     PrismaModule,

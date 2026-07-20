@@ -268,6 +268,19 @@ export class AuthService {
 
     const account = await this.upsertConnectedAccount(email, tokens, tenantId);
 
+    // Register (or refresh) the Gmail Pub/Sub watch subscription for this SE.
+    // seLoginWithGoogle is the ONLY path an SE ever connects Google from —
+    // unlike the admin dashboard flow (handleGoogleCallback, below), this
+    // never fired the event before, so classification silently never
+    // started for any SE-only tenant. Mirrors handleGoogleCallback's emit
+    // exactly: same event name, same payload shape, same post-upsert
+    // timing — account.id here is a real ConnectedAccount.id, which is
+    // what subscribeToTopic's webhookSubscription upsert requires.
+    this.eventEmitter.emit('google.account.connected', {
+      id: account.id,
+      email: account.email,
+    });
+
     // Same claim shape as the admin token so a single JwtAuthGuard can verify
     // both. An SE session is never an admin, regardless of the row's isAdmin.
     const payload: AdminJwtPayload = {

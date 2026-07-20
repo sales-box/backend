@@ -78,7 +78,41 @@ export class GmailWebhookService {
   }
 
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
-  private renewSubscriptions(): void {
+  private async renewSubscriptions(): Promise<void> {
     this.logger.log('Starting daily Gmail Pub/Sub subscription renewal...');
+
+    // Renew anything expiring within the next 48h — daily cadence with a
+    // 48h window gives headroom if a run is missed or a renewal fails.
+    const expiringBefore = new Date(Date.now() + 48 * 60 * 60 * 1000);
+
+    const expiringSoon = await this.prisma.webhookSubscription.findMany({
+      where: { expirationDate: { lte: expiringBefore } },
+      include: { connectedAccount: true }, // adjust relation name to match schema.prisma
+    });
+
+    this.logger.log(
+      `Found ${expiringSoon.length} Gmail Pub/Sub subscription(s) expiring within 48h.`,
+    );
+
+    for (const sub of expiringSoon) {
+      if (!sub.connectedAccount?.email) {
+        this.logger.warn(
+          `Skipping renewal for subscription ${sub.connectedAccountId}: no linked connected account email found.`,
+        );
+        continue;
+      }
+      try {
+        await this.subscribeToTopic(
+          sub.connectedAccountId,
+          sub.connectedAccount.email,
+        );
+      } catch {
+        // subscribeToTopic already logs its own failure; this just keeps
+        // one bad account from stopping the rest of the batch.
+        this.logger.error(
+          `Renewal failed for ${sub.connectedAccount.email}, continuing with remaining accounts.`,
+        );
+      }
+    }
   }
 }

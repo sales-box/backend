@@ -8,6 +8,8 @@ import { AiController } from '@/modules/ai/ai.controller';
 import { ReplyService } from '@/modules/ai/graphs/reply/reply.service';
 import { AiOrchestratorService } from './ai-orchestrator.service';
 import { AuthModule } from '@/modules/auth/auth.module';
+import { BackfillThreadIdService } from './backfill/backfill-thread-id.service';
+import { AiAdminController } from './backfill/ai-admin.controller';
 
 @Module({
   imports: [
@@ -18,8 +20,8 @@ import { AuthModule } from '@/modules/auth/auth.module';
     GmailModule,
     AuthModule,
   ],
-  controllers: [AiController],
-  providers: [ReplyService, AiOrchestratorService],
+  controllers: [AiController, AiAdminController],
+  providers: [ReplyService, AiOrchestratorService, BackfillThreadIdService],
   exports: [],
 })
 export class AiModule {}

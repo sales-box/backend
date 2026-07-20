@@ -193,9 +193,13 @@ export class EnvironmentVariables {
   // Currently pointed at Groq's OpenAI-compatible endpoint. Swapping
   // providers later (e.g. once ITI issues an OpenAI key) should only
   // require changing these vars, not the client code.
+  @IsOptional()
+  @IsString()
+  LLM_API_KEY?: string;
+
   @IsString()
   @MinLength(1)
-  LLM_API_KEY!: string;
+  LLM_API_KEYS!: string;
 
   @IsUrl({ require_tld: false })
   LLM_BASE_URL!: string;

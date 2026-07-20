@@ -33,6 +33,7 @@ export class AiOrchestratorService {
     accountEmail: string,
     tenantId: string,
     text: string,
+    threadId: string | null,
   ) {
     const existing = await this.prisma.generalAnalysis.findUnique({
       where: { messageId },
@@ -46,6 +47,7 @@ export class AiOrchestratorService {
       return await this.prisma.generalAnalysis.create({
         data: {
           messageId,
+          threadId,
           accountEmail,
           tenantId,
           isUrgent: result.isUrgent,
@@ -92,6 +94,7 @@ export class AiOrchestratorService {
         accountEmail,
         tenantId,
         emailBody,
+        parsed.threadId || null,
       );
     } catch (error) {
       this.logger.error(

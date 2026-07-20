@@ -1,19 +1,23 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
+import { LlmKeyRotator } from './llm-key-rotator.service';
 
 @Injectable()
 export class LlmClientService {
   private readonly logger = new Logger(LlmClientService.name);
-  private readonly client: OpenAI;
+  private readonly clients: OpenAI[];
   private readonly model: string;
   private readonly visionModel: string;
 
-  constructor(private readonly config: ConfigService) {
-    this.client = new OpenAI({
-      apiKey: this.config.get<string>('LLM_API_KEY'),
-      baseURL: this.config.get<string>('LLM_BASE_URL'),
-    });
+  constructor(
+    private readonly config: ConfigService,
+    private readonly keyRotator: LlmKeyRotator,
+  ) {
+    const baseURL = this.config.get<string>('LLM_BASE_URL');
+    this.clients = this.keyRotator
+      .getKeys()
+      .map((apiKey) => new OpenAI({ apiKey, baseURL }));
     this.model = this.config.get<string>('LLM_MODEL')!;
     this.visionModel = this.config.get<string>('VISION_MODEL')!;
   }
@@ -34,9 +38,13 @@ export class LlmClientService {
     const backoffMs = [1000, 3000];
     let attempt = 0;
 
+    let currentKeyIdx = await this.keyRotator.next();
+    let keysTried = 0;
+
     while (true) {
       try {
-        const response = await this.client.chat.completions.create({
+        const client = this.clients[currentKeyIdx];
+        const response = await client.chat.completions.create({
           model: this.model,
           temperature: params.temperature ?? 0.2,
           messages: [
@@ -76,14 +84,29 @@ export class LlmClientService {
         const err = error as { status?: number; message?: string };
         const isRateLimit =
           err && (err.status === 429 || String(err.message).includes('429'));
-        if (isRateLimit && attempt < maxRetries) {
-          const delay = backoffMs[attempt];
-          attempt++;
-          this.logger.warn(
-            `Rate limit (429) hit in structured LLM generation. Retrying attempt ${attempt}/${maxRetries} after ${delay}ms...`,
-          );
-          await new Promise((resolve) => setTimeout(resolve, delay));
-          continue;
+
+        if (isRateLimit) {
+          if (keysTried < this.clients.length - 1) {
+            keysTried++;
+            const oldIdx = currentKeyIdx;
+            currentKeyIdx = await this.keyRotator.next();
+            this.logger.warn(
+              `Rate limit (429) hit on key index ${oldIdx}. Rotating to key index ${currentKeyIdx} immediately...`,
+            );
+            continue;
+          }
+
+          if (attempt < maxRetries) {
+            const delay = backoffMs[attempt];
+            attempt++;
+            keysTried = 0;
+            this.logger.warn(
+              `Rate limit (429) hit on all keys. Retrying same-key/rotator cycle attempt ${attempt}/${maxRetries} after ${delay}ms...`,
+            );
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            currentKeyIdx = await this.keyRotator.next();
+            continue;
+          }
         }
 
         const errorMessage =
@@ -100,46 +123,66 @@ export class LlmClientService {
 
   /**
    * Image/attachment understanding, used by the Extractor's vision fallback
-   * and the Attachments module. Uses VISION_MODEL (currently Llama 4 Scout
-   * on Groq) via the same OpenAI-compatible client — only the model and
-   * message shape differ from generateStructured().
+   * and the Attachments module. Uses VISION_MODEL (currently gemini-3.1-flash-lite
+   * via the Gemini OpenAI-compatible endpoint) via the same OpenAI-compatible client
+   * — only the model and message shape differ from generateStructured().
    */
   async analyzeImage(
     imageBase64: string,
     prompt: string,
     mimeType: string = 'image/jpeg',
   ): Promise<string> {
-    try {
-      const response = await this.client.chat.completions.create({
-        model: this.visionModel,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: prompt },
-              {
-                type: 'image_url',
-                image_url: {
-                  url: `data:${mimeType};base64,${imageBase64}`,
+    let currentKeyIdx = await this.keyRotator.next();
+    let keysTried = 0;
+
+    while (true) {
+      try {
+        const client = this.clients[currentKeyIdx];
+        const response = await client.chat.completions.create({
+          model: this.visionModel,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: prompt },
+                {
+                  type: 'image_url',
+                  image_url: {
+                    url: `data:${mimeType};base64,${imageBase64}`,
+                  },
                 },
-              },
-            ],
-          },
-        ],
-      });
+              ],
+            },
+          ],
+        });
 
-      const content = response.choices[0]?.message?.content;
-      if (!content) {
-        throw new Error('LLM vision response did not contain any content.');
+        const content = response.choices[0]?.message?.content;
+        if (!content) {
+          throw new Error('LLM vision response did not contain any content.');
+        }
+
+        return content;
+      } catch (error: any) {
+        const err = error as { status?: number; message?: string };
+        const isRateLimit =
+          err && (err.status === 429 || String(err.message).includes('429'));
+
+        if (isRateLimit && keysTried < this.clients.length - 1) {
+          keysTried++;
+          const oldIdx = currentKeyIdx;
+          currentKeyIdx = await this.keyRotator.next();
+          this.logger.warn(
+            `Rate limit (429) hit on vision key index ${oldIdx}. Rotating to key index ${currentKeyIdx} immediately...`,
+          );
+          continue;
+        }
+
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        const errorStack = error instanceof Error ? error.stack : undefined;
+        this.logger.error(`Image analysis failed: ${errorMessage}`, errorStack);
+        throw new Error(`LLM Vision Error: ${errorMessage}`);
       }
-
-      return content;
-    } catch (error: any) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      const errorStack = error instanceof Error ? error.stack : undefined;
-      this.logger.error(`Image analysis failed: ${errorMessage}`, errorStack);
-      throw new Error(`LLM Vision Error: ${errorMessage}`);
     }
   }
 }
