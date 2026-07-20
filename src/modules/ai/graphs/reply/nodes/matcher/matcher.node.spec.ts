@@ -45,6 +45,9 @@ function makeState(
   over: Partial<ReplyGraphStateType> = {},
 ): ReplyGraphStateType {
   return {
+    connectedAccountId: 'account-1',
+    threadId: 'thread-1',
+    messageId: 'message-1',
     emailId: 'email-1',
     tenantId: TENANT_A,
     emailBody: 'we need a pump for outdoor use',

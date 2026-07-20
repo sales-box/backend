@@ -4,6 +4,7 @@ import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { ChatOpenAI, OpenAIEmbeddings } from '@langchain/openai';
 import { ConfigService } from '@nestjs/config';
 import { createHeaders } from 'portkey-ai';
+import { sanitizeStructuredOutput } from './sanitize-structured-output.util';
 
 export type MessageInput = {
   role: 'system' | 'user' | 'assistant';
@@ -79,7 +80,8 @@ export class AiModelService {
           method: 'functionCalling',
         });
 
-        return (await chain.invoke(messages)) as z.infer<T>;
+        const raw = (await chain.invoke(messages)) as z.infer<T>;
+        return sanitizeStructuredOutput(raw) as z.infer<T>;
       } catch (error) {
         const err = error as { status?: number; message?: string };
         const isRateLimit =
@@ -106,7 +108,9 @@ export class AiModelService {
     }
 
     // Unreachable — the loop always returns or throws, but TypeScript needs this.
-    throw new Error('Unexpected: generateStructured loop exited without result');
+    throw new Error(
+      'Unexpected: generateStructured loop exited without result',
+    );
   }
 
   async embedQuery(text: string): Promise<number[]> {
