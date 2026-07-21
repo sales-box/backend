@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { google } from 'googleapis';
+import { google, gmail_v1 } from 'googleapis';
 import { EmailService } from '@/modules/email/email.service';
 import { GmailClientProvider } from './gmail-client.provider';
 import { PrismaService } from '@/database/prisma.service';
@@ -110,11 +110,7 @@ export class EmailsService {
       email,
       tenantId,
     );
-    const { data } = await gmail.users.threads.list({ userId: 'me' });
-    const activeThreads = data.threads || [];
-    const activeThreadIds = activeThreads
-      .map((t) => t.id)
-      .filter((id): id is string => !!id);
+    const activeThreadIds = await this.listActiveThreadIds(gmail);
 
     interface AnalysisRow {
       threadId: string | null;
@@ -187,7 +183,7 @@ export class EmailsService {
     }
 
     return {
-      totalEmails: activeThreads.length,
+      totalEmails: activeThreadIds.length,
       syncedAt: new Date().toISOString(),
       urgentCount,
       intentBreakdown,
@@ -226,10 +222,7 @@ export class EmailsService {
       email,
       tenantId,
     );
-    const { data } = await gmail.users.threads.list({ userId: 'me' });
-    const activeThreadIds = new Set(
-      (data.threads || []).map((t) => t.id).filter((id): id is string => !!id),
-    );
+    const activeThreadIds = new Set(await this.listActiveThreadIds(gmail));
     if (activeThreadIds.size === 0) return [];
 
     interface AnalysisRow {
@@ -267,6 +260,35 @@ export class EmailsService {
       matched.map((r) => this.buildCategoryRow(gmail, r, email, tenantId)),
     );
     return built.filter((x): x is NonNullable<typeof x> => x !== null);
+  }
+
+  /**
+   * All active thread ids for the account, paginated. threads.list defaults to
+   * 100 per page — without the loop both inbox-stats and categorized silently
+   * ignored anything past the newest 100 threads. Capped at 10 pages (1000
+   * threads) to bound Gmail quota per request.
+   */
+  private async listActiveThreadIds(
+    gmail: Awaited<ReturnType<GmailClientProvider['getClientForAccount']>>,
+  ): Promise<string[]> {
+    const ids: string[] = [];
+    let pageToken: string | undefined = undefined;
+    for (let page = 0; page < 10; page++) {
+      // Explicit annotation: `data` feeds `pageToken` which feeds the next
+      // call — without it TS's circular inference degrades the type to any.
+      const res: { data: gmail_v1.Schema$ListThreadsResponse } =
+        await gmail.users.threads.list({
+          userId: 'me',
+          maxResults: 100,
+          pageToken,
+        });
+      for (const t of res.data.threads || []) {
+        if (t.id) ids.push(t.id);
+      }
+      pageToken = res.data.nextPageToken ?? undefined;
+      if (!pageToken) break;
+    }
+    return ids;
   }
 
   private categoryToFilter(

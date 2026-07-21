@@ -78,6 +78,11 @@ export class AiOrchestratorService {
     accountEmail: string,
     tenantId: string,
   ) {
+    // Normalize once: GA rows store the account email lowercased (OAuth flow),
+    // so every comparison and query below must use the same shape — a mixed-case
+    // request value would silently miss every stored row.
+    accountEmail = accountEmail.trim().toLowerCase();
+
     // 1. Fetch the raw email once — everything downstream reads from this.
     const parsed = await this.gmailProvider.fetchMessage(
       messageId,
@@ -90,13 +95,21 @@ export class AiOrchestratorService {
     // Don't classify our reply or regenerate a draft — tell the panel it's done.
     // (The extension opens the newest message in a thread; once we've replied,
     // that's our outbound message.)
-    if (clientEmail && clientEmail === accountEmail.trim().toLowerCase()) {
-      // Read-only summary of what the AI did on this thread (the client's stored
-      // row), so the panel can show the analysis alongside the "replied" state
-      // instead of just "done".
+    if (clientEmail && clientEmail === accountEmail) {
+      // Read-only summary of what the AI did on this thread, so the panel can
+      // show the analysis alongside the "replied" state instead of just "done".
+      // Only rows that actually carry supervisor output count — a bare
+      // classifier row (null confidences) or a legacy row for our own reply
+      // would otherwise shadow the real analysis and render "—".
       const prior = parsed.threadId
         ? await this.prisma.generalAnalysis.findFirst({
-            where: { threadId: parsed.threadId, accountEmail, tenantId },
+            where: {
+              threadId: parsed.threadId,
+              accountEmail,
+              tenantId,
+              supervisorLabel: { not: null },
+              messageId: { not: messageId },
+            },
             orderBy: { createdAt: 'desc' },
           })
         : null;
@@ -244,9 +257,14 @@ export class AiOrchestratorService {
 
     // Auto-log this email as a client interaction so history confidence builds
     // over time. Deduped per Gmail message, so re-processing/refreshing the same
-    // email updates (not duplicates) it. Only for identified clients — a stranger
-    // has no client row to attach to yet (they still get the new-client baseline).
-    if (clientContext.clientId) {
+    // email updates (not duplicates) it. Guards:
+    // - clientId + !isNewClient: a 'domain' match resolves to a DIFFERENT person
+    //   at the same company (isNewClient=true, clientId still set) — logging
+    //   there would attach this email to the wrong person's timeline and
+    //   inflate their history confidence.
+    // - finalState: a failed pipeline produces degraded scores; don't let a
+    //   failure grow the client's history.
+    if (clientContext.clientId && !clientContext.isNewClient && finalState) {
       try {
         await this.prisma.interaction.upsert({
           where: { tenant_message: { tenantId, messageId } },
@@ -254,7 +272,7 @@ export class AiOrchestratorService {
             tenantId,
             clientId: clientContext.clientId,
             messageId,
-            date: parsed.date ? new Date(parsed.date) : new Date(),
+            date: this.safeDate(parsed.date),
             type: 'email',
             subject: parsed.subject || '(no subject)',
             aiSummary: classification.reasoning || '',
@@ -291,6 +309,18 @@ export class AiOrchestratorService {
         isNewClient: clientContext.isNewClient,
       },
     };
+  }
+
+  /**
+   * Parses an email date defensively. parsed.date is normally an RFC-2822
+   * header, but the parser falls back to Gmail's internalDate — an epoch-ms
+   * STRING, which `new Date(string)` treats as an (invalid) date string.
+   */
+  private safeDate(raw?: string): Date {
+    if (!raw) return new Date();
+    let d = new Date(raw);
+    if (isNaN(d.getTime())) d = new Date(Number(raw));
+    return isNaN(d.getTime()) ? new Date() : d;
   }
 
   /**

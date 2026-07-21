@@ -233,6 +233,8 @@ describe('EmailsService', () => {
       );
       expect(mockGmailClient.users.threads.list).toHaveBeenCalledWith({
         userId: 'me',
+        maxResults: 100,
+        pageToken: undefined,
       });
       // Check query was made to Prisma
       expect(mockPrisma.$queryRaw).toHaveBeenCalled();
