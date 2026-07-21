@@ -39,16 +39,19 @@ export class SupervisorService {
   }
 
   private computeClientHistoryConfidence(input: SupervisorInput): number {
+    // A brand-new (uncontacted) client: conservative baseline, not zero — being
+    // unknown isn't automatically "risky", just "unverified".
+    const NEW_CLIENT_BASELINE = 0.4;
     if (input.isNewClient) {
-      // No history at all -> conservative baseline, not zero (a new client
-      // isn't automatically "risky", just "unverified")
-      return 0.4;
+      return NEW_CLIENT_BASELINE;
     }
 
-    // More interactions on record -> more confidence, but with diminishing
-    // returns (5 interactions is already "well known", no need for 50)
+    // A known client gains confidence with each logged interaction (diminishing
+    // returns — 5 is already "well known"). Floored at the new-client baseline:
+    // a client we've identified in the CRM is never LESS trusted than a stranger
+    // (previously a known client with 0 logged interactions scored 0 < 0.4).
     const historyScore = Math.min(1, input.clientHistoryLength / 5);
-    return historyScore;
+    return Math.max(historyScore, NEW_CLIENT_BASELINE);
   }
 
   private detectHallucination(claims: Array<{ status: string }>): boolean {

@@ -24,7 +24,10 @@ import { AnalyticsSummary, TeamMemberStats } from './types/analytics.types';
 import { KnowledgeGap } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { AuthenticatedRequest } from '../auth/jwt-auth.guard';
-import { AdminTenantGuard } from '../../common/guards/admin-tenant.guard';
+import {
+  AdminTenantGuard,
+  AllowNonAdmin,
+} from '../../common/guards/admin-tenant.guard';
 import { ReportGapDto } from './dto/report-gap.dto';
 import { ActivityFeedQueryDto } from './dto/activity-feed-query.dto';
 
@@ -109,6 +112,9 @@ export class AnalyticsController {
   }
 
   @Post('gaps')
+  // SE-facing: Sales Engineers (non-admin) report gaps from the extension when
+  // the AI can't confidently answer. Scoped to their own tenant via the JWT.
+  @AllowNonAdmin()
   @ApiOperation({ summary: 'Report a new knowledge gap' })
   @ApiResponse({
     status: 201,

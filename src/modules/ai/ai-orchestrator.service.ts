@@ -78,6 +78,11 @@ export class AiOrchestratorService {
     accountEmail: string,
     tenantId: string,
   ) {
+    // Normalize once: GA rows store the account email lowercased (OAuth flow),
+    // so every comparison and query below must use the same shape — a mixed-case
+    // request value would silently miss every stored row.
+    accountEmail = accountEmail.trim().toLowerCase();
+
     // 1. Fetch the raw email once — everything downstream reads from this.
     const parsed = await this.gmailProvider.fetchMessage(
       messageId,
@@ -85,6 +90,41 @@ export class AiOrchestratorService {
     );
     const emailBody = parsed.textPlain || parsed.textHtml || '';
     const clientEmail = this.extractSenderEmail(parsed.from ?? '');
+
+    // If the opened message is the SE's OWN reply, the thread is already handled.
+    // Don't classify our reply or regenerate a draft — tell the panel it's done.
+    // (The extension opens the newest message in a thread; once we've replied,
+    // that's our outbound message.)
+    if (clientEmail && clientEmail === accountEmail) {
+      // Read-only summary of what the AI did on this thread, so the panel can
+      // show the analysis alongside the "replied" state instead of just "done".
+      // Only rows that actually carry supervisor output count — a bare
+      // classifier row (null confidences) or a legacy row for our own reply
+      // would otherwise shadow the real analysis and render "—".
+      const prior = parsed.threadId
+        ? await this.prisma.generalAnalysis.findFirst({
+            where: {
+              threadId: parsed.threadId,
+              accountEmail,
+              tenantId,
+              supervisorLabel: { not: null },
+              messageId: { not: messageId },
+            },
+            orderBy: { createdAt: 'desc' },
+          })
+        : null;
+      return {
+        alreadyReplied: true as const,
+        summary: prior
+          ? {
+              intent: prior.intent,
+              productConfidence: prior.productConfidence,
+              clientHistoryConfidence: prior.clientHistoryConfidence,
+              supervisorLabel: prior.supervisorLabel,
+            }
+          : null,
+      };
+    }
 
     // 2. Classifier — cached DB row (fast path) or live classify() (fallback).
     let classification: GeneralAnalysis;
@@ -215,6 +255,43 @@ export class AiOrchestratorService {
       };
     }
 
+    // Auto-log this email as a client interaction so history confidence builds
+    // over time. Deduped per Gmail message, so re-processing/refreshing the same
+    // email updates (not duplicates) it. Guards:
+    // - clientId + !isNewClient: a 'domain' match resolves to a DIFFERENT person
+    //   at the same company (isNewClient=true, clientId still set) — logging
+    //   there would attach this email to the wrong person's timeline and
+    //   inflate their history confidence.
+    // - finalState: a failed pipeline produces degraded scores; don't let a
+    //   failure grow the client's history.
+    if (clientContext.clientId && !clientContext.isNewClient && finalState) {
+      try {
+        await this.prisma.interaction.upsert({
+          where: { tenant_message: { tenantId, messageId } },
+          create: {
+            tenantId,
+            clientId: clientContext.clientId,
+            messageId,
+            date: this.safeDate(parsed.date),
+            type: 'email',
+            subject: parsed.subject || '(no subject)',
+            aiSummary: classification.reasoning || '',
+            classification: classification.intent,
+            productConfidence: supervision.productConfidence,
+            clientHistoryConfidence: supervision.clientHistoryConfidence,
+          },
+          update: {
+            productConfidence: supervision.productConfidence,
+            clientHistoryConfidence: supervision.clientHistoryConfidence,
+          },
+        });
+      } catch (error) {
+        this.logger.warn(
+          `Failed to log interaction for message ${messageId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
     return {
       classification: updatedClassification,
       requirements: finalState?.extractorResult ?? null,
@@ -222,6 +299,9 @@ export class AiOrchestratorService {
         ? (finalState?.composerResult ?? null)
         : null,
       confidence: supervision,
+      // The date the email was received (from the message header) so the panel
+      // shows the real time instead of falling back to "now".
+      emailTimestamp: parsed.date,
       client: {
         name: clientContext.name || null,
         company: clientContext.company || null,
@@ -229,6 +309,18 @@ export class AiOrchestratorService {
         isNewClient: clientContext.isNewClient,
       },
     };
+  }
+
+  /**
+   * Parses an email date defensively. parsed.date is normally an RFC-2822
+   * header, but the parser falls back to Gmail's internalDate — an epoch-ms
+   * STRING, which `new Date(string)` treats as an (invalid) date string.
+   */
+  private safeDate(raw?: string): Date {
+    if (!raw) return new Date();
+    let d = new Date(raw);
+    if (isNaN(d.getTime())) d = new Date(Number(raw));
+    return isNaN(d.getTime()) ? new Date() : d;
   }
 
   /**
