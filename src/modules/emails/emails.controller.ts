@@ -61,6 +61,46 @@ export class EmailsController {
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
+  @Get('categorized')
+  @ApiQuery({
+    name: 'category',
+    description:
+      "Drill-down category: an intent ('product-inquiry', 'demo-request', 'support', 'follow-up', 'sensitive'), 'urgent', a review status ('ready', 'needs-review', 'manual'), or 'not-reviewed'.",
+  })
+  @ApiOkResponse({
+    description: 'Emails in the SE inbox that fall in the given category',
+    schema: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          threadId: { type: 'string' },
+          clientName: { type: 'string' },
+          company: { type: 'string' },
+          subjectSnippet: { type: 'string' },
+          timestamp: { type: 'string', format: 'date-time' },
+          status: {
+            type: 'string',
+            enum: ['ready', 'needs-review', 'manual'],
+            nullable: true,
+          },
+        },
+      },
+    },
+  })
+  async getCategorized(
+    @Req() req: AuthenticatedRequest,
+    @Query('category') category: string,
+  ) {
+    return this.emailsService.getCategorizedEmailsForSe(
+      req.user.email,
+      req.user.tenantId ?? undefined,
+      category,
+    );
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
   @Get('thread-history')
   @ApiOkResponse({
     description: 'List of email threads with the client',

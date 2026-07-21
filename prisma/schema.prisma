@@ -48,7 +48,12 @@ model Interaction {
   createdAt      DateTime @default(now())
   productConfidence Float?  @map("product_confidence")
   clientHistoryConfidence Float?  @map("client_history_confidence")
+  // Gmail message id when this interaction was auto-logged by the AI pipeline.
+  // Null for manually-created timeline entries. Lets the pipeline upsert one
+  // interaction per email instead of duplicating on every re-process.
+  messageId      String?  @map("message_id")
 
+  @@unique([tenantId, messageId], name: "tenant_message")
   @@map("interactions")
 }
 

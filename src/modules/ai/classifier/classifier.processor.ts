@@ -211,6 +211,20 @@ export class ClassifierProcessor extends WorkerHost {
       throw error;
     }
 
+    // Skip the SE's own outbound messages (replies we sent). Gmail threads them
+    // into the conversation, but classifying them inflates the processed count
+    // and mislabels our own reply as an inbound "follow-up".
+    const fromRaw = parsed.from ?? '';
+    const fromEmail = (fromRaw.match(/<([^>]+)>/)?.[1] ?? fromRaw)
+      .trim()
+      .toLowerCase();
+    if (fromEmail && fromEmail === account.email.trim().toLowerCase()) {
+      this.logger.debug(
+        'SE-authored (outbound) message; skipping classification',
+      );
+      return false;
+    }
+
     // The subject carries strong intent/urgency signal ("URGENT: ...",
     // "cancelling our contract") and is sometimes the ONLY content, so it is
     // classified alongside the body (both caged as untrusted by classify()).

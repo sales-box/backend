@@ -215,6 +215,38 @@ export class AiOrchestratorService {
       };
     }
 
+    // Auto-log this email as a client interaction so history confidence builds
+    // over time. Deduped per Gmail message, so re-processing/refreshing the same
+    // email updates (not duplicates) it. Only for identified clients — a stranger
+    // has no client row to attach to yet (they still get the new-client baseline).
+    if (clientContext.clientId) {
+      try {
+        await this.prisma.interaction.upsert({
+          where: { tenant_message: { tenantId, messageId } },
+          create: {
+            tenantId,
+            clientId: clientContext.clientId,
+            messageId,
+            date: parsed.date ? new Date(parsed.date) : new Date(),
+            type: 'email',
+            subject: parsed.subject || '(no subject)',
+            aiSummary: classification.reasoning || '',
+            classification: classification.intent,
+            productConfidence: supervision.productConfidence,
+            clientHistoryConfidence: supervision.clientHistoryConfidence,
+          },
+          update: {
+            productConfidence: supervision.productConfidence,
+            clientHistoryConfidence: supervision.clientHistoryConfidence,
+          },
+        });
+      } catch (error) {
+        this.logger.warn(
+          `Failed to log interaction for message ${messageId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
     return {
       classification: updatedClassification,
       requirements: finalState?.extractorResult ?? null,
@@ -222,6 +254,9 @@ export class AiOrchestratorService {
         ? (finalState?.composerResult ?? null)
         : null,
       confidence: supervision,
+      // The date the email was received (from the message header) so the panel
+      // shows the real time instead of falling back to "now".
+      emailTimestamp: parsed.date,
       client: {
         name: clientContext.name || null,
         company: clientContext.company || null,
