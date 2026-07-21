@@ -139,12 +139,15 @@ jobs:
           script: |
             set -e
             cd /home/ec2-user/app
+            [ -f .env ] && [ -n "$(tail -c 1 .env)" ] && echo "" >> .env
             if grep -q "^BACKEND_IMAGE_TAG=" .env 2>/dev/null; then
               sed -i "s/^BACKEND_IMAGE_TAG=.*/BACKEND_IMAGE_TAG=${{ github.sha }}/" .env
             else
               echo "BACKEND_IMAGE_TAG=${{ github.sha }}" >> .env
             fi
             export BACKEND_IMAGE_TAG="${{ github.sha }}"
+
+              
             docker compose pull backend
             docker compose run --rm backend npx -y prisma@6.19.3 migrate deploy
             docker compose up -d --force-recreate backend
