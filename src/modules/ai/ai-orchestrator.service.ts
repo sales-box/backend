@@ -86,6 +86,33 @@ export class AiOrchestratorService {
     const emailBody = parsed.textPlain || parsed.textHtml || '';
     const clientEmail = this.extractSenderEmail(parsed.from ?? '');
 
+    // If the opened message is the SE's OWN reply, the thread is already handled.
+    // Don't classify our reply or regenerate a draft — tell the panel it's done.
+    // (The extension opens the newest message in a thread; once we've replied,
+    // that's our outbound message.)
+    if (clientEmail && clientEmail === accountEmail.trim().toLowerCase()) {
+      // Read-only summary of what the AI did on this thread (the client's stored
+      // row), so the panel can show the analysis alongside the "replied" state
+      // instead of just "done".
+      const prior = parsed.threadId
+        ? await this.prisma.generalAnalysis.findFirst({
+            where: { threadId: parsed.threadId, accountEmail, tenantId },
+            orderBy: { createdAt: 'desc' },
+          })
+        : null;
+      return {
+        alreadyReplied: true as const,
+        summary: prior
+          ? {
+              intent: prior.intent,
+              productConfidence: prior.productConfidence,
+              clientHistoryConfidence: prior.clientHistoryConfidence,
+              supervisorLabel: prior.supervisorLabel,
+            }
+          : null,
+      };
+    }
+
     // 2. Classifier — cached DB row (fast path) or live classify() (fallback).
     let classification: GeneralAnalysis;
     try {
