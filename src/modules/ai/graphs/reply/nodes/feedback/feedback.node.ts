@@ -29,7 +29,12 @@ export async function feedbackNode(
 
   const finalDraft = String(response.content);
 
-  if (finalDraft !== originalDraft) {
+  const normalizedOriginal = normalizeText(originalDraft);
+  const normalizedFinal = normalizeText(finalDraft);
+
+  let memoryUpdated = false;
+
+  if (normalizedFinal !== normalizedOriginal) {
     const newPreferences = await inferUserPreferences(
       state,
       aiModelService,
@@ -39,9 +44,17 @@ export async function feedbackNode(
     );
 
     await updateUserPreferencesMemory(state, store, newPreferences);
+    memoryUpdated = true;
   }
 
-  return { finalDraft };
+  return { finalDraft, memoryUpdated };
+}
+
+function normalizeText(text: string): string {
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(/\n\s*\n+/g, '\n\n')
+    .trim();
 }
 
 async function inferUserPreferences(
@@ -52,7 +65,7 @@ async function inferUserPreferences(
   finalDraft: string,
 ): Promise<string> {
   const namespace = [
-    'agent_instructions',
+    'agent-instructions',
     'composer',
     state.tenantId,
     state.connectedAccountId,
@@ -86,7 +99,7 @@ async function updateUserPreferencesMemory(
 ): Promise<void> {
   console.log('🧠 SAVING NEW MEMORY:', newPreferences);
   const namespace = [
-    'agent_instructions',
+    'agent-instructions',
     'composer',
     state.tenantId,
     state.connectedAccountId,
