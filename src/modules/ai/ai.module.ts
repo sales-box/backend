@@ -10,6 +10,7 @@ import { AiOrchestratorService } from './ai-orchestrator.service';
 import { AuthModule } from '@/modules/auth/auth.module';
 import { BackfillThreadIdService } from './backfill/backfill-thread-id.service';
 import { AiAdminController } from './backfill/ai-admin.controller';
+import { CheckpointerModule } from './graphs/checkpointer/checkpointer.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { AiAdminController } from './backfill/ai-admin.controller';
     ClientsModule,
     GmailModule,
     AuthModule,
+    CheckpointerModule,
   ],
   controllers: [AiController, AiAdminController],
   providers: [ReplyService, AiOrchestratorService, BackfillThreadIdService],
