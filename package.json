@@ -50,6 +50,7 @@
     "@keyv/redis": "^5.1.6",
     "@langchain/core": "^1.2.3",
     "@langchain/langgraph": "^1.4.8",
+    "@langchain/langgraph-checkpoint-postgres": "^1.0.4",
     "@langchain/openai": "^1.5.5",
     "@langchain/textsplitters": "^1.0.1",
     "@nest-lab/throttler-storage-redis": "^1.2.0",
