@@ -9,9 +9,8 @@ export const ReplyGraphState = new StateSchema({
   connectedAccountId: z.string(),
   threadId: z.string(),
   messageId: z.string(),
-  emailId: z.string().optional(),
 
-  // what is the usage of these ? should they be populated from the email service externally or from intermediate nodes ?
+  // Context & inputs
   emailBody: z.string(),
   intent: z.string().optional(),
   requirements: z.array(z.string()).optional(),
@@ -23,6 +22,7 @@ export const ReplyGraphState = new StateSchema({
   extractorResult: ExtractorSchema.optional(),
 
   finalDraft: z.string().optional(),
+  memoryUpdated: z.boolean().optional(),
   excludedByUser: z.array(z.string()).default([]),
 });
 

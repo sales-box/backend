@@ -16,11 +16,17 @@ function makeDeps() {
             }),
           ),
       },
+      connectedAccount: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'acc-uuid-1' }),
+      },
     },
     gmailProvider: { fetchMessage: jest.fn() },
     classifierService: { classify: jest.fn() },
     clientsService: { getClientContext: jest.fn() },
-    replyService: { draftReply: jest.fn() },
+    replyService: {
+      draftReply: jest.fn(),
+      resumeWithFeedback: jest.fn(),
+    },
     supervisorService: { supervise: jest.fn() },
   };
 }
@@ -70,6 +76,11 @@ const BASE_FINAL_STATE = {
   },
 };
 
+const BASE_DRAFT_RESULT = {
+  graphThreadId: 'thread1:msg1',
+  state: BASE_FINAL_STATE,
+};
+
 describe('AiOrchestratorService', () => {
   describe('happy path — all agents succeed', () => {
     it('returns classification, requirements, draft, and confidence', async () => {
@@ -81,7 +92,7 @@ describe('AiOrchestratorService', () => {
       deps.clientsService.getClientContext.mockResolvedValue(
         BASE_CLIENT_CONTEXT,
       );
-      deps.replyService.draftReply.mockResolvedValue(BASE_FINAL_STATE);
+      deps.replyService.draftReply.mockResolvedValue(BASE_DRAFT_RESULT);
       deps.supervisorService.supervise.mockReturnValue({
         label: 'auto_worthy',
         draftAvailable: true,
@@ -115,7 +126,7 @@ describe('AiOrchestratorService', () => {
       deps.clientsService.getClientContext.mockResolvedValue(
         BASE_CLIENT_CONTEXT,
       );
-      deps.replyService.draftReply.mockResolvedValue(BASE_FINAL_STATE);
+      deps.replyService.draftReply.mockResolvedValue(BASE_DRAFT_RESULT);
       deps.supervisorService.supervise.mockReturnValue({
         label: 'auto_worthy',
         draftAvailable: true,
@@ -147,7 +158,7 @@ describe('AiOrchestratorService', () => {
       deps.clientsService.getClientContext.mockResolvedValue(
         BASE_CLIENT_CONTEXT,
       );
-      deps.replyService.draftReply.mockResolvedValue(BASE_FINAL_STATE);
+      deps.replyService.draftReply.mockResolvedValue(BASE_DRAFT_RESULT);
       deps.supervisorService.supervise.mockReturnValue({
         label: 'auto_worthy',
         draftAvailable: true,
@@ -187,7 +198,7 @@ describe('AiOrchestratorService', () => {
       deps.clientsService.getClientContext.mockResolvedValue(
         BASE_CLIENT_CONTEXT,
       );
-      deps.replyService.draftReply.mockResolvedValue(BASE_FINAL_STATE);
+      deps.replyService.draftReply.mockResolvedValue(BASE_DRAFT_RESULT);
       deps.supervisorService.supervise.mockReturnValue({
         label: 'auto_worthy',
         draftAvailable: true,
@@ -274,7 +285,7 @@ describe('AiOrchestratorService', () => {
       deps.clientsService.getClientContext.mockResolvedValue(
         BASE_CLIENT_CONTEXT,
       );
-      deps.replyService.draftReply.mockResolvedValue(BASE_FINAL_STATE);
+      deps.replyService.draftReply.mockResolvedValue(BASE_DRAFT_RESULT);
       deps.supervisorService.supervise.mockReturnValue({
         label: 'handle_manually',
         draftAvailable: false,
@@ -311,7 +322,7 @@ describe('AiOrchestratorService', () => {
       deps.clientsService.getClientContext.mockResolvedValue(
         BASE_CLIENT_CONTEXT,
       );
-      deps.replyService.draftReply.mockResolvedValue(BASE_FINAL_STATE);
+      deps.replyService.draftReply.mockResolvedValue(BASE_DRAFT_RESULT);
       deps.supervisorService.supervise.mockReturnValue({
         label: 'auto_worthy',
         draftAvailable: true,
@@ -340,7 +351,7 @@ describe('AiOrchestratorService', () => {
       deps.clientsService.getClientContext.mockResolvedValue(
         BASE_CLIENT_CONTEXT,
       );
-      deps.replyService.draftReply.mockResolvedValue(BASE_FINAL_STATE);
+      deps.replyService.draftReply.mockResolvedValue(BASE_DRAFT_RESULT);
       deps.supervisorService.supervise.mockReturnValue({
         label: 'handle_manually',
         draftAvailable: false, // veto active

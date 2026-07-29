@@ -16,9 +16,7 @@ export function buildReplyGraph(deps: ReplyGraphDependencies) {
   return new StateGraph(ReplyGraphState)
     .addNode('extract', (state) => extractorNode(state, deps.aiModelService))
     .addNode('match', (state) => matcherNode(state, deps))
-    .addNode('compose', (state, config) =>
-      composerNode(state, config, deps.aiModelService),
-    )
+    .addNode('compose', (state, config) => composerNode(state, config, deps))
     .addNode('feedback', (state, config) =>
       feedbackNode(state, config, deps.aiModelService),
     )

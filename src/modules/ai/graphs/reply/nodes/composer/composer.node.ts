@@ -1,4 +1,3 @@
-import { AiModelService } from '@/modules/ai/ai.model.service';
 import { ReplyGraphStateType } from '@/modules/ai/graphs/reply/reply-graph.state';
 import {
   COMPOSER_SYSTEM_PROMPT,
@@ -9,11 +8,12 @@ import { wrapUntrustedContent } from '@/common/security/untrusted-content.wrappe
 import { requirementsFromState } from '@/modules/ai/graphs/reply/nodes/matcher/matcher.node';
 import { LangGraphRunnableConfig } from '@langchain/langgraph';
 import { PromptTemplate } from '@langchain/core/prompts';
+import type { ReplyGraphDependencies } from '@/modules/ai/graphs/reply/reply-graph.factory';
 
 export async function composerNode(
   state: ReplyGraphStateType,
   config: LangGraphRunnableConfig,
-  aiModelService: AiModelService,
+  deps: ReplyGraphDependencies,
 ): Promise<Partial<ReplyGraphStateType>> {
   const store = config.store;
   if (!store) {
@@ -21,7 +21,7 @@ export async function composerNode(
   }
 
   const namespace = [
-    'agent_instructions',
+    'agent-instructions',
     'composer',
     state.tenantId,
     state.connectedAccountId,
@@ -40,11 +40,10 @@ export async function composerNode(
   });
 
   const body = wrapUntrustedContent(state.emailBody, 'email_body');
+
   const contextSections = [
-    getThreadHistory(),
-    getClientBackground(),
     getRelatedProductChunks(state),
-    getProvidedAttachments(),
+    getProvidedAttachments(state),
   ];
 
   const userPromptTemplate = PromptTemplate.fromTemplate(COMPOSER_USER_PROMPT);
@@ -53,7 +52,7 @@ export async function composerNode(
     contextSections: contextSections.filter(Boolean).join('\n\n'),
   });
 
-  const composerResult = await aiModelService.generateStructured({
+  const composerResult = await deps.aiModelService.generateStructured({
     schema: ComposerSchema,
     runName: 'ComposerNode',
     messages: [
@@ -67,35 +66,7 @@ export async function composerNode(
   };
 }
 
-// from parsed messages in DB
-function getThreadHistory() {
-  return `
-<ThreadHistory>
-Date: 2026-07-10
-From: client@example.com
-Message: We are looking for a new CRM system that supports custom API integrations and has role-based access control.
-
-Date: 2026-07-12
-From: sales@ourcompany.com
-Message: Thanks for reaching out! We have a few options. How many users will be on the platform?
-</ThreadHistory>
-  `.trim();
-}
-
-// from CRM system.
-function getClientBackground() {
-  return `
-<ClientBackground>
-Company: TechFlow Inc.
-Industry: Software Development
-Size: 50-200 employees
-Current Status: Evaluating vendors for Q3 implementation. They prioritize security and API flexibility.
-</ClientBackground>
-  `.trim();
-}
-
-// from matcher node work
-function getRelatedProductChunks(state: ReplyGraphStateType) {
+function getRelatedProductChunks(state: ReplyGraphStateType): string {
   const sections: string[] = [];
 
   if (state.intent) {
@@ -142,12 +113,13 @@ function getRelatedProductChunks(state: ReplyGraphStateType) {
   return sections.join('\n');
 }
 
-// from email processed attachments
-function getProvidedAttachments() {
-  return `
-<ProvidedAttachments>
-Filename: requirements_v2.pdf
-Summary: The client requires a minimum of 99.9% uptime SLA, SOC2 compliance, and dedicated account management.
-</ProvidedAttachments>
-  `.trim();
+function getProvidedAttachments(state: ReplyGraphStateType): string {
+  if (!state.attachmentsText || state.attachmentsText.length === 0) {
+    return '';
+  }
+  const entries = state.attachmentsText
+    .map((text) => `<Attachment>\n${text}\n</Attachment>`)
+    .join('\n');
+
+  return `<ProvidedAttachments>\n${entries}\n</ProvidedAttachments>`;
 }

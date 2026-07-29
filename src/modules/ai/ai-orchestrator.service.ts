@@ -166,14 +166,23 @@ export class AiOrchestratorService {
       clientEmail,
     );
 
+    // 3.5. Fetch ConnectedAccount UUID for LangGraph memory namespaces
+    const connectedAccount = await this.prisma.connectedAccount.findFirst({
+      where: { tenantId, email: accountEmail },
+    });
+    const connectedAccountId =
+      connectedAccount?.id ?? accountEmail.replace(/[^a-zA-Z0-9_-]/g, '_');
+
     // 4. Extractor + Composer (Matcher still mocked inside the graph per PR1).
     //    Any failure here is caught so the request NEVER returns a 500 — see §6.
-    let finalState: Awaited<ReturnType<ReplyService['draftReply']>> | null =
+    let draftResult: Awaited<ReturnType<ReplyService['draftReply']>> | null =
       null;
     try {
-      finalState = await this.replyService.draftReply(
+      draftResult = await this.replyService.draftReply(
         messageId,
+        parsed.threadId,
         tenantId,
+        connectedAccountId,
         emailBody,
         accountEmail,
         { id: parsed.id ?? messageId, attachments: parsed.attachments ?? [] },
@@ -184,8 +193,10 @@ export class AiOrchestratorService {
         `draftReply failed for message ${messageId}: ${error instanceof Error ? error.message : String(error)}`,
         error instanceof Error ? error.stack : undefined,
       );
-      // finalState stays null — handled below, NOT re-thrown.
+      // draftResult stays null — handled below, NOT re-thrown.
     }
+
+    const finalState = draftResult?.state ?? null;
 
     // 5. Supervisor — pure aggregation, zero LLM calls (PR2).
     //    If draftReply failed we inject a 'hallucinated' claim so computeLabel()
@@ -299,6 +310,7 @@ export class AiOrchestratorService {
         ? (finalState?.composerResult ?? null)
         : null,
       confidence: supervision,
+      graphThreadId: draftResult?.graphThreadId ?? null,
       // The date the email was received (from the message header) so the panel
       // shows the real time instead of falling back to "now".
       emailTimestamp: parsed.date,
@@ -309,6 +321,27 @@ export class AiOrchestratorService {
         isNewClient: clientContext.isNewClient,
       },
     };
+  }
+
+  /**
+   * Resumes an interrupted reply graph run with user-edited draft feedback.
+   */
+  async resumeGraph(
+    graphThreadId: string,
+    editedContent: string,
+  ): Promise<{ memoryUpdated: boolean }> {
+    try {
+      const finalState = await this.replyService.resumeWithFeedback(
+        graphThreadId,
+        editedContent,
+      );
+      return { memoryUpdated: Boolean(finalState.memoryUpdated) };
+    } catch (error) {
+      this.logger.warn(
+        `Cannot resume graph ${graphThreadId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return { memoryUpdated: false };
+    }
   }
 
   /**
