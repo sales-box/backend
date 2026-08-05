@@ -8,6 +8,7 @@ import { ClientsService } from '@/modules/clients/clients.service';
 import { ReplyService } from '@/modules/ai/graphs/reply/reply.service';
 import { SupervisorService } from '@/modules/ai/supervisor/supervisor.service';
 import { SupervisorInput } from '@/modules/ai/supervisor/supervisor.types';
+import { CRMActionsAgent } from './graphs/actions/crm-actions.agent';
 
 @Injectable()
 export class AiOrchestratorService {
@@ -20,6 +21,7 @@ export class AiOrchestratorService {
     private readonly clientsService: ClientsService,
     private readonly replyService: ReplyService,
     private readonly supervisorService: SupervisorService,
+    private readonly crmActionsAgent: CRMActionsAgent,
   ) {}
 
   /**
@@ -342,6 +344,47 @@ export class AiOrchestratorService {
       );
       return { memoryUpdated: false };
     }
+  }
+
+  /**
+   * Fetches raw Gmail message, parses content & sender, and suggests CRM write actions.
+   */
+  async suggestCrmActions(
+    messageId: string,
+    accountEmail: string,
+    tenantId: string,
+  ) {
+    accountEmail = accountEmail.trim().toLowerCase();
+
+    const parsed = await this.gmailProvider.fetchMessage(
+      messageId,
+      accountEmail,
+    );
+    const emailContent = parsed.textPlain || parsed.textHtml || '';
+    const senderEmail = this.extractSenderEmail(parsed.from ?? '');
+    const threadId = parsed.threadId || messageId;
+
+    return this.crmActionsAgent.suggestActions(
+      tenantId,
+      threadId,
+      senderEmail,
+      emailContent,
+    );
+  }
+
+  /**
+   * Resumes CRM action execution with human decisions.
+   */
+  async resumeCrmActions(
+    tenantId: string,
+    threadId: string,
+    decisions: Array<{ type: 'approve' | 'reject'; message?: string }>,
+  ) {
+    return this.crmActionsAgent.resumeWithDecision(
+      tenantId,
+      threadId,
+      decisions,
+    );
   }
 
   /**

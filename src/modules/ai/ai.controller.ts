@@ -6,6 +6,7 @@ import type { AuthenticatedRequest } from '@/modules/auth/jwt-auth.guard';
 import { AiOrchestratorService } from './ai-orchestrator.service';
 import { ProcessEmailDto } from './dto/process-email.dto';
 import { ResumeGraphDto } from './dto/resume-graph.dto';
+import { ResumeCrmActionsDto } from './dto/resume-crm-actions.dto';
 
 /**
  * AI processing endpoint — runs the full 4-agent pipeline for a single email:
@@ -60,5 +61,49 @@ export class AiController {
     );
 
     return { memoryUpdated: result.memoryUpdated };
+  }
+
+  @Throttle({ default: { limit: 15, ttl: 60000 } })
+  @Post('crm-actions/suggest')
+  @ApiOperation({
+    summary:
+      'Fetch Gmail message and suggest warranted CRM write actions for human approval.',
+  })
+  async suggestCrmActions(
+    @Req() req: AuthenticatedRequest,
+    @Body() body: ProcessEmailDto,
+  ) {
+    this.logger.log(
+      `Incoming /ai/crm-actions/suggest request — messageId: ${body.messageId}, ` +
+        `accountEmail: ${body.accountEmail}, tenantId: ${req.user.tenantId}`,
+    );
+
+    return this.orchestrator.suggestCrmActions(
+      body.messageId,
+      body.accountEmail,
+      req.user.tenantId!,
+    );
+  }
+
+  @Throttle({ default: { limit: 15, ttl: 60000 } })
+  @Post('crm-actions/resume')
+  @ApiOperation({
+    summary:
+      'Resume CRM action execution with human approval/rejection decisions.',
+  })
+  async resumeCrmActions(
+    @Req() req: AuthenticatedRequest,
+    @Body() body: ResumeCrmActionsDto,
+  ) {
+    this.logger.log(
+      `Incoming /ai/crm-actions/resume request — threadId: ${body.threadId}, ` +
+        `tenantId: ${req.user.tenantId}`,
+    );
+
+    return this.orchestrator.resumeCrmActions(
+      req.user.tenantId!,
+      body.threadId,
+      body.decisions,
+    );
   }
 }

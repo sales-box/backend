@@ -10,6 +10,7 @@ import {
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { CrmService } from './crm.service';
 import { ConnectCrmDto } from './dto/connect-crm.dto';
+import { ConnectZohoMcpDto } from './dto/connect-zoho-mcp.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { AuthenticatedRequest } from '../auth/jwt-auth.guard';
 import { AdminTenantGuard } from '../../common/guards/admin-tenant.guard';
@@ -31,6 +32,14 @@ export class CrmController {
     return this.crmService.getCrmStatus(req.user.tenantId!);
   }
 
+  @Get(':id/crm/mcp-status')
+  @ApiOkResponse({
+    description: 'Get Zoho MCP connection status for the tenant',
+  })
+  async getMcpConnectionStatus(@Req() req: AuthenticatedRequest) {
+    return this.crmService.getMcpConnectionStatus(req.user.tenantId!);
+  }
+
   @Post(':id/crm/connect')
   @ApiOkResponse({
     description: 'Connect CRM account to the tenant and import contacts',
@@ -42,6 +51,17 @@ export class CrmController {
     return this.crmService.connectCrm(req.user.tenantId!, body);
   }
 
+  @Post(':id/crm/connect-mcp')
+  @ApiOkResponse({
+    description: 'Connect Zoho MCP presigned server URL to the tenant',
+  })
+  async connectZohoMcp(
+    @Req() req: AuthenticatedRequest,
+    @Body() body: ConnectZohoMcpDto,
+  ) {
+    return this.crmService.connectZohoMcp(req.user.tenantId!, body);
+  }
+
   @Delete(':id/crm/disconnect')
   @ApiOkResponse({
     description:
@@ -49,5 +69,13 @@ export class CrmController {
   })
   async disconnectCrm(@Req() req: AuthenticatedRequest) {
     return this.crmService.disconnectCrm(req.user.tenantId!);
+  }
+
+  @Delete(':id/crm/disconnect-mcp')
+  @ApiOkResponse({
+    description: 'Disconnect the Zoho MCP server connection for the tenant',
+  })
+  async disconnectZohoMcp(@Req() req: AuthenticatedRequest) {
+    return this.crmService.disconnectZohoMcp(req.user.tenantId!);
   }
 }

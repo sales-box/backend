@@ -68,6 +68,17 @@ model CrmConnection {
 
   @@map("crm_connections")
 }
+
+model ZohoMcpConnection {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String   @unique @map("tenant_id") @db.Uuid
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  mcpServerUrl String   @map("mcp_server_url")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("zoho_mcp_connections")
+}
 model ConnectedAccount {
   id                  String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   email               String
@@ -277,6 +288,7 @@ model Tenant {
   driveConnections  DriveConnection[]
   knowledgeGaps     KnowledgeGap[]
   allowlistEntries  AllowlistEntry[]
+  zohoMcpConnection ZohoMcpConnection?
 
   @@map("tenants")
 }
