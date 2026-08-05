@@ -15,6 +15,7 @@ import { CrmAdapterFactory } from './crm-adapter.factory';
 import { HubSpotAdapter } from './hubspot-crm.adapter';
 import { MockCrmAdapter } from './mock-crm.adapter';
 import { ConnectCrmDto } from './dto/connect-crm.dto';
+import { ConnectZohoMcpDto } from './dto/connect-zoho-mcp.dto';
 import {
   CRM_QUEUE,
   SYNC_CONTACT_JOB,
@@ -58,6 +59,51 @@ export class CrmService {
       provider: connection.provider,
       status: connection.status,
       lastSync: connection.updatedAt,
+    };
+  }
+
+  async getMcpConnectionStatus(tenantId: string) {
+    const connection = await this.prisma.zohoMcpConnection.findUnique({
+      where: { tenantId },
+    });
+
+    if (!connection || !connection.mcpServerUrl) {
+      return { connected: false };
+    }
+
+    return {
+      connected: true,
+      updatedAt: connection.updatedAt,
+    };
+  }
+
+  async connectZohoMcp(tenantId: string, body: ConnectZohoMcpDto) {
+    const connection = await this.prisma.zohoMcpConnection.upsert({
+      where: { tenantId },
+      create: {
+        tenantId,
+        mcpServerUrl: body.mcpServerUrl,
+      },
+      update: {
+        mcpServerUrl: body.mcpServerUrl,
+      },
+    });
+
+    return {
+      message: 'Zoho MCP connection established successfully.',
+      connected: true,
+      mcpServerUrl: connection.mcpServerUrl,
+    };
+  }
+
+  async disconnectZohoMcp(tenantId: string) {
+    await this.prisma.zohoMcpConnection.deleteMany({
+      where: { tenantId },
+    });
+
+    return {
+      message: 'Zoho MCP disconnected successfully.',
+      connected: false,
     };
   }
 
