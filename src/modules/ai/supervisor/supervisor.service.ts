@@ -11,6 +11,11 @@ export class SupervisorService {
   private readonly PRODUCT_CONFIDENCE_AUTO_THRESHOLD = 0.8;
   private readonly PRODUCT_CONFIDENCE_REVIEW_THRESHOLD = 0.6;
 
+  // Below this we've logged fewer than 3 interactions with this person (the
+  // curve is max(min(1, n/5), 0.4), so 0-2 all sit at 0.4). Enough to answer
+  // the question, not enough to auto-send in their name.
+  private readonly CLIENT_HISTORY_REVIEW_THRESHOLD = 0.6;
+
   // ── Private helpers (internal details; only `supervise` is public) ─────
 
   private computeProductConfidence(input: SupervisorInput): number {
@@ -79,15 +84,35 @@ export class SupervisorService {
    * confidently (the KB covers support and terms well), so grading on numbers
    * alone promotes exactly the threads a human must see. The intent is
    * therefore consulted BEFORE the thresholds, not blended into them.
+   *
+   * All five signals in scope are consumed here. Two of them (urgency, thin
+   * history) are CAPS, not grades: they can lower auto_worthy to needs_review
+   * but never push a thread down to handle_manually and never lift one up.
    */
   private computeLabel(
     productConfidence: number,
+    clientHistoryConfidence: number,
     hallucinationDetected: boolean,
+    pipelineFailed: boolean,
     classifier: SupervisorInput['classifierOutput'],
   ): {
     label: 'auto_worthy' | 'needs_review' | 'handle_manually';
-    labelReason: 'hallucination' | 'sensitive_intent' | 'urgent' | 'confidence';
+    labelReason:
+      | 'pipeline_error'
+      | 'hallucination'
+      | 'sensitive_intent'
+      | 'urgent'
+      | 'thin_history'
+      | 'confidence';
   } {
+    // 0. No draft was produced at all. Reported separately from a hallucination
+    //    because the SE is shown this reason: telling them a claim contradicts
+    //    the KB, on an email that has no draft, sends them looking for a bug
+    //    that isn't there.
+    if (pipelineFailed) {
+      return { label: 'handle_manually', labelReason: 'pipeline_error' };
+    }
+
     // 1. The veto ALWAYS wins first, before any number is even looked at.
     if (hallucinationDetected) {
       return { label: 'handle_manually', labelReason: 'hallucination' };
@@ -107,11 +132,25 @@ export class SupervisorService {
           ? 'needs_review'
           : 'handle_manually';
 
+    // Caps only apply to a thread the numbers would otherwise auto-send.
+    if (byConfidence !== 'auto_worthy') {
+      return { label: byConfidence, labelReason: 'confidence' };
+    }
+
     // 4. Urgency CAPS the grade — it can pull auto_worthy down to needs_review,
     //    but never lifts a handle_manually. A deadline raises the cost of being
-    //    wrong; it does not make the answer safer.
-    if (classifier.isUrgent && byConfidence === 'auto_worthy') {
+    //    wrong; it does not make the answer safer. Reported before thin history
+    //    because it is the more actionable of the two for the SE.
+    if (classifier.isUrgent) {
       return { label: 'needs_review', labelReason: 'urgent' };
+    }
+
+    // 5. Barely-known client CAPS the grade too. Note this is deliberately NOT
+    //    handle_manually: a thin relationship is an unknown, not a danger, and
+    //    the draft itself is as accurate as the product confidence says it is.
+    //    We just don't put a signature under it automatically.
+    if (clientHistoryConfidence < this.CLIENT_HISTORY_REVIEW_THRESHOLD) {
+      return { label: 'needs_review', labelReason: 'thin_history' };
     }
 
     return { label: byConfidence, labelReason: 'confidence' };
@@ -130,9 +169,12 @@ export class SupervisorService {
     const flaggedClaimsCount = this.countFlaggedClaims(
       input.composerOutput.claims,
     );
+    const pipelineFailed = input.pipelineFailed ?? false;
     const { label, labelReason } = this.computeLabel(
       productConfidence,
+      clientHistoryConfidence,
       hallucinationDetected,
+      pipelineFailed,
       input.classifierOutput,
     );
 
@@ -143,8 +185,9 @@ export class SupervisorService {
       labelReason,
       hallucinationDetected,
       flaggedClaimsCount,
-      // A hallucinated draft is never shown to the SE as-is
-      draftAvailable: !hallucinationDetected,
+      // A hallucinated draft is never shown to the SE as-is; a failed run has
+      // no draft to show in the first place.
+      draftAvailable: !hallucinationDetected && !pipelineFailed,
       // Hint to the Admin when the Matcher couldn't find a strong product fit
       knowledgeGapSuggestion:
         input.matcherOutput.matchConfidence < 0.3

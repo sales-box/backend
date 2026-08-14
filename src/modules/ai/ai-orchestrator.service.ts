@@ -230,13 +230,15 @@ export class AiOrchestratorService {
       },
       composerOutput: {
         draftText: finalState?.composerResult?.draftText ?? '',
-        // Pipeline failure → inject a hallucinated claim so the Supervisor
-        // veto (PR2) routes to handle_manually without duplicating that logic.
-        claims: finalState?.composerResult?.claims ?? [
-          { status: 'hallucinated' },
-        ],
+        claims: finalState?.composerResult?.claims ?? [],
       },
-      clientHistoryLength: clientContext.history.length,
+      // Pipeline failure routes to handle_manually the same way a hallucination
+      // does, but is reported as its own reason. It used to be signalled by
+      // inventing a `hallucinated` claim here — invisible while only the label
+      // was consumed, and a plainly false statement once the panel started
+      // rendering the reason ("a claim contradicts the KB" with no draft).
+      pipelineFailed: !finalState?.composerResult,
+      clientHistoryLength: clientContext.historyCount,
       isNewClient: clientContext.isNewClient,
     };
 

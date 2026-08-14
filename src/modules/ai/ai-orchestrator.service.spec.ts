@@ -218,7 +218,7 @@ describe('AiOrchestratorService', () => {
   });
 
   describe('pipeline failure isolation (§6)', () => {
-    it('routes to handle_manually via the hallucination-veto when draftReply throws', async () => {
+    it('flags the failure honestly instead of faking a hallucinated claim', async () => {
       const deps = makeDeps();
       deps.gmailProvider.fetchMessage.mockResolvedValue(BASE_PARSED_MESSAGE);
       deps.prisma.generalAnalysis.findUnique.mockResolvedValue(
@@ -228,16 +228,19 @@ describe('AiOrchestratorService', () => {
         BASE_CLIENT_CONTEXT,
       );
       deps.replyService.draftReply.mockRejectedValue(new Error('Groq timeout'));
-      // Real supervisor veto logic: any 'hallucinated' claim → handle_manually.
+      // Real supervisor precedence: pipelineFailed → handle_manually, and it is
+      // reported as its own reason. The orchestrator used to force this route by
+      // inventing a `hallucinated` claim, which the panel now renders verbatim
+      // as "a claim contradicts the knowledge base" — on an email with no draft.
       deps.supervisorService.supervise.mockImplementation(
-        (input: { composerOutput: { claims: Array<{ status: string }> } }) => ({
-          label: input.composerOutput.claims.some(
-            (c) => c.status === 'hallucinated',
-          )
-            ? 'handle_manually'
-            : 'auto_worthy',
+        (input: {
+          pipelineFailed?: boolean;
+          composerOutput: { claims: Array<{ status: string }> };
+        }) => ({
+          label: input.pipelineFailed ? 'handle_manually' : 'auto_worthy',
+          labelReason: input.pipelineFailed ? 'pipeline_error' : 'confidence',
           draftAvailable: false,
-          hallucinationDetected: true,
+          hallucinationDetected: false,
           flaggedClaimsCount: 0,
           productConfidence: 0.0,
           clientHistoryConfidence: 0.6,
@@ -252,6 +255,14 @@ describe('AiOrchestratorService', () => {
       );
 
       expect(result.confidence.label).toBe('handle_manually');
+      expect(result.confidence.labelReason).toBe('pipeline_error');
+      // No fabricated claim reached the Supervisor.
+      expect(deps.supervisorService.supervise).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pipelineFailed: true,
+          composerOutput: { draftText: '', claims: [] },
+        }),
+      );
       expect(result.draft).toBeNull();
       expect(result.requirements).toBeNull();
     });

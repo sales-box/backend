@@ -241,6 +241,7 @@ export class ClientsService {
           name: '',
           company: '',
           crmId: null,
+          historyCount: 0,
           history: [],
         };
       }
@@ -252,6 +253,10 @@ export class ClientsService {
             orderBy: { date: 'desc' },
             take: 5,
           },
+          // The truncated array above is for display. The Supervisor needs the
+          // real total, otherwise every client with 5+ interactions grades the
+          // same as one with exactly 5.
+          _count: { select: { interactions: true } },
         },
       });
 
@@ -264,6 +269,7 @@ export class ClientsService {
           name: '',
           company: '',
           crmId: null,
+          historyCount: 0,
           history: [],
         };
       }
@@ -284,6 +290,9 @@ export class ClientsService {
         name: isEffectivelyNew ? '' : client.name || '',
         company: client.company || '',
         crmId: client.crmId,
+        // A 'domain' match's interactions belong to a different person, so the
+        // count has to be zeroed alongside the array it summarises.
+        historyCount: isEffectivelyNew ? 0 : client._count.interactions,
         history: isEffectivelyNew
           ? []
           : client.interactions.map((interaction) => ({
@@ -305,6 +314,7 @@ export class ClientsService {
         name: '',
         company: '',
         crmId: null,
+        historyCount: 0,
         history: [],
       };
     }
