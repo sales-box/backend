@@ -117,7 +117,7 @@ describe('AnalyticsController', () => {
   });
 
   describe('resolveGap', () => {
-    it('should call resolveGap with id', async () => {
+    it('should call resolveGap with id and tenantId from request token', async () => {
       const mockGap = {
         id: '1',
         topic: 'test',
@@ -126,8 +126,8 @@ describe('AnalyticsController', () => {
       };
       (service.resolveGap as jest.Mock).mockResolvedValue(mockGap);
 
-      const result = await controller.resolveGap('1');
-      expect(service.resolveGap).toHaveBeenCalledWith('1');
+      const result = await controller.resolveGap('1', reqFor('tenant-a'));
+      expect(service.resolveGap).toHaveBeenCalledWith('1', 'tenant-a');
       expect(result).toEqual(mockGap);
     });
   });
