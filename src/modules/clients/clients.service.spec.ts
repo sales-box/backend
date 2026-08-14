@@ -364,6 +364,7 @@ describe('ClientsService', () => {
         name: '',
         company: '',
         crmId: null,
+        historyCount: 0,
         history: [],
       });
       // Verification of identity resolution calls
@@ -377,7 +378,7 @@ describe('ClientsService', () => {
       });
     });
 
-    it('should return mapped client context with up to 5 interactions if client exists', async () => {
+    it('should return up to 5 interactions but the TOTAL count alongside them', async () => {
       const mockInteractions = Array.from({ length: 7 }, (_, i) => ({
         id: `int-${i}`,
         date: new Date(`2026-07-08T10:0${i}:00.000Z`),
@@ -399,6 +400,9 @@ describe('ClientsService', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
         interactions: mockInteractions.slice(0, 5),
+        // Prisma returns the real total here even though the array above is
+        // truncated — the Supervisor grades on this, not on array length.
+        _count: { interactions: mockInteractions.length },
       };
 
       mockClientFindFirst.mockResolvedValue(mockClient);
@@ -416,6 +420,8 @@ describe('ClientsService', () => {
         name: 'John Doe',
         company: 'Stark Industries',
         crmId: 'crm-789',
+        // 7, not the 5 rows actually returned
+        historyCount: 7,
         history: mockInteractions.slice(0, 5).map((item) => ({
           date: item.date.toISOString(),
           type: item.type,
@@ -449,6 +455,7 @@ describe('ClientsService', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
         interactions: mockInteractions,
+        _count: { interactions: mockInteractions.length },
       };
 
       mockClientFindFirst
@@ -469,6 +476,9 @@ describe('ClientsService', () => {
         name: '',
         company: 'Acme Corp',
         crmId: null,
+        // Zeroed with the array it summarises — those 3 interactions belong to
+        // Alice, not to the person we're actually emailing.
+        historyCount: 0,
         history: [],
       });
     });

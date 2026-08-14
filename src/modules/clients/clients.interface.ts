@@ -20,6 +20,11 @@ export interface ClientContext {
   name: string;
   company: string;
   crmId: string | null;
+  /** TOTAL logged interactions with this exact person. `history` below is
+   *  truncated to the 5 most recent for display; the Supervisor grades on this
+   *  count, where 5 and 200 must not look identical. 0 whenever `history` is
+   *  empty (new client, or a 'domain' match that belongs to someone else). */
+  historyCount: number;
   history: {
     date: string;
     type: string;

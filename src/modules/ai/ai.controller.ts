@@ -1,10 +1,16 @@
 import { Body, Controller, Logger, Post, Req, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '@/modules/auth/jwt-auth.guard';
 import type { AuthenticatedRequest } from '@/modules/auth/jwt-auth.guard';
 import { AiOrchestratorService } from './ai-orchestrator.service';
 import { ProcessEmailDto } from './dto/process-email.dto';
+import { ProcessEmailResponseDto } from './dto/process-email-response.dto';
 import { ResumeGraphDto } from './dto/resume-graph.dto';
 import { ResumeCrmActionsDto } from './dto/resume-crm-actions.dto';
 
@@ -27,10 +33,15 @@ export class AiController {
     summary:
       'Run the full AI pipeline for one email: classify, extract, match, draft, and route.',
   })
+  @ApiOkResponse({
+    type: ProcessEmailResponseDto,
+    description:
+      'Pipeline result. Route on confidence.label — the two confidence scores are for display and must not be re-thresholded by the consumer.',
+  })
   async process(
     @Req() req: AuthenticatedRequest,
     @Body() body: ProcessEmailDto,
-  ) {
+  ): Promise<ProcessEmailResponseDto> {
     this.logger.log(
       `Incoming /ai/process request — messageId: ${body.messageId}, ` +
         `accountEmail: ${body.accountEmail}, tenantId: ${req.user.tenantId}, ` +
