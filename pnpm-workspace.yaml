@@ -28,4 +28,10 @@ overrides:
   '@hono/node-server': '>=2.0.5'
   find-my-way: '>=9.7.0'
   uuid: ^11.1.1
-  'js-yaml@4': 4.3.0
+  # GHSA-5p4m-2wfm-xmqj / CVE-2026-59870 — quadratic CPU on !!omap resolution.
+  # Dev-only in this tree: 4.x arrives via eslint, 3.x via jest's istanbul
+  # transform. Neither is bundled into the runtime image.
+  # Pinned exact, not '>=': an open range resolves to js-yaml 5.x, a major
+  # bump under eslint that this advisory does not require.
+  'js-yaml@4': 4.3.1
+  'js-yaml@3': 3.15.1
