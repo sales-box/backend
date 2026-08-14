@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import Stripe from 'stripe';
 
 @Injectable()
@@ -24,7 +24,9 @@ export class StripeService {
   async getPayment(tenantId: string, id: string) {
     const paymentIntent = await this.stripe.paymentIntents.retrieve(id);
     if (paymentIntent.metadata?.tenantId !== tenantId) {
-      throw new Error('Payment intent not found or tenant mismatch');
+      throw new NotFoundException(
+        'Payment intent not found or tenant mismatch',
+      );
     }
     return paymentIntent;
   }

@@ -1,4 +1,11 @@
-import { Controller, Headers, Post, Req, HttpCode } from '@nestjs/common';
+import {
+  Controller,
+  Headers,
+  Post,
+  Req,
+  HttpCode,
+  BadRequestException,
+} from '@nestjs/common';
 import * as fastify from 'fastify';
 
 import Stripe from 'stripe';
@@ -57,7 +64,7 @@ export class StripeController {
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      throw new Error(`Webhook Error: ${message}`);
+      throw new BadRequestException(`Webhook Error: ${message}`);
     }
 
     switch (event.type) {
