@@ -130,4 +130,112 @@ describe('SupervisorService', () => {
     );
     expect(result.clientHistoryConfidence).toBe(1);
   });
+
+  // ── Intent and urgency routing ──────────────────────────────────────────
+  // Confidence answers "can we answer this accurately?", not "is it safe to
+  // answer at all?" — so intent is consulted before the numeric thresholds.
+
+  describe('sensitive intent', () => {
+    const sensitive = {
+      intent: 'sensitive',
+      intentConfidence: 0.97,
+      isUrgent: false,
+    };
+
+    it('routes to handle_manually even at maximum confidence', () => {
+      const result = service.supervise(
+        makeInput({
+          classifierOutput: sensitive,
+          matcherOutput: { matchConfidence: 1 },
+        }),
+      );
+      expect(result.label).toBe('handle_manually');
+      expect(result.labelReason).toBe('sensitive_intent');
+    });
+
+    it('still exposes the real confidence score rather than degrading it', () => {
+      const result = service.supervise(
+        makeInput({
+          classifierOutput: sensitive,
+          matcherOutput: { matchConfidence: 1 },
+        }),
+      );
+      // The score is displayed in the panel and persisted to analytics; the
+      // label must change without the number being falsified.
+      expect(result.productConfidence).toBeGreaterThanOrEqual(0.8);
+    });
+
+    it('keeps the draft available so the SE can edit rather than start blank', () => {
+      const result = service.supervise(
+        makeInput({ classifierOutput: sensitive }),
+      );
+      expect(result.draftAvailable).toBe(true);
+    });
+
+    it('is outranked by the hallucination veto', () => {
+      const result = service.supervise(
+        makeInput({
+          classifierOutput: sensitive,
+          composerOutput: {
+            draftText: 'x',
+            claims: [{ status: 'hallucinated' }],
+          },
+        }),
+      );
+      expect(result.label).toBe('handle_manually');
+      expect(result.labelReason).toBe('hallucination');
+      expect(result.draftAvailable).toBe(false);
+    });
+  });
+
+  describe('urgency', () => {
+    it('caps an otherwise auto_worthy thread at needs_review', () => {
+      const result = service.supervise(
+        makeInput({
+          classifierOutput: {
+            intent: 'demo request',
+            intentConfidence: 0.9,
+            isUrgent: true,
+          },
+        }),
+      );
+      expect(result.label).toBe('needs_review');
+      expect(result.labelReason).toBe('urgent');
+    });
+
+    it('never lifts a low-confidence thread out of handle_manually', () => {
+      const result = service.supervise(
+        makeInput({
+          classifierOutput: {
+            intent: 'support',
+            intentConfidence: 0.2,
+            isUrgent: true,
+          },
+          matcherOutput: { matchConfidence: 0 },
+        }),
+      );
+      expect(result.label).toBe('handle_manually');
+      expect(result.labelReason).toBe('confidence');
+    });
+
+    it('leaves a needs_review thread where it is', () => {
+      const result = service.supervise(
+        makeInput({
+          classifierOutput: {
+            intent: 'support',
+            intentConfidence: 0.7,
+            isUrgent: true,
+          },
+          matcherOutput: { matchConfidence: 0.6 },
+        }),
+      );
+      expect(result.label).toBe('needs_review');
+    });
+  });
+
+  it('reports "confidence" as the reason on the ordinary path', () => {
+    const result = service.supervise(makeInput());
+    expect(result.label).toBe('auto_worthy');
+    expect(result.labelReason).toBe('confidence');
+  });
 });

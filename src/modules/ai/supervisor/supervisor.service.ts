@@ -1,5 +1,9 @@
 import { Injectable } from '@nestjs/common';
+import type { Intent } from '../classifier/classifier.types';
 import { SupervisorInput, SupervisorOutput } from './supervisor.types';
+
+/** Threads a human must always see, whatever the numbers say. */
+const SENSITIVE_INTENT: Intent = 'sensitive';
 
 @Injectable()
 export class SupervisorService {
@@ -67,21 +71,50 @@ export class SupervisorService {
     return claims.filter((claim) => claim.status === 'flagged').length;
   }
 
+  /**
+   * Routing decision, in strict precedence order.
+   *
+   * Confidence answers "can we answer this accurately?" — NOT "is it safe to
+   * answer this at all?". A sensitive email is often the one we can answer most
+   * confidently (the KB covers support and terms well), so grading on numbers
+   * alone promotes exactly the threads a human must see. The intent is
+   * therefore consulted BEFORE the thresholds, not blended into them.
+   */
   private computeLabel(
     productConfidence: number,
     hallucinationDetected: boolean,
-  ): 'auto_worthy' | 'needs_review' | 'handle_manually' {
-    // The veto ALWAYS wins first, before any number is even looked at.
+    classifier: SupervisorInput['classifierOutput'],
+  ): {
+    label: 'auto_worthy' | 'needs_review' | 'handle_manually';
+    labelReason: 'hallucination' | 'sensitive_intent' | 'urgent' | 'confidence';
+  } {
+    // 1. The veto ALWAYS wins first, before any number is even looked at.
     if (hallucinationDetected) {
-      return 'handle_manually';
+      return { label: 'handle_manually', labelReason: 'hallucination' };
     }
-    if (productConfidence >= this.PRODUCT_CONFIDENCE_AUTO_THRESHOLD) {
-      return 'auto_worthy';
+
+    // 2. Sensitive threads (cancellation, complaint, legal) never auto-send,
+    //    however well the knowledge base answers them.
+    if (classifier.intent === SENSITIVE_INTENT) {
+      return { label: 'handle_manually', labelReason: 'sensitive_intent' };
     }
-    if (productConfidence >= this.PRODUCT_CONFIDENCE_REVIEW_THRESHOLD) {
-      return 'needs_review';
+
+    // 3. Numeric grade from the content confidence.
+    const byConfidence: 'auto_worthy' | 'needs_review' | 'handle_manually' =
+      productConfidence >= this.PRODUCT_CONFIDENCE_AUTO_THRESHOLD
+        ? 'auto_worthy'
+        : productConfidence >= this.PRODUCT_CONFIDENCE_REVIEW_THRESHOLD
+          ? 'needs_review'
+          : 'handle_manually';
+
+    // 4. Urgency CAPS the grade — it can pull auto_worthy down to needs_review,
+    //    but never lifts a handle_manually. A deadline raises the cost of being
+    //    wrong; it does not make the answer safer.
+    if (classifier.isUrgent && byConfidence === 'auto_worthy') {
+      return { label: 'needs_review', labelReason: 'urgent' };
     }
-    return 'handle_manually';
+
+    return { label: byConfidence, labelReason: 'confidence' };
   }
 
   // ── Public entry point ────────────────────────────────────────────────
@@ -97,12 +130,17 @@ export class SupervisorService {
     const flaggedClaimsCount = this.countFlaggedClaims(
       input.composerOutput.claims,
     );
-    const label = this.computeLabel(productConfidence, hallucinationDetected);
+    const { label, labelReason } = this.computeLabel(
+      productConfidence,
+      hallucinationDetected,
+      input.classifierOutput,
+    );
 
     return {
       productConfidence,
       clientHistoryConfidence,
       label,
+      labelReason,
       hallucinationDetected,
       flaggedClaimsCount,
       // A hallucinated draft is never shown to the SE as-is

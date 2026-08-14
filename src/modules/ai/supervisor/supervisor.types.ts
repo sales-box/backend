@@ -7,6 +7,14 @@ export const SupervisorOutputSchema = z.object({
   productConfidence: z.number().min(0).max(1),
   clientHistoryConfidence: z.number().min(0).max(1),
   label: z.enum(['auto_worthy', 'needs_review', 'handle_manually']),
+  // Why the label came out the way it did. Without it the panel can only say
+  // "handle manually" next to a 98% confidence badge, which reads as a bug.
+  labelReason: z.enum([
+    'hallucination',
+    'sensitive_intent',
+    'urgent',
+    'confidence',
+  ]),
   hallucinationDetected: z.boolean(),
   flaggedClaimsCount: z.number().int().min(0),
   draftAvailable: z.boolean(),
