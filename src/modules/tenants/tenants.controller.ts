@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   UseGuards,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -16,7 +17,11 @@ import {
   ApiParam,
 } from '@nestjs/swagger';
 import { TenantsService } from './tenants.service';
-import { SignupTenantDto, VerifyTenantDto } from './tenants.dto';
+import {
+  SignupTenantDto,
+  VerifyTenantDto,
+  ResendVerificationDto,
+} from './tenants.dto';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AdminTenantGuard } from '../../common/guards/admin-tenant.guard';
@@ -38,6 +43,18 @@ export class TenantsController {
     return this.tenantsService.signup(dto);
   }
 
+  @Post('resend-verification')
+  @ApiOperation({
+    summary: 'Resend email verification link for a pending tenant',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Verification email resent.',
+  })
+  async resendVerification(@Body() dto: ResendVerificationDto) {
+    return this.tenantsService.resendVerification(dto);
+  }
+
   @Get('verify')
   @ApiOperation({ summary: 'Verify a tenant email using the emailed token' })
   @ApiResponse({ status: 200, description: 'Tenant verified.' })
@@ -49,7 +66,7 @@ export class TenantsController {
   @ApiOperation({ summary: 'Get a tenant by id' })
   @ApiParam({ name: 'id', description: 'Tenant id' })
   @ApiResponse({ status: 200, description: 'The tenant.' })
-  async getTenant(@Param('id') id: string) {
+  async getTenant(@Param('id', ParseUUIDPipe) id: string) {
     return this.tenantsService.getTenant(id);
   }
 
@@ -62,7 +79,7 @@ export class TenantsController {
     description: 'The tenant details have been successfully updated.',
   })
   async updateTenant(
-    @Param('tenantId') tenantId: string,
+    @Param('tenantId', ParseUUIDPipe) tenantId: string,
     @Body() dto: UpdateTenantDto,
   ) {
     return this.tenantsService.updateTenant(tenantId, dto);

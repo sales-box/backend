@@ -30,12 +30,14 @@ describe('TenantsService', () => {
 
   const mockTenantCreate = jest.fn<Promise<unknown>, [unknown]>();
   const mockTenantFindUnique = jest.fn<Promise<unknown>, [unknown]>();
+  const mockTenantFindFirst = jest.fn<Promise<unknown>, [unknown]>();
   const mockTenantUpdate = jest.fn<Promise<unknown>, [unknown]>();
 
   const mockPrisma = {
     tenant: {
       create: mockTenantCreate,
       findUnique: mockTenantFindUnique,
+      findFirst: mockTenantFindFirst,
       update: mockTenantUpdate,
     },
     $transaction: jest.fn(<T>(cb: (p: unknown) => Promise<T>): Promise<T> =>
@@ -72,6 +74,7 @@ describe('TenantsService', () => {
 
   describe('signup', () => {
     it('should create a pending tenant and attempt to send an email', async () => {
+      mockTenantFindFirst.mockResolvedValue(null);
       mockTenantCreate.mockResolvedValue({ id: 'tenant-123' });
       mockSendMail.mockResolvedValue(true);
 
@@ -96,6 +99,68 @@ describe('TenantsService', () => {
       expect(mailArg.from).not.toContain('salescopilot.com');
       // And carry a plain-text fallback with the same verify link.
       expect(mailArg.text).toContain('http://localhost:5173/verify?token=');
+    });
+
+    it('should update existing pending tenant instead of creating a duplicate', async () => {
+      mockTenantFindFirst.mockResolvedValue({
+        id: 'existing-tenant-id',
+        status: 'pending',
+      });
+      mockTenantUpdate.mockResolvedValue({
+        id: 'existing-tenant-id',
+        status: 'pending',
+      });
+      mockSendMail.mockResolvedValue(true);
+
+      const dto = { companyName: 'Test Inc', adminEmail: 'admin@test.com' };
+      const result = await service.signup(dto);
+
+      expect(mockTenantUpdate).toHaveBeenCalledWith({
+        where: { id: 'existing-tenant-id' },
+        data: expect.objectContaining({
+          emailVerificationToken: 'mocked-uuid-token',
+        }) as Record<string, unknown>,
+      });
+      expect(mockTenantCreate).not.toHaveBeenCalled();
+      expect(result.message).toContain('Signup successful');
+    });
+  });
+
+  describe('resendVerification', () => {
+    it('should update pending tenant token and resend verification email', async () => {
+      mockTenantFindFirst.mockResolvedValue({
+        id: 'pending-123',
+        status: 'pending',
+      });
+      mockTenantUpdate.mockResolvedValue({
+        id: 'pending-123',
+        status: 'pending',
+      });
+      mockSendMail.mockResolvedValue(true);
+
+      const result = await service.resendVerification({
+        email: 'admin@test.com',
+        companyName: 'Test Inc',
+      });
+
+      expect(mockTenantUpdate).toHaveBeenCalledWith({
+        where: { id: 'pending-123' },
+        data: expect.objectContaining({
+          emailVerificationToken: 'mocked-uuid-token',
+        }) as Record<string, unknown>,
+      });
+      expect(mockSendMail).toHaveBeenCalled();
+      expect(result.message).toContain(
+        'Verification email resent successfully',
+      );
+    });
+
+    it('should throw NotFoundException if no pending tenant is found', async () => {
+      mockTenantFindFirst.mockResolvedValue(null);
+
+      await expect(
+        service.resendVerification({ email: 'admin@test.com' }),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 
@@ -156,22 +221,48 @@ describe('TenantsService', () => {
     });
   });
 
+  describe('getTenant', () => {
+    it('should throw NotFoundException if ID is not a valid UUID', async () => {
+      await expect(service.getTenant('resend-verification')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('should return tenant when valid UUID is provided', async () => {
+      const validUuid = '123e4567-e89b-12d3-a456-426614174000';
+      mockTenantFindUnique.mockResolvedValue({
+        id: validUuid,
+        companyName: 'Acme',
+      });
+      const result = await service.getTenant(validUuid);
+      expect(result).toEqual({ id: validUuid, companyName: 'Acme' });
+    });
+  });
+
   describe('updateTenant', () => {
+    const validUuid = '123e4567-e89b-12d3-a456-426614174000';
+
+    it('should throw NotFoundException if ID is not a valid UUID', async () => {
+      await expect(
+        service.updateTenant('invalid-uuid', { companyName: 'New' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
     it('should successfully update tenant and return selected fields', async () => {
       const mockResult = {
-        id: 'tenant-123',
+        id: validUuid,
         companyName: 'New Name',
         tier: 'free',
         status: 'active',
       };
       mockTenantUpdate.mockResolvedValue(mockResult);
 
-      const result = await service.updateTenant('tenant-123', {
+      const result = await service.updateTenant(validUuid, {
         companyName: 'New Name',
       });
 
       expect(mockTenantUpdate).toHaveBeenCalledWith({
-        where: { id: 'tenant-123' },
+        where: { id: validUuid },
         data: { companyName: 'New Name' },
         select: {
           id: true,
@@ -191,7 +282,7 @@ describe('TenantsService', () => {
       mockTenantUpdate.mockRejectedValue(error);
 
       await expect(
-        service.updateTenant('tenant-123', { companyName: 'New Name' }),
+        service.updateTenant(validUuid, { companyName: 'New Name' }),
       ).rejects.toThrow(NotFoundException);
     });
 
@@ -200,7 +291,7 @@ describe('TenantsService', () => {
       mockTenantUpdate.mockRejectedValue(error);
 
       await expect(
-        service.updateTenant('tenant-123', { companyName: 'New Name' }),
+        service.updateTenant(validUuid, { companyName: 'New Name' }),
       ).rejects.toThrow('Database connection failed');
     });
   });

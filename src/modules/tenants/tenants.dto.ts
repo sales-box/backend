@@ -23,3 +23,13 @@ export class VerifyTenantDto {
   @IsNotEmpty()
   email: string;
 }
+
+export class ResendVerificationDto {
+  @IsEmail()
+  @IsNotEmpty()
+  email: string;
+
+  @IsString()
+  @IsOptional()
+  companyName?: string;
+}
