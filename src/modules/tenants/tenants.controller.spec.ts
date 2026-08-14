@@ -13,6 +13,7 @@ describe('TenantsController', () => {
 
   const mockTenantsService = {
     signup: jest.fn(),
+    resendVerification: jest.fn(),
     verify: jest.fn(),
     getTenant: jest.fn(),
     updateTenant: jest.fn(),
@@ -49,6 +50,19 @@ describe('TenantsController', () => {
     });
   });
 
+  describe('resendVerification', () => {
+    it('should call tenantsService.resendVerification', async () => {
+      const dto = { email: 'admin@acme.com', companyName: 'Acme' };
+      mockTenantsService.resendVerification.mockResolvedValue({
+        message: 'Resent',
+      });
+
+      const result = await controller.resendVerification(dto);
+      expect(mockTenantsService.resendVerification).toHaveBeenCalledWith(dto);
+      expect(result).toEqual({ message: 'Resent' });
+    });
+  });
+
   describe('verify', () => {
     it('should call tenantsService.verify with token and email', async () => {
       const dto = { token: '123', email: 'admin@acme.com' };
@@ -65,28 +79,30 @@ describe('TenantsController', () => {
 
   describe('getTenant', () => {
     it('should call tenantsService.getTenant', async () => {
-      mockTenantsService.getTenant.mockResolvedValue({ id: 'tenant-id' });
-      const result = await controller.getTenant('tenant-id');
+      const validUuid = '123e4567-e89b-12d3-a456-426614174000';
+      mockTenantsService.getTenant.mockResolvedValue({ id: validUuid });
+      const result = await controller.getTenant(validUuid);
 
-      expect(mockTenantsService.getTenant).toHaveBeenCalledWith('tenant-id');
-      expect(result).toEqual({ id: 'tenant-id' });
+      expect(mockTenantsService.getTenant).toHaveBeenCalledWith(validUuid);
+      expect(result).toEqual({ id: validUuid });
     });
   });
 
   describe('updateTenant', () => {
     it('should call tenantsService.updateTenant', async () => {
+      const validUuid = '123e4567-e89b-12d3-a456-426614174000';
       const dto = { companyName: 'Updated Acme' };
       const expectedResult = {
-        id: 'tenant-id',
+        id: validUuid,
         companyName: 'Updated Acme',
         tier: 'free',
         status: 'active',
       };
       mockTenantsService.updateTenant.mockResolvedValue(expectedResult);
 
-      const result = await controller.updateTenant('tenant-id', dto);
+      const result = await controller.updateTenant(validUuid, dto);
       expect(mockTenantsService.updateTenant).toHaveBeenCalledWith(
-        'tenant-id',
+        validUuid,
         dto,
       );
       expect(result).toEqual(expectedResult);

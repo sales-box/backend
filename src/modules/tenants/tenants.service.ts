@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '@/database/prisma.service';
-import { SignupTenantDto } from './tenants.dto';
+import { SignupTenantDto, ResendVerificationDto } from './tenants.dto';
 import { v4 as uuidv4 } from 'uuid';
 import * as nodemailer from 'nodemailer';
 import { Prisma } from '@prisma/client';
@@ -38,14 +38,28 @@ export class TenantsService {
     const expiresAt = new Date();
     expiresAt.setHours(expiresAt.getHours() + 24);
 
-    await this.prisma.tenant.create({
-      data: {
-        companyName: dto.companyName,
-        status: 'pending',
-        emailVerificationToken: token,
-        emailVerificationExpiresAt: expiresAt,
-      },
+    const existingPending = await this.prisma.tenant.findFirst({
+      where: { companyName: dto.companyName, status: 'pending' },
     });
+
+    if (existingPending) {
+      await this.prisma.tenant.update({
+        where: { id: existingPending.id },
+        data: {
+          emailVerificationToken: token,
+          emailVerificationExpiresAt: expiresAt,
+        },
+      });
+    } else {
+      await this.prisma.tenant.create({
+        data: {
+          companyName: dto.companyName,
+          status: 'pending',
+          emailVerificationToken: token,
+          emailVerificationExpiresAt: expiresAt,
+        },
+      });
+    }
 
     // Point the admin at the frontend /verify page (which calls the API and
     // then routes to set-password), NOT the raw API endpoint (that returns
@@ -83,6 +97,67 @@ export class TenantsService {
     return {
       message:
         'Signup successful. Please check your email to activate your tenant.',
+    };
+  }
+
+  async resendVerification(dto: ResendVerificationDto) {
+    const token = uuidv4();
+    const expiresAt = new Date();
+    expiresAt.setHours(expiresAt.getHours() + 24);
+
+    let tenant = dto.companyName
+      ? await this.prisma.tenant.findFirst({
+          where: { companyName: dto.companyName, status: 'pending' },
+        })
+      : null;
+
+    if (!tenant) {
+      tenant = await this.prisma.tenant.findFirst({
+        where: { status: 'pending' },
+        orderBy: { createdAt: 'desc' },
+      });
+    }
+
+    if (!tenant) {
+      throw new NotFoundException(
+        'No pending registration found to resend verification link.',
+      );
+    }
+
+    await this.prisma.tenant.update({
+      where: { id: tenant.id },
+      data: {
+        emailVerificationToken: token,
+        emailVerificationExpiresAt: expiresAt,
+      },
+    });
+
+    const frontendOrigin = new URL(
+      this.config.getOrThrow<string>('FRONTEND_DASHBOARD_URL'),
+    ).origin;
+    const verifyUrl = new URL('/verify', frontendOrigin);
+    verifyUrl.searchParams.set('token', token);
+    verifyUrl.searchParams.set('email', dto.email);
+    const verificationLink = verifyUrl.toString();
+
+    try {
+      await this.transporter.sendMail({
+        from: this.config.getOrThrow<string>('SMTP_USER'),
+        to: dto.email,
+        subject: 'Verify your company account',
+        text: `Welcome to Sales Copilot!\n\nVerify your company account by opening this link:\n${verificationLink}\n\nThis link expires in 24 hours.`,
+        html: `<p>Welcome to Sales Copilot!</p><p>Please verify your account by clicking: <a href="${verificationLink}">Verify Account</a></p>`,
+      });
+      this.logger.log(`Resent activation email to ${dto.email}`);
+    } catch (error: any) {
+      this.logger.error(
+        'Failed to resend activation email. Ensure SMTP is configured.',
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+
+    return {
+      message: 'Verification email resent successfully.',
     };
   }
 
@@ -124,6 +199,12 @@ export class TenantsService {
   }
 
   async getTenant(id: string) {
+    const UUID_REGEX =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!UUID_REGEX.test(id)) {
+      throw new NotFoundException('Tenant not found');
+    }
+
     const tenant = await this.prisma.tenant.findUnique({
       where: { id },
       select: {
@@ -139,6 +220,12 @@ export class TenantsService {
   }
 
   async updateTenant(id: string, dto: UpdateTenantDto) {
+    const UUID_REGEX =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!UUID_REGEX.test(id)) {
+      throw new NotFoundException(`Tenant with ID ${id} not found`);
+    }
+
     try {
       return await this.prisma.tenant.update({
         where: { id },
@@ -155,7 +242,7 @@ export class TenantsService {
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2025'
+        (error.code === 'P2025' || error.code === 'P2023')
       ) {
         throw new NotFoundException(`Tenant with ID ${id} not found`);
       }
