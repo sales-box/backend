@@ -138,7 +138,10 @@ export class AnalyticsController {
   @ApiOperation({ summary: 'Mark a knowledge gap as resolved' })
   @ApiParam({ name: 'id', description: 'Knowledge gap id' })
   @ApiResponse({ status: 200, description: 'The resolved knowledge gap.' })
-  async resolveGap(@Param('id') id: string): Promise<KnowledgeGap> {
-    return this.analyticsService.resolveGap(id);
+  async resolveGap(
+    @Param('id') id: string,
+    @Req() req: AuthenticatedRequest,
+  ): Promise<KnowledgeGap> {
+    return this.analyticsService.resolveGap(id, req.user.tenantId ?? undefined);
   }
 }

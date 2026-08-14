@@ -330,13 +330,27 @@ export class AnalyticsService {
     }
   }
 
-  async resolveGap(id: string): Promise<KnowledgeGap> {
+  async resolveGap(id: string, tenantId?: string): Promise<KnowledgeGap> {
     try {
+      if (tenantId) {
+        const existing = await this.prisma.knowledgeGap.findFirst({
+          where: {
+            id,
+            OR: [{ tenantId }, { tenantId: null }],
+          },
+        });
+        if (!existing) {
+          throw new NotFoundException(`Knowledge gap with ID ${id} not found`);
+        }
+      }
       return await this.prisma.knowledgeGap.update({
         where: { id },
         data: { resolved: true },
       });
     } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2025'

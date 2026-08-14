@@ -329,7 +329,7 @@ describe('AnalyticsService', () => {
   });
 
   describe('resolveGap', () => {
-    it('updates resolved to true for an existing gap', async () => {
+    it('updates resolved to true for an existing gap without tenantId', async () => {
       const mockUpdated = { id: '1', resolved: true };
       (prisma.knowledgeGap.update as jest.Mock).mockResolvedValue(mockUpdated);
 
@@ -341,7 +341,38 @@ describe('AnalyticsService', () => {
       expect(result).toEqual(mockUpdated);
     });
 
-    it('throws NotFoundException if gap does not exist', async () => {
+    it('verifies tenant ownership and resolves gap when tenantId matches', async () => {
+      const mockGap = { id: 'gap-1', tenantId: 'tenant-a', resolved: false };
+      const mockUpdated = { id: 'gap-1', tenantId: 'tenant-a', resolved: true };
+      (prisma.knowledgeGap.findFirst as jest.Mock).mockResolvedValue(mockGap);
+      (prisma.knowledgeGap.update as jest.Mock).mockResolvedValue(mockUpdated);
+
+      const result = await service.resolveGap('gap-1', 'tenant-a');
+
+      expect(prisma.knowledgeGap.findFirst).toHaveBeenCalledWith({
+        where: {
+          id: 'gap-1',
+          OR: [{ tenantId: 'tenant-a' }, { tenantId: null }],
+        },
+      });
+      expect(prisma.knowledgeGap.update).toHaveBeenCalledWith({
+        where: { id: 'gap-1' },
+        data: { resolved: true },
+      });
+      expect(result).toEqual(mockUpdated);
+    });
+
+    it('throws NotFoundException when gap belongs to a different tenant (tenant isolation)', async () => {
+      (prisma.knowledgeGap.findFirst as jest.Mock).mockResolvedValue(null);
+
+      await expect(
+        service.resolveGap('gap-belonging-to-tenant-b', 'tenant-a'),
+      ).rejects.toThrow(NotFoundException);
+
+      expect(prisma.knowledgeGap.update).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException if gap does not exist in DB', async () => {
       // Simulate Prisma P2025
       const prismaError = new Prisma.PrismaClientKnownRequestError(
         'Record to update not found',
