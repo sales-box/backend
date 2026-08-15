@@ -32,26 +32,27 @@ model Client {
 }
 
 model Interaction {
-  id             String   @id @default(uuid())
-  tenantId       String   @map("tenant_id")
-  clientId       String   @map("client_id")
-  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  date           DateTime @default(now())
-  type           String
-  subject        String
-  aiSummary      String   @map("ai_summary")
-  classification String?
-  recommendation String?
+  id                      String               @id @default(uuid())
+  tenantId                String               @map("tenant_id")
+  clientId                String               @map("client_id")
+  client                  Client               @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  date                    DateTime             @default(now())
+  type                    String
+  subject                 String
+  aiSummary               String               @map("ai_summary")
+  classification          String?
+  recommendation          String?
   // Which KB document the AI answer was based on ("Based on: X.pdf").
   // Filled by the AI Phase — this column only prepares the slot.
-  sourceSnapshot String?  @map("source_snapshot")
-  createdAt      DateTime @default(now())
-  productConfidence Float?  @map("product_confidence")
-  clientHistoryConfidence Float?  @map("client_history_confidence")
+  sourceSnapshot          String?              @map("source_snapshot")
+  createdAt               DateTime             @default(now())
+  productConfidence       Float?               @map("product_confidence")
+  clientHistoryConfidence Float?               @map("client_history_confidence")
   // Gmail message id when this interaction was auto-logged by the AI pipeline.
   // Null for manually-created timeline entries. Lets the pipeline upsert one
   // interaction per email instead of duplicating on every re-process.
-  messageId      String?  @map("message_id")
+  messageId               String?              @map("message_id")
+  knowledgeGapReports     KnowledgeGapReport[]
 
   @@unique([tenantId, messageId], name: "tenant_message")
   @@map("interactions")
@@ -79,6 +80,7 @@ model ZohoMcpConnection {
 
   @@map("zoho_mcp_connections")
 }
+
 model ConnectedAccount {
   id                  String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   email               String
@@ -198,13 +200,13 @@ model Document {
 }
 
 model DocumentChunk {
-  id         String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  documentId String                       @map("document_id") @db.Uuid
-  document   Document                     @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  chunkIndex Int?                         @map("chunk_index")
+  id         String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  documentId String                      @map("document_id") @db.Uuid
+  document   Document                    @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  chunkIndex Int?                        @map("chunk_index")
   content    String?
   embedding  Unsupported("vector(768)")?
-  tokenCount Int?                         @map("token_count")
+  tokenCount Int?                        @map("token_count")
   metadata   Json?
 
   @@index([documentId], map: "idx_chunks_doc")
@@ -246,19 +248,35 @@ model DriveConnection {
 }
 
 model KnowledgeGap {
-  id          String   @id @default(cuid())
+  id          String               @id @default(cuid())
   topic       String
-  occurrences Int      @default(1)
-  resolved    Boolean  @default(false)
-  tenantId    String?  @map("tenant_id") @db.Uuid
-  tenant      Tenant?  @relation(fields: [tenantId], references: [id])
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  occurrences Int                  @default(1)
+  resolved    Boolean              @default(false)
+  tenantId    String?              @map("tenant_id") @db.Uuid
+  tenant      Tenant?              @relation(fields: [tenantId], references: [id])
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  reports     KnowledgeGapReport[]
 
   // Same topic exists once PER TENANT — occurrence counts never mix
   // between two companies.
   @@unique([tenantId, topic])
   @@map("knowledge_gaps")
+}
+
+// One email can raise a given gap only once. The report points back to the
+// existing Interaction so admins can inspect the exact subject, sender and AI
+// summary without copying raw email content into analytics tables.
+model KnowledgeGapReport {
+  id             String       @id @default(cuid())
+  knowledgeGapId String       @map("knowledge_gap_id")
+  interactionId  String       @unique @map("interaction_id")
+  knowledgeGap   KnowledgeGap @relation(fields: [knowledgeGapId], references: [id], onDelete: Cascade)
+  interaction    Interaction  @relation(fields: [interactionId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@index([knowledgeGapId, createdAt])
+  @@map("knowledge_gap_reports")
 }
 
 enum TenantStatus {

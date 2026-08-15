@@ -111,13 +111,16 @@ parseAttachmentCached(accountEmail: string, messageId: string, attachment: Attac
 ## Analytics Module
 
 // ── Role 4 · Salma (baseline tenant isolation) ────────────────────────────
-// BREAKING (tenant isolation): optional tenantId params added. With a tenant,
-// numbers are filtered through the client relation so two companies never mix.
-// The caller-is-admin-of-this-tenant guard is Karim's Analytics Guard.
+// With a tenant, numbers are filtered through the client relation so two
+// companies never mix. The caller-is-admin-of-this-tenant guard is Karim's
+// Analytics Guard.
 getAnalyticsSummary(days?: number, tenantId?: string): Promise<AnalyticsSummary>
-upsertKnowledgeGap(topic: string, tenantId?: string): Promise<KnowledgeGap>
-// gaps are unique per (tenantId, topic) — same topic for two tenants = 2 rows
-getKnowledgeGapAlerts(threshold?: number, tenantId?: string): Promise<KnowledgeGap[]>
+reportKnowledgeGap(messageId: string, tenantId: string): Promise<KnowledgeGap & { reportAdded: boolean }>
+// The server derives one deterministic topic from the tenant-scoped email.
+// One Interaction can be evidence for only one gap and cannot increment twice.
+getKnowledgeGapAlerts(threshold?: number, tenantId?: string): Promise<KnowledgeGapAlert[]>
+// Each alert includes at most five recent evidence emails: subject, sender,
+// date, classification, and summary. Raw bodies and internal IDs are omitted.
 
 ## Admin Auth Module
 

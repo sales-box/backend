@@ -7,8 +7,13 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma, KnowledgeGap } from '@prisma/client';
-import { AnalyticsSummary, TeamMemberStats } from './types/analytics.types';
+import {
+  AnalyticsSummary,
+  KnowledgeGapAlert,
+  TeamMemberStats,
+} from './types/analytics.types';
 import { ActivityFeedQueryDto } from './dto/activity-feed-query.dto';
+import { determineKnowledgeGapTopic } from './knowledge-gap-topic';
 
 @Injectable()
 export class AnalyticsService {
@@ -311,19 +316,168 @@ export class AnalyticsService {
     }
   }
 
+  async reportKnowledgeGap(messageId: string, tenantId: string) {
+    if (!tenantId) {
+      throw new BadRequestException('tenantId is required');
+    }
+
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedMessageId) {
+      throw new BadRequestException('messageId is required');
+    }
+
+    const interaction = await this.prisma.interaction.findUnique({
+      where: {
+        tenant_message: { tenantId, messageId: normalizedMessageId },
+      },
+      select: {
+        id: true,
+        subject: true,
+        aiSummary: true,
+        classification: true,
+      },
+    });
+
+    if (!interaction) {
+      throw new NotFoundException('Email interaction not found');
+    }
+
+    const topic = determineKnowledgeGapTopic(interaction);
+
+    const report = () =>
+      this.prisma.$transaction(async (tx) => {
+        const previousReport = await tx.knowledgeGapReport.findUnique({
+          where: { interactionId: interaction.id },
+          include: { knowledgeGap: true },
+        });
+        if (previousReport) {
+          return {
+            ...previousReport.knowledgeGap,
+            reportAdded: false,
+          };
+        }
+
+        // The gap row is the stable bucket. It starts at zero because only a
+        // successfully inserted, unique evidence row may increment the count.
+        const gap = await tx.knowledgeGap.upsert({
+          where: { tenantId_topic: { tenantId, topic } },
+          update: {},
+          create: {
+            topic,
+            tenantId,
+            occurrences: 0,
+            resolved: false,
+          },
+        });
+
+        const inserted = await tx.knowledgeGapReport.createMany({
+          data: {
+            knowledgeGapId: gap.id,
+            interactionId: interaction.id,
+          },
+          skipDuplicates: true,
+        });
+
+        // A concurrent retry can win the unique interactionId insert after our
+        // first read. Re-read its gap instead of incrementing another bucket.
+        if (!inserted.count) {
+          const concurrentReport = await tx.knowledgeGapReport.findUnique({
+            where: { interactionId: interaction.id },
+            include: { knowledgeGap: true },
+          });
+          if (!concurrentReport) {
+            throw new Error('Knowledge-gap report insert did not persist');
+          }
+          return {
+            ...concurrentReport.knowledgeGap,
+            reportAdded: false,
+          };
+        }
+
+        const current = await tx.knowledgeGap.update({
+          where: { id: gap.id },
+          data: { occurrences: { increment: 1 }, resolved: false },
+        });
+
+        return {
+          ...current,
+          reportAdded: true,
+        };
+      });
+
+    try {
+      return await report();
+    } catch (error) {
+      let failure: unknown = error;
+      // Two different first reports for a new topic may race on the gap's
+      // tenant/topic unique key. Retry the whole fresh transaction once.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        try {
+          return await report();
+        } catch (retryError) {
+          failure = retryError;
+        }
+      }
+      this.logger.error(
+        `Failed to report knowledge gap for message ${normalizedMessageId}`,
+        failure,
+      );
+      throw new InternalServerErrorException('Could not report knowledge gap');
+    }
+  }
+
   async getKnowledgeGapAlerts(
     threshold: number = 3,
     tenantId?: string,
-  ): Promise<KnowledgeGap[]> {
+  ): Promise<KnowledgeGapAlert[]> {
     try {
-      return await this.prisma.knowledgeGap.findMany({
+      const gaps = await this.prisma.knowledgeGap.findMany({
         where: {
           resolved: false,
           occurrences: { gte: threshold },
           ...(tenantId ? { tenantId } : {}),
         },
         orderBy: { occurrences: 'desc' },
+        include: {
+          reports: {
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            take: 5,
+            select: {
+              createdAt: true,
+              interaction: {
+                select: {
+                  subject: true,
+                  aiSummary: true,
+                  classification: true,
+                  date: true,
+                  client: {
+                    select: {
+                      name: true,
+                      email: true,
+                      company: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
       });
+
+      return gaps.map(({ reports, ...gap }) => ({
+        ...gap,
+        evidence: (reports ?? []).map((report) => ({
+          reportedAt: report.createdAt,
+          subject: report.interaction.subject,
+          summary: report.interaction.aiSummary,
+          classification: report.interaction.classification,
+          emailDate: report.interaction.date,
+          sender: report.interaction.client,
+        })),
+      }));
     } catch (error) {
       this.logger.error('Failed to fetch knowledge gap alerts', error);
       throw new InternalServerErrorException('Could not fetch knowledge gaps');
