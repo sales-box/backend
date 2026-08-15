@@ -1,9 +1,11 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import {
   createAgent,
+  piiMiddleware,
   StructuredTool,
   toolCallLimitMiddleware,
 } from 'langchain';
+import { promptInjectionMiddleware } from './prompt-injection.middleware';
 import { humanInTheLoopMiddleware } from './hitl.middleware';
 import { MultiServerMCPClient } from '@langchain/mcp-adapters';
 import type { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
@@ -41,6 +43,19 @@ export class AgentFactory {
       model: this.aiModelService.getChatModel(),
       tools: [...readTools, ...writeTools],
       middleware: [
+        promptInjectionMiddleware(),
+
+        piiMiddleware('credit_card', {
+          strategy: 'mask',
+          applyToInput: true,
+        }),
+
+        piiMiddleware('api_key', {
+          detector: 'sk-[a-zA-Z0-9]{32}',
+          strategy: 'mask',
+          applyToInput: true,
+        }),
+
         humanInTheLoopMiddleware({
           interruptOn,
           descriptionPrefix: 'CRM Write Tool execution pending approval',
