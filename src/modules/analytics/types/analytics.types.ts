@@ -37,3 +37,27 @@ export type TeamMemberStats = {
   repliesSent: number;
   replyRate: number; // repliesSent / emailsReceived, 0 when emailsReceived is 0
 };
+
+export type KnowledgeGapEvidence = {
+  reportedAt: Date;
+  subject: string;
+  summary: string;
+  classification: string | null;
+  emailDate: Date;
+  sender: {
+    name: string | null;
+    email: string;
+    company: string | null;
+  };
+};
+
+export type KnowledgeGapAlert = {
+  id: string;
+  topic: string;
+  occurrences: number;
+  resolved: boolean;
+  tenantId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  evidence: KnowledgeGapEvidence[];
+};

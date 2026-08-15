@@ -35,9 +35,14 @@ seLoginWithGoogle(code: string): Promise<{ token: string } | { error: 'invalid_a
 ## Clients Module
 
 // ── Role 3 · Nagy (Client Identity) ───────────────────────────────────────
-resolveClientIdentity(tenantId: string, email: string, crmAdapter: ICrmAdapter): Promise<{ matchedBy: 'crm' | 'domain' | 'individual', existingClientId: string | null }>
-getOrCreateClient(tenantId: string, email: string, name?: string, company?: string): Promise<ClientRecord>
-getClientContext(tenantId: string, email: string): Promise<ClientContext>
+resolveClientIdentity(tenantId: string, email: string): Promise<{ matchedBy: 'domain' | 'individual', existingClientId: string | null }>
+// Exact normalized email is the only person merge key. A domain match is
+// company context only and is never exposed as the sender's clientId.
+getOrCreateClient(tenantId: string, email: string, name?: string, company?: string, crmId?: string): Promise<ClientRecord>
+captureInboundEmail(tenantId: string, input: CaptureInboundEmailInput): Promise<{ client: ClientRecord, interaction: Interaction }>
+// Idempotent on tenantId + messageId; creates unknown senders as new_inquiry.
+// `excludeMessageId` keeps the current inbound out of prior-history confidence.
+getClientContext(tenantId: string, email: string, excludeMessageId?: string): Promise<ClientContext>
 // Interaction.confidence split into two:
 // - productConfidence: number | null
 // - clientHistoryConfidence: number | null
@@ -106,13 +111,16 @@ parseAttachmentCached(accountEmail: string, messageId: string, attachment: Attac
 ## Analytics Module
 
 // ── Role 4 · Salma (baseline tenant isolation) ────────────────────────────
-// BREAKING (tenant isolation): optional tenantId params added. With a tenant,
-// numbers are filtered through the client relation so two companies never mix.
-// The caller-is-admin-of-this-tenant guard is Karim's Analytics Guard.
+// With a tenant, numbers are filtered through the client relation so two
+// companies never mix. The caller-is-admin-of-this-tenant guard is Karim's
+// Analytics Guard.
 getAnalyticsSummary(days?: number, tenantId?: string): Promise<AnalyticsSummary>
-upsertKnowledgeGap(topic: string, tenantId?: string): Promise<KnowledgeGap>
-// gaps are unique per (tenantId, topic) — same topic for two tenants = 2 rows
-getKnowledgeGapAlerts(threshold?: number, tenantId?: string): Promise<KnowledgeGap[]>
+reportKnowledgeGap(messageId: string, tenantId: string): Promise<KnowledgeGap & { reportAdded: boolean }>
+// The server derives one deterministic topic from the tenant-scoped email.
+// One Interaction can be evidence for only one gap and cannot increment twice.
+getKnowledgeGapAlerts(threshold?: number, tenantId?: string): Promise<KnowledgeGapAlert[]>
+// Each alert includes at most five recent evidence emails: subject, sender,
+// date, classification, and summary. Raw bodies and internal IDs are omitted.
 
 ## Admin Auth Module
 

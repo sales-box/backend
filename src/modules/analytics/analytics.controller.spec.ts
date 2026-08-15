@@ -30,6 +30,7 @@ describe('AnalyticsController', () => {
             getKnowledgeGapAlerts: jest.fn(),
             resolveGap: jest.fn(),
             upsertKnowledgeGap: jest.fn(),
+            reportKnowledgeGap: jest.fn(),
             getActivityFeed: jest.fn(),
             getTeamStats: jest.fn(),
           },
@@ -133,21 +134,22 @@ describe('AnalyticsController', () => {
   });
 
   describe('reportGap', () => {
-    it('should call upsertKnowledgeGap with topic and tenantId', async () => {
+    it('reports the tenant-scoped message and lets the server derive the topic', async () => {
       const mockGap = {
         id: 'gap-1',
-        topic: 'pricing for enterprise plan',
+        topic: 'pricing',
         tenantId: 'tenant-a',
         occurrences: 1,
         resolved: false,
+        reportAdded: true,
       };
-      (service.upsertKnowledgeGap as jest.Mock).mockResolvedValue(mockGap);
+      (service.reportKnowledgeGap as jest.Mock).mockResolvedValue(mockGap);
 
-      const dto = { topic: 'pricing for enterprise plan' };
+      const dto = { messageId: 'gmail-1' };
       const result = await controller.reportGap(dto, reqFor('tenant-a'));
 
-      expect(service.upsertKnowledgeGap).toHaveBeenCalledWith(
-        'pricing for enterprise plan',
+      expect(service.reportKnowledgeGap).toHaveBeenCalledWith(
+        'gmail-1',
         'tenant-a',
       );
       expect(result).toEqual(mockGap);

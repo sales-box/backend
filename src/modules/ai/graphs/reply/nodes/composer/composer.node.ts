@@ -44,6 +44,7 @@ export async function composerNode(
   const contextSections = [
     getRelatedProductChunks(state),
     getProvidedAttachments(state),
+    getClientHistory(state),
   ];
 
   const userPromptTemplate = PromptTemplate.fromTemplate(COMPOSER_USER_PROMPT);
@@ -64,6 +65,29 @@ export async function composerNode(
   return {
     composerResult,
   };
+}
+
+function getClientHistory(state: ReplyGraphStateType): string {
+  const MAX_CLIENT_HISTORY_CHARS = 6_000;
+  if (!state.clientHistory?.length) {
+    return '<PriorClientHistory>First contact: no prior interactions.</PriorClientHistory>';
+  }
+
+  const history = state.clientHistory
+    .slice(0, 5)
+    .map((interaction) =>
+      [
+        `Date: ${interaction.date}`,
+        `Type: ${interaction.type}`,
+        `Subject: ${interaction.subject}`,
+        `Summary: ${interaction.summary ?? ''}`,
+        `Classification: ${interaction.classification ?? ''}`,
+        `Previous recommendation: ${interaction.recommendation ?? ''}`,
+      ].join(' | '),
+    )
+    .join('\n')
+    .slice(0, MAX_CLIENT_HISTORY_CHARS);
+  return `<PriorClientHistory>\n${wrapUntrustedContent(history, 'client_history')}\n</PriorClientHistory>`;
 }
 
 function getRelatedProductChunks(state: ReplyGraphStateType): string {

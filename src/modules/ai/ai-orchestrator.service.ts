@@ -128,8 +128,17 @@ export class AiOrchestratorService {
       };
     }
 
+    await this.clientsService.captureInboundEmail(tenantId, {
+      messageId,
+      senderEmail: clientEmail,
+      senderName: this.extractSenderName(parsed.from ?? ''),
+      date: parsed.date,
+      subject: parsed.subject,
+    });
+
     // 2. Classifier — cached DB row (fast path) or live classify() (fallback).
     let classification: GeneralAnalysis;
+    let classificationSucceeded = true;
     try {
       classification = await this.getOrRunClassification(
         messageId,
@@ -139,6 +148,7 @@ export class AiOrchestratorService {
         parsed.threadId || null,
       );
     } catch (error) {
+      classificationSucceeded = false;
       this.logger.error(
         `getOrRunClassification failed for message ${messageId}: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -162,10 +172,12 @@ export class AiOrchestratorService {
       };
     }
 
-    // 3. Client history — zero new code, already-existing service.
+    // 3. Load prior history only. The current message was captured above but
+    // must not count as evidence that this first-contact sender is known.
     const clientContext = await this.clientsService.getClientContext(
       tenantId,
       clientEmail,
+      messageId,
     );
 
     // 3.5. Fetch ConnectedAccount UUID for LangGraph memory namespaces
@@ -189,6 +201,7 @@ export class AiOrchestratorService {
         accountEmail,
         { id: parsed.id ?? messageId, attachments: parsed.attachments ?? [] },
         classification.intent,
+        { clientHistory: clientContext.history },
       );
     } catch (error) {
       this.logger.error(
@@ -270,42 +283,19 @@ export class AiOrchestratorService {
       };
     }
 
-    // Auto-log this email as a client interaction so history confidence builds
-    // over time. Deduped per Gmail message, so re-processing/refreshing the same
-    // email updates (not duplicates) it. Guards:
-    // - clientId + !isNewClient: a 'domain' match resolves to a DIFFERENT person
-    //   at the same company (isNewClient=true, clientId still set) — logging
-    //   there would attach this email to the wrong person's timeline and
-    //   inflate their history confidence.
-    // - finalState: a failed pipeline produces degraded scores; don't let a
-    //   failure grow the client's history.
-    if (clientContext.clientId && !clientContext.isNewClient && finalState) {
-      try {
-        await this.prisma.interaction.upsert({
-          where: { tenant_message: { tenantId, messageId } },
-          create: {
-            tenantId,
-            clientId: clientContext.clientId,
-            messageId,
-            date: this.safeDate(parsed.date),
-            type: 'email',
-            subject: parsed.subject || '(no subject)',
-            aiSummary: classification.reasoning || '',
-            classification: classification.intent,
-            productConfidence: supervision.productConfidence,
-            clientHistoryConfidence: supervision.clientHistoryConfidence,
-          },
-          update: {
-            productConfidence: supervision.productConfidence,
-            clientHistoryConfidence: supervision.clientHistoryConfidence,
-          },
-        });
-      } catch (error) {
-        this.logger.warn(
-          `Failed to log interaction for message ${messageId}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
+    // Enrich the same captured row even when drafting failed. A retry never
+    // replaces stronger analysis with fallback classification text.
+    await this.clientsService.captureInboundEmail(tenantId, {
+      messageId,
+      senderEmail: clientEmail,
+      senderName: this.extractSenderName(parsed.from ?? ''),
+      date: parsed.date,
+      subject: parsed.subject,
+      aiSummary: classificationSucceeded ? classification.reasoning : null,
+      classification: classificationSucceeded ? classification.intent : null,
+      productConfidence: supervision.productConfidence,
+      clientHistoryConfidence: supervision.clientHistoryConfidence,
+    });
 
     return {
       classification: updatedClassification,
@@ -390,23 +380,19 @@ export class AiOrchestratorService {
   }
 
   /**
-   * Parses an email date defensively. parsed.date is normally an RFC-2822
-   * header, but the parser falls back to Gmail's internalDate — an epoch-ms
-   * STRING, which `new Date(string)` treats as an (invalid) date string.
-   */
-  private safeDate(raw?: string): Date {
-    if (!raw) return new Date();
-    let d = new Date(raw);
-    if (isNaN(d.getTime())) d = new Date(Number(raw));
-    return isNaN(d.getTime()) ? new Date() : d;
-  }
-
-  /**
    * Extracts a bare email address from a Gmail `from` header.
    * Handles both `"Name <email@domain.com>"` and plain `"email@domain.com"`.
    */
   private extractSenderEmail(fromHeader: string): string {
     const match = fromHeader.match(/<(.+)>/);
     return (match ? match[1] : fromHeader).trim().toLowerCase();
+  }
+
+  private extractSenderName(fromHeader: string): string | undefined {
+    const name = fromHeader
+      .match(/^\s*(.*?)\s*<[^>]+>/)?.[1]
+      ?.trim()
+      .replace(/^['"]|['"]$/g, '');
+    return name || undefined;
   }
 }

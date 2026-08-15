@@ -25,6 +25,7 @@ describe('AnalyticsService', () => {
               groupBy: jest.fn(),
               aggregate: jest.fn(),
               findMany: jest.fn(),
+              findUnique: jest.fn(),
             },
             knowledgeGap: {
               upsert: jest.fn(),
@@ -32,6 +33,10 @@ describe('AnalyticsService', () => {
               findMany: jest.fn(),
               create: jest.fn(),
               update: jest.fn(),
+            },
+            knowledgeGapReport: {
+              createMany: jest.fn(),
+              findUnique: jest.fn(),
             },
             allowlistEntry: {
               findMany: jest.fn(),
@@ -46,6 +51,7 @@ describe('AnalyticsService', () => {
               aggregate: jest.fn(),
             },
             $queryRaw: jest.fn(),
+            $transaction: jest.fn(),
           },
         },
       ],
@@ -53,6 +59,9 @@ describe('AnalyticsService', () => {
 
     service = module.get(AnalyticsService);
     prisma = module.get(PrismaService);
+    (prisma.$transaction as jest.Mock).mockImplementation(
+      (callback: (tx: PrismaService) => unknown) => callback(prisma),
+    );
   });
 
   describe('getAnalyticsSummary', () => {
@@ -302,14 +311,16 @@ describe('AnalyticsService', () => {
 
       const result = await service.getKnowledgeGapAlerts(3);
 
-      expect(prisma.knowledgeGap.findMany).toHaveBeenCalledWith({
-        where: {
-          resolved: false,
-          occurrences: { gte: 3 },
-        },
-        orderBy: { occurrences: 'desc' },
-      });
-      expect(result).toEqual(mockGaps);
+      expect(prisma.knowledgeGap.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            resolved: false,
+            occurrences: { gte: 3 },
+          },
+          orderBy: { occurrences: 'desc' },
+        }),
+      );
+      expect(result).toEqual([{ ...mockGaps[0], evidence: [] }]);
     });
 
     it('scopes alerts to the tenant when one is given', async () => {
@@ -317,14 +328,237 @@ describe('AnalyticsService', () => {
 
       await service.getKnowledgeGapAlerts(3, 'tenant-a');
 
-      expect(prisma.knowledgeGap.findMany).toHaveBeenCalledWith({
-        where: {
-          resolved: false,
-          occurrences: { gte: 3 },
-          tenantId: 'tenant-a',
-        },
-        orderBy: { occurrences: 'desc' },
+      expect(prisma.knowledgeGap.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            resolved: false,
+            occurrences: { gte: 3 },
+            tenantId: 'tenant-a',
+          },
+          orderBy: { occurrences: 'desc' },
+        }),
+      );
+    });
+  });
+
+  describe('reportKnowledgeGap', () => {
+    const interaction = {
+      id: 'interaction-1',
+      subject: 'Pricing for 10 seats',
+      aiSummary: 'The prospect asks for pricing and a demo.',
+      classification: 'demo request',
+    };
+
+    it('derives a stable topic and increments only for new email evidence', async () => {
+      (prisma.interaction.findUnique as jest.Mock).mockResolvedValue(
+        interaction,
+      );
+      (prisma.knowledgeGapReport.findUnique as jest.Mock).mockResolvedValue(
+        null,
+      );
+      (prisma.knowledgeGap.upsert as jest.Mock).mockResolvedValue({
+        id: 'gap-1',
+        topic: 'pricing',
+        occurrences: 0,
+        resolved: false,
       });
+      (prisma.knowledgeGapReport.createMany as jest.Mock).mockResolvedValue({
+        count: 1,
+      });
+      (prisma.knowledgeGap.update as jest.Mock).mockResolvedValue({
+        id: 'gap-1',
+        topic: 'pricing',
+        occurrences: 1,
+        resolved: false,
+      });
+
+      const result = await service.reportKnowledgeGap(
+        ' gmail-message-1 ',
+        'tenant-a',
+      );
+
+      expect(prisma.interaction.findUnique).toHaveBeenCalledWith({
+        where: {
+          tenant_message: {
+            tenantId: 'tenant-a',
+            messageId: 'gmail-message-1',
+          },
+        },
+        select: {
+          id: true,
+          subject: true,
+          aiSummary: true,
+          classification: true,
+        },
+      });
+      expect(prisma.knowledgeGap.upsert).toHaveBeenCalledWith({
+        where: {
+          tenantId_topic: { tenantId: 'tenant-a', topic: 'pricing' },
+        },
+        update: {},
+        create: {
+          topic: 'pricing',
+          tenantId: 'tenant-a',
+          occurrences: 0,
+          resolved: false,
+        },
+      });
+      expect(prisma.knowledgeGapReport.createMany).toHaveBeenCalledWith({
+        data: {
+          knowledgeGapId: 'gap-1',
+          interactionId: 'interaction-1',
+        },
+        skipDuplicates: true,
+      });
+      expect(result).toEqual(
+        expect.objectContaining({ occurrences: 1, reportAdded: true }),
+      );
+    });
+
+    it('does not increment when the same email reports the same gap again', async () => {
+      const existingGap = {
+        id: 'gap-1',
+        topic: 'pricing',
+        occurrences: 1,
+        resolved: true,
+      };
+      (prisma.interaction.findUnique as jest.Mock).mockResolvedValue(
+        interaction,
+      );
+      (prisma.knowledgeGapReport.findUnique as jest.Mock).mockResolvedValue({
+        knowledgeGap: existingGap,
+      });
+
+      const result = await service.reportKnowledgeGap(
+        'gmail-message-1',
+        'tenant-a',
+      );
+
+      expect(prisma.knowledgeGap.update).not.toHaveBeenCalled();
+      expect(prisma.knowledgeGap.upsert).not.toHaveBeenCalled();
+      expect(prisma.knowledgeGapReport.createMany).not.toHaveBeenCalled();
+      expect(result).toEqual({ ...existingGap, reportAdded: false });
+    });
+
+    it('reopens a resolved gap only when a different email adds new evidence', async () => {
+      (prisma.interaction.findUnique as jest.Mock).mockResolvedValue({
+        ...interaction,
+        id: 'interaction-2',
+      });
+      (prisma.knowledgeGapReport.findUnique as jest.Mock).mockResolvedValue(
+        null,
+      );
+      (prisma.knowledgeGap.upsert as jest.Mock).mockResolvedValue({
+        id: 'gap-1',
+        topic: 'pricing',
+        occurrences: 1,
+        resolved: true,
+      });
+      (prisma.knowledgeGapReport.createMany as jest.Mock).mockResolvedValue({
+        count: 1,
+      });
+      (prisma.knowledgeGap.update as jest.Mock).mockResolvedValue({
+        id: 'gap-1',
+        topic: 'pricing',
+        occurrences: 2,
+        resolved: false,
+      });
+
+      const result = await service.reportKnowledgeGap(
+        'gmail-message-2',
+        'tenant-a',
+      );
+
+      expect(prisma.knowledgeGap.update).toHaveBeenCalledWith({
+        where: { id: 'gap-1' },
+        data: { occurrences: { increment: 1 }, resolved: false },
+      });
+      expect(result).toEqual(
+        expect.objectContaining({ occurrences: 2, resolved: false }),
+      );
+    });
+
+    it('concurrent retries converge on the first report without a second increment', async () => {
+      const existingGap = {
+        id: 'gap-1',
+        topic: 'pricing',
+        occurrences: 1,
+        resolved: false,
+      };
+      (prisma.interaction.findUnique as jest.Mock).mockResolvedValue(
+        interaction,
+      );
+      (prisma.knowledgeGapReport.findUnique as jest.Mock)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ knowledgeGap: existingGap });
+      (prisma.knowledgeGap.upsert as jest.Mock).mockResolvedValue({
+        ...existingGap,
+        occurrences: 0,
+      });
+      (prisma.knowledgeGapReport.createMany as jest.Mock).mockResolvedValue({
+        count: 0,
+      });
+
+      const result = await service.reportKnowledgeGap(
+        'gmail-message-1',
+        'tenant-a',
+      );
+
+      expect(prisma.knowledgeGap.update).not.toHaveBeenCalled();
+      expect(result).toEqual({ ...existingGap, reportAdded: false });
+    });
+
+    it('retries one fresh transaction when first-topic creation races on P2002', async () => {
+      const p2002 = new Prisma.PrismaClientKnownRequestError(
+        'Unique constraint failed',
+        { code: 'P2002', clientVersion: '6.19.3' },
+      );
+      const originalTransaction = (
+        prisma.$transaction as jest.Mock
+      ).getMockImplementation()!;
+      (prisma.$transaction as jest.Mock)
+        .mockRejectedValueOnce(p2002)
+        .mockImplementationOnce(originalTransaction);
+      (prisma.interaction.findUnique as jest.Mock).mockResolvedValue(
+        interaction,
+      );
+      (prisma.knowledgeGapReport.findUnique as jest.Mock).mockResolvedValue(
+        null,
+      );
+      (prisma.knowledgeGap.upsert as jest.Mock).mockResolvedValue({
+        id: 'gap-1',
+        topic: 'pricing',
+        occurrences: 0,
+        resolved: false,
+      });
+      (prisma.knowledgeGapReport.createMany as jest.Mock).mockResolvedValue({
+        count: 1,
+      });
+      (prisma.knowledgeGap.update as jest.Mock).mockResolvedValue({
+        id: 'gap-1',
+        topic: 'pricing',
+        occurrences: 1,
+        resolved: false,
+      });
+
+      const result = await service.reportKnowledgeGap(
+        'gmail-message-1',
+        'tenant-a',
+      );
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+      expect(result).toEqual(
+        expect.objectContaining({ occurrences: 1, reportAdded: true }),
+      );
+    });
+
+    it('rejects a message outside the tenant instead of accepting client topic text', async () => {
+      (prisma.interaction.findUnique as jest.Mock).mockResolvedValue(null);
+
+      await expect(
+        service.reportKnowledgeGap('gmail-message-1', 'tenant-a'),
+      ).rejects.toThrow(NotFoundException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
     });
   });
 

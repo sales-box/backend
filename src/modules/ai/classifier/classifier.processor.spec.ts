@@ -6,6 +6,7 @@ import { GmailProvider } from '../../email/gmail/gmail-provider.service';
 import { ClassifierProcessor } from './classifier.processor';
 import { ClassifierService } from './classifier.service';
 import { ClassifyEmailJobData } from './classifier.types';
+import { ClientsService } from '../../clients/clients.service';
 
 const ACCOUNT = {
   id: 'acct-1',
@@ -66,6 +67,12 @@ function makeClassifier() {
   } as unknown as ClassifierService;
 }
 
+function makeClients() {
+  return {
+    captureInboundEmail: jest.fn().mockResolvedValue({}),
+  } as unknown as ClientsService;
+}
+
 function makeJob(data: ClassifyEmailJobData): Job<ClassifyEmailJobData> {
   return {
     id: 'job-1',
@@ -81,7 +88,17 @@ describe('ClassifierProcessor', () => {
     const prisma = makePrisma();
     const gmail = makeGmail(['m1']);
     const classifier = makeClassifier();
-    const processor = new ClassifierProcessor(prisma, gmail, classifier);
+    const clients = makeClients();
+    jest.mocked(classifier.classify).mockImplementation(() => {
+      expect(clients.captureInboundEmail).toHaveBeenCalledTimes(1);
+      return Promise.resolve(CLASSIFICATION);
+    });
+    const processor = new ClassifierProcessor(
+      prisma,
+      gmail,
+      classifier,
+      clients,
+    );
 
     const result = await processor.process(makeJob(jobData));
 
@@ -89,6 +106,23 @@ describe('ClassifierProcessor', () => {
     // Subject is prepended to the body before classification.
     expect(classifier.classify).toHaveBeenCalledWith(
       'Subject: s\n\nneed pricing',
+    );
+    expect(clients.captureInboundEmail).toHaveBeenNthCalledWith(
+      1,
+      'tenant-1',
+      expect.objectContaining({
+        messageId: 'm1',
+        senderEmail: 'client@x.com',
+        subject: 's',
+      }),
+    );
+    expect(clients.captureInboundEmail).toHaveBeenNthCalledWith(
+      2,
+      'tenant-1',
+      expect.objectContaining({
+        aiSummary: 'r',
+        classification: 'product inquiry',
+      }),
     );
     expect(prisma.generalAnalysis.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -106,6 +140,53 @@ describe('ClassifierProcessor', () => {
     expect(result).toEqual({ classified: 1 });
   });
 
+  it('keeps the inbound capture when classification fails', async () => {
+    const prisma = makePrisma();
+    const gmail = makeGmail(['m1']);
+    const classifier = {
+      classify: jest.fn().mockRejectedValue(new Error('LLM down')),
+    } as unknown as ClassifierService;
+    const clients = makeClients();
+    const processor = new ClassifierProcessor(
+      prisma,
+      gmail,
+      classifier,
+      clients,
+    );
+
+    await expect(processor.process(makeJob(jobData))).rejects.toThrow(
+      /failed for 1\/1/,
+    );
+    expect(clients.captureInboundEmail).toHaveBeenCalledTimes(1);
+    expect(clients.captureInboundEmail).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ messageId: 'm1' }),
+    );
+  });
+
+  it('classifies an invalid sender without capture or retry poisoning', async () => {
+    const prisma = makePrisma();
+    const gmail = makeGmail(['m1']);
+    (gmail.fetchMessage as jest.Mock).mockResolvedValue({
+      ...PARSED,
+      from: 'undisclosed recipients',
+    });
+    const classifier = makeClassifier();
+    const clients = makeClients();
+    const processor = new ClassifierProcessor(
+      prisma,
+      gmail,
+      classifier,
+      clients,
+    );
+
+    const result = await processor.process(makeJob(jobData));
+
+    expect(classifier.classify).toHaveBeenCalledTimes(1);
+    expect(clients.captureInboundEmail).not.toHaveBeenCalled();
+    expect(result).toEqual({ classified: 1 });
+  });
+
   it('is idempotent: an already-analyzed message is never re-classified', async () => {
     const prisma = makePrisma({
       generalAnalysis: {
@@ -115,7 +196,12 @@ describe('ClassifierProcessor', () => {
     });
     const gmail = makeGmail(['m1']);
     const classifier = makeClassifier();
-    const processor = new ClassifierProcessor(prisma, gmail, classifier);
+    const processor = new ClassifierProcessor(
+      prisma,
+      gmail,
+      classifier,
+      makeClients(),
+    );
 
     const result = await processor.process(makeJob(jobData));
 
@@ -129,7 +215,12 @@ describe('ClassifierProcessor', () => {
       connectedAccount: { findFirst: jest.fn().mockResolvedValue(null) },
     });
     const gmail = makeGmail();
-    const processor = new ClassifierProcessor(prisma, gmail, makeClassifier());
+    const processor = new ClassifierProcessor(
+      prisma,
+      gmail,
+      makeClassifier(),
+      makeClients(),
+    );
 
     const result = await processor.process(makeJob(jobData));
 
@@ -148,7 +239,12 @@ describe('ClassifierProcessor', () => {
       },
     });
     const gmail = makeGmail();
-    const processor = new ClassifierProcessor(prisma, gmail, makeClassifier());
+    const processor = new ClassifierProcessor(
+      prisma,
+      gmail,
+      makeClassifier(),
+      makeClients(),
+    );
 
     const result = await processor.process(makeJob(jobData));
 
@@ -173,7 +269,12 @@ describe('ClassifierProcessor', () => {
         .fn()
         .mockResolvedValue({ threadIds: [], newHistoryId: '150' }),
     } as unknown as GmailProvider;
-    const processor = new ClassifierProcessor(prisma, gmail, makeClassifier());
+    const processor = new ClassifierProcessor(
+      prisma,
+      gmail,
+      makeClassifier(),
+      makeClients(),
+    );
 
     const result = await processor.process(makeJob(jobData));
 
@@ -193,7 +294,12 @@ describe('ClassifierProcessor', () => {
         .mockResolvedValueOnce(CLASSIFICATION)
         .mockRejectedValueOnce(new Error('LLM down')),
     } as unknown as ClassifierService;
-    const processor = new ClassifierProcessor(prisma, gmail, classifier);
+    const processor = new ClassifierProcessor(
+      prisma,
+      gmail,
+      classifier,
+      makeClients(),
+    );
 
     await expect(processor.process(makeJob(jobData))).rejects.toThrow(
       /failed for 1\/2/,
@@ -213,7 +319,12 @@ describe('ClassifierProcessor', () => {
           new Error('LLM Generation Error: 429 status code (no body)'),
         ),
     } as unknown as ClassifierService;
-    const processor = new ClassifierProcessor(prisma, gmail, classifier);
+    const processor = new ClassifierProcessor(
+      prisma,
+      gmail,
+      classifier,
+      makeClients(),
+    );
 
     await expect(processor.process(makeJob(jobData))).rejects.toThrow(
       /rate.?limit/i,
@@ -234,7 +345,12 @@ describe('ClassifierProcessor', () => {
           new Error('LLM Generation Error: 429 status code (no body)'),
         ),
     } as unknown as ClassifierService;
-    const processor = new ClassifierProcessor(prisma, gmail, classifier);
+    const processor = new ClassifierProcessor(
+      prisma,
+      gmail,
+      classifier,
+      makeClients(),
+    );
 
     await expect(processor.process(makeJob(jobData))).rejects.toThrow(
       /rate.?limit/i,
@@ -264,7 +380,12 @@ describe('ClassifierProcessor', () => {
         .mockResolvedValue({ threadIds: [], newHistoryId: '200' }),
     } as unknown as GmailProvider;
     const classifier = makeClassifier();
-    const processor = new ClassifierProcessor(prisma, gmail, classifier);
+    const processor = new ClassifierProcessor(
+      prisma,
+      gmail,
+      classifier,
+      makeClients(),
+    );
 
     const result = await processor.process(makeJob(jobData));
 
@@ -296,7 +417,12 @@ describe('ClassifierProcessor', () => {
         .mockResolvedValue({ threadIds: [], newHistoryId: '200' }),
     } as unknown as GmailProvider;
     const classifier = makeClassifier();
-    const processor = new ClassifierProcessor(prisma, gmail, classifier);
+    const processor = new ClassifierProcessor(
+      prisma,
+      gmail,
+      classifier,
+      makeClients(),
+    );
 
     const result = await processor.process(makeJob(jobData));
 
@@ -323,7 +449,12 @@ describe('ClassifierProcessor', () => {
         .mockResolvedValue({ threadIds: [], newHistoryId: '200' }),
     } as unknown as GmailProvider;
     const classifier = makeClassifier();
-    const processor = new ClassifierProcessor(prisma, gmail, classifier);
+    const processor = new ClassifierProcessor(
+      prisma,
+      gmail,
+      classifier,
+      makeClients(),
+    );
 
     const result = await processor.process(makeJob(jobData));
 
@@ -350,7 +481,12 @@ describe('ClassifierProcessor', () => {
         .fn()
         .mockResolvedValue({ threadIds: [], newHistoryId: '200' }),
     } as unknown as GmailProvider;
-    const processor = new ClassifierProcessor(prisma, gmail, makeClassifier());
+    const processor = new ClassifierProcessor(
+      prisma,
+      gmail,
+      makeClassifier(),
+      makeClients(),
+    );
 
     await expect(processor.process(makeJob(jobData))).rejects.toThrow(
       /failed for 1\/1/,
@@ -370,7 +506,12 @@ describe('ClassifierProcessor', () => {
       },
     });
     const gmail = makeGmail(['m1']);
-    const processor = new ClassifierProcessor(prisma, gmail, makeClassifier());
+    const processor = new ClassifierProcessor(
+      prisma,
+      gmail,
+      makeClassifier(),
+      makeClients(),
+    );
 
     const result = await processor.process(makeJob(jobData));
 
@@ -389,7 +530,12 @@ describe('ClassifierProcessor', () => {
       },
     });
     const gmail = makeGmail(['m1']);
-    const processor = new ClassifierProcessor(prisma, gmail, makeClassifier());
+    const processor = new ClassifierProcessor(
+      prisma,
+      gmail,
+      makeClassifier(),
+      makeClients(),
+    );
 
     await expect(processor.process(makeJob(jobData))).rejects.toThrow();
     expect(prisma.webhookSubscription.update).not.toHaveBeenCalled();
@@ -415,7 +561,12 @@ describe('ClassifierProcessor', () => {
     } as unknown as GmailProvider;
 
     const classifier = makeClassifier();
-    const processor = new ClassifierProcessor(prisma, gmail, classifier);
+    const processor = new ClassifierProcessor(
+      prisma,
+      gmail,
+      classifier,
+      makeClients(),
+    );
 
     await processor.process(makeJob(jobData));
 

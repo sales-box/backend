@@ -10,7 +10,7 @@ describe('Security Utilities', () => {
       );
     });
 
-    it('supports the 4 sources', () => {
+    it('supports every untrusted content source', () => {
       expect(wrapUntrustedContent('text', 'email_body')).toContain(
         'source="email_body"',
       );
@@ -22,6 +22,9 @@ describe('Security Utilities', () => {
       );
       expect(wrapUntrustedContent('text', 'google_drive')).toContain(
         'source="google_drive"',
+      );
+      expect(wrapUntrustedContent('text', 'client_history')).toContain(
+        'source="client_history"',
       );
     });
   });

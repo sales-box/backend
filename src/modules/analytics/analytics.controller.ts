@@ -20,7 +20,11 @@ import {
   ApiParam,
 } from '@nestjs/swagger';
 import { AnalyticsService } from './analytics.service';
-import { AnalyticsSummary, TeamMemberStats } from './types/analytics.types';
+import {
+  AnalyticsSummary,
+  KnowledgeGapAlert,
+  TeamMemberStats,
+} from './types/analytics.types';
 import { KnowledgeGap } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { AuthenticatedRequest } from '../auth/jwt-auth.guard';
@@ -104,7 +108,7 @@ export class AnalyticsController {
     @Query('threshold', new DefaultValuePipe(3), ParseIntPipe)
     threshold: number,
     @Req() req: AuthenticatedRequest,
-  ): Promise<KnowledgeGap[]> {
+  ): Promise<KnowledgeGapAlert[]> {
     return this.analyticsService.getKnowledgeGapAlerts(
       threshold,
       req.user.tenantId ?? undefined,
@@ -120,13 +124,10 @@ export class AnalyticsController {
     status: 201,
     description: 'The knowledge gap has been successfully reported.',
   })
-  async reportGap(
-    @Body() dto: ReportGapDto,
-    @Req() req: AuthenticatedRequest,
-  ): Promise<KnowledgeGap> {
-    return this.analyticsService.upsertKnowledgeGap(
-      dto.topic,
-      req.user.tenantId ?? undefined,
+  async reportGap(@Body() dto: ReportGapDto, @Req() req: AuthenticatedRequest) {
+    return this.analyticsService.reportKnowledgeGap(
+      dto.messageId,
+      req.user.tenantId!,
     );
   }
 

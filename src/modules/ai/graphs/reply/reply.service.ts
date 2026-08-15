@@ -53,6 +53,7 @@ export class ReplyService {
       /** Products the user rejected on a previous attempt — the matcher
        *  is forbidden from recommending them again on retry. */
       excludedByUser?: string[];
+      clientHistory?: ReplyGraphStateType['clientHistory'];
     },
   ): Promise<DraftResult> {
     const parsedAttachments = await this.attachmentsService.parseAttachments(
@@ -78,6 +79,7 @@ export class ReplyService {
         intent,
         requirements: options?.requirements,
         excludedByUser: options?.excludedByUser ?? [],
+        clientHistory: options?.clientHistory ?? [],
         attachmentsText,
         externalContentText: [],
       },

@@ -22,12 +22,19 @@ function makeDeps() {
     },
     gmailProvider: { fetchMessage: jest.fn() },
     classifierService: { classify: jest.fn() },
-    clientsService: { getClientContext: jest.fn() },
+    clientsService: {
+      captureInboundEmail: jest.fn().mockResolvedValue({}),
+      getClientContext: jest.fn(),
+    },
     replyService: {
       draftReply: jest.fn(),
       resumeWithFeedback: jest.fn(),
     },
     supervisorService: { supervise: jest.fn() },
+    crmActionsAgent: {
+      suggestActions: jest.fn(),
+      resumeWithDecision: jest.fn(),
+    },
   };
 }
 
@@ -39,6 +46,7 @@ function makeOrchestrator(deps: ReturnType<typeof makeDeps>) {
     deps.clientsService as never,
     deps.replyService as never,
     deps.supervisorService as never,
+    deps.crmActionsAgent as never,
   );
 }
 
@@ -59,7 +67,21 @@ const BASE_CLASSIFICATION = {
 
 const BASE_CLIENT_CONTEXT = {
   isNewClient: false,
-  history: [1, 2, 3],
+  clientId: 'client-1',
+  status: 'active',
+  name: 'Client',
+  company: 'Acme',
+  historyCount: 3,
+  history: [
+    {
+      date: '2026-08-01T00:00:00.000Z',
+      type: 'inbound',
+      subject: 'Prior subject',
+      summary: 'Prior summary',
+      classification: 'product inquiry',
+      recommendation: 'Send pricing',
+    },
+  ],
 };
 
 const BASE_FINAL_STATE = {
@@ -115,6 +137,23 @@ describe('AiOrchestratorService', () => {
       expect(result.requirements).toEqual(BASE_FINAL_STATE.extractorResult);
       expect(result.draft).toEqual(BASE_FINAL_STATE.composerResult);
       expect(result.confidence.label).toBe('auto_worthy');
+      expect(deps.clientsService.captureInboundEmail).toHaveBeenCalledTimes(2);
+      expect(deps.clientsService.getClientContext).toHaveBeenCalledWith(
+        'tenant1',
+        'client@acme.com',
+        'msg1',
+      );
+      expect(deps.replyService.draftReply).toHaveBeenCalledWith(
+        'msg1',
+        undefined,
+        'tenant1',
+        'acc-uuid-1',
+        'I need a product',
+        'se@tenant.com',
+        { id: 'msg1', attachments: [] },
+        'product inquiry',
+        { clientHistory: BASE_CLIENT_CONTEXT.history },
+      );
     });
 
     it('uses cached GeneralAnalysis row and does NOT call classify()', async () => {
@@ -265,6 +304,13 @@ describe('AiOrchestratorService', () => {
       );
       expect(result.draft).toBeNull();
       expect(result.requirements).toBeNull();
+      expect(deps.clientsService.captureInboundEmail).toHaveBeenLastCalledWith(
+        'tenant1',
+        expect.objectContaining({
+          messageId: 'msg1',
+          classification: 'product inquiry',
+        }),
+      );
     });
 
     it('does not rethrow — processEmail resolves even when draftReply rejects', async () => {
@@ -317,6 +363,13 @@ describe('AiOrchestratorService', () => {
         }),
       );
       expect(deps.prisma.generalAnalysis.update).not.toHaveBeenCalled();
+      expect(deps.clientsService.captureInboundEmail).toHaveBeenLastCalledWith(
+        'tenant1',
+        expect.objectContaining({
+          aiSummary: null,
+          classification: null,
+        }),
+      );
     });
   });
 
@@ -348,6 +401,15 @@ describe('AiOrchestratorService', () => {
       expect(deps.clientsService.getClientContext).toHaveBeenCalledWith(
         'tenant1',
         'john@acme.com',
+        'msg1',
+      );
+      expect(deps.clientsService.captureInboundEmail).toHaveBeenNthCalledWith(
+        1,
+        'tenant1',
+        expect.objectContaining({
+          senderEmail: 'john@acme.com',
+          senderName: 'John Doe',
+        }),
       );
     });
   });
