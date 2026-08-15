@@ -1,8 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { Command } from '@langchain/langgraph';
 import { PromptTemplate } from '@langchain/core/prompts';
+import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import { SYSTEM_PROMPT, USER_PROMPT } from './agent.prompt';
 import { AgentFactory } from './agent.factory';
+import { CHECKPOINTER_TOKEN } from '../checkpointer/checkpointer.constants';
 
 export interface ActionSuggestion {
   index: number;
@@ -31,7 +33,10 @@ export interface AgentExecutionResult {
 
 @Injectable()
 export class CRMActionsAgent {
-  constructor(private readonly agentFactory: AgentFactory) {}
+  constructor(
+    private readonly agentFactory: AgentFactory,
+    @Inject(CHECKPOINTER_TOKEN) private readonly checkpointer: PostgresSaver,
+  ) {}
 
   public async suggestActions(
     tenantId: string,
@@ -54,7 +59,11 @@ export class CRMActionsAgent {
       { type: 'user', content: userMessage },
     ];
 
-    const config = { configurable: { thread_id: `${tenantId}:${threadId}` } };
+    const executionThreadId = `${tenantId}:${threadId}`;
+
+    this.checkpointer.deleteThread(executionThreadId);
+
+    const config = { configurable: { thread_id: executionThreadId } };
     const result = await agent.invoke({ messages }, config);
 
     return this.formatAgentResult(threadId, result);
