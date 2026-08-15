@@ -16,6 +16,18 @@ export const ReplyGraphState = new StateSchema({
   requirements: z.array(z.string()).optional(),
   attachmentsText: z.array(z.string()).default([]),
   externalContentText: z.array(z.string()).default([]),
+  clientHistory: z
+    .array(
+      z.object({
+        date: z.string(),
+        type: z.string(),
+        subject: z.string(),
+        summary: z.string().nullable(),
+        classification: z.string().nullable(),
+        recommendation: z.string().nullable(),
+      }),
+    )
+    .default([]),
 
   matchResult: z.custom<MatchResult>().optional(),
   composerResult: ComposerSchema.optional(),

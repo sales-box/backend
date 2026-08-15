@@ -8,6 +8,7 @@ import { ClassifierLlmClient } from './classifier-llm-client.adapter';
 import { ClassifierProcessor } from './classifier.processor';
 import { ClassifierService } from './classifier.service';
 import { LLM_CLIENT } from './llm-client.port';
+import { ClientsModule } from '../../clients/clients.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { LLM_CLIENT } from './llm-client.port';
       adapter: BullMQAdapter,
     }),
     GmailModule,
+    ClientsModule,
   ],
   providers: [
     ClassifierService,

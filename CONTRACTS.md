@@ -35,9 +35,14 @@ seLoginWithGoogle(code: string): Promise<{ token: string } | { error: 'invalid_a
 ## Clients Module
 
 // ── Role 3 · Nagy (Client Identity) ───────────────────────────────────────
-resolveClientIdentity(tenantId: string, email: string, crmAdapter: ICrmAdapter): Promise<{ matchedBy: 'crm' | 'domain' | 'individual', existingClientId: string | null }>
-getOrCreateClient(tenantId: string, email: string, name?: string, company?: string): Promise<ClientRecord>
-getClientContext(tenantId: string, email: string): Promise<ClientContext>
+resolveClientIdentity(tenantId: string, email: string): Promise<{ matchedBy: 'domain' | 'individual', existingClientId: string | null }>
+// Exact normalized email is the only person merge key. A domain match is
+// company context only and is never exposed as the sender's clientId.
+getOrCreateClient(tenantId: string, email: string, name?: string, company?: string, crmId?: string): Promise<ClientRecord>
+captureInboundEmail(tenantId: string, input: CaptureInboundEmailInput): Promise<{ client: ClientRecord, interaction: Interaction }>
+// Idempotent on tenantId + messageId; creates unknown senders as new_inquiry.
+// `excludeMessageId` keeps the current inbound out of prior-history confidence.
+getClientContext(tenantId: string, email: string, excludeMessageId?: string): Promise<ClientContext>
 // Interaction.confidence split into two:
 // - productConfidence: number | null
 // - clientHistoryConfidence: number | null

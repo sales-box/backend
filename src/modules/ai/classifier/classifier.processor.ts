@@ -12,6 +12,7 @@ import {
 import { ClassifierService } from './classifier.service';
 import { ClassifyEmailJobData, ClassifyJobResult } from './classifier.types';
 import { prepareEmailText } from './email-text.util';
+import { ClientsService } from '../../clients/clients.service';
 
 function httpStatusOf(error: unknown): number | undefined {
   return (
@@ -65,6 +66,7 @@ export class ClassifierProcessor extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly gmailProvider: GmailProvider,
     private readonly classifier: ClassifierService,
+    private readonly clientsService: ClientsService,
   ) {
     super();
   }
@@ -225,6 +227,26 @@ export class ClassifierProcessor extends WorkerHost {
       return false;
     }
 
+    const hasValidSender = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(fromEmail);
+    if (!hasValidSender) {
+      this.logger.warn('Message has no valid sender email; skipping capture');
+    }
+    if (!account.tenantId) {
+      this.logger.warn('Connected account has no tenant; skipping capture');
+    }
+
+    // Capture before any AI work so an empty body, provider outage, or worker
+    // retry can never lose the first inbound touchpoint.
+    if (account.tenantId && hasValidSender) {
+      await this.clientsService.captureInboundEmail(account.tenantId, {
+        messageId,
+        senderEmail: fromEmail,
+        senderName: this.extractSenderName(fromRaw),
+        date: parsed.date,
+        subject: parsed.subject,
+      });
+    }
+
     // The subject carries strong intent/urgency signal ("URGENT: ...",
     // "cancelling our contract") and is sometimes the ONLY content, so it is
     // classified alongside the body (both caged as untrusted by classify()).
@@ -237,6 +259,18 @@ export class ClassifierProcessor extends WorkerHost {
     }
 
     const result = await this.classifier.classify(text);
+
+    if (account.tenantId && hasValidSender) {
+      await this.clientsService.captureInboundEmail(account.tenantId, {
+        messageId,
+        senderEmail: fromEmail,
+        senderName: this.extractSenderName(fromRaw),
+        date: parsed.date,
+        subject: parsed.subject,
+        aiSummary: result.reasoning,
+        classification: result.intent,
+      });
+    }
 
     try {
       await this.prisma.generalAnalysis.create({
@@ -264,5 +298,13 @@ export class ClassifierProcessor extends WorkerHost {
       throw error;
     }
     return true;
+  }
+
+  private extractSenderName(from: string): string | undefined {
+    const name = from
+      .match(/^\s*(.*?)\s*<[^>]+>/)?.[1]
+      ?.trim()
+      .replace(/^['"]|['"]$/g, '');
+    return name || undefined;
   }
 }
