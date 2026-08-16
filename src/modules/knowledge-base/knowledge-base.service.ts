@@ -350,4 +350,32 @@ export class KnowledgeBaseService {
       throw new NotFoundException(`Document ${id} not found`);
     }
   }
+
+  /**
+   * Empties one tenant's knowledge base.
+   *
+   * `tenantId` is a REQUIRED string, unlike `deleteDocument` above. That method
+   * can afford `tenantId ?? null` because the `id` predicate still pins it to a
+   * single row; here the id is gone, so an undefined tenant would silently
+   * become `tenantId: null` and delete every legacy null-tenant document in the
+   * table. Typing it required is what makes that unrepresentable.
+   *
+   * No `$transaction` needed: `deleteMany` is a single atomic statement, and the
+   * `ON DELETE CASCADE` on document_chunks takes the chunks and their pgvector
+   * embeddings with it inside that same statement.
+   */
+  async deleteAllDocuments(tenantId: string): Promise<{ deleted: number }> {
+    if (!tenantId) {
+      throw new BadRequestException(
+        'Tenant is required to empty a knowledge base',
+      );
+    }
+    const { count } = await this.prisma.document.deleteMany({
+      where: { tenantId },
+    });
+    this.logger.warn(
+      `Knowledge base emptied for tenant ${tenantId} — ${count} document(s) removed`,
+    );
+    return { deleted: count };
+  }
 }

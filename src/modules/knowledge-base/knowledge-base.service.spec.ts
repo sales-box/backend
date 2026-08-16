@@ -398,4 +398,35 @@ describe('KnowledgeBaseService', () => {
       ).rejects.toBeInstanceOf(NotFoundException);
     });
   });
+
+  describe('deleteAllDocuments', () => {
+    it('scopes the delete to the caller tenant and reports the count', async () => {
+      deleteDocMany.mockResolvedValue({ count: 12 });
+
+      await expect(service.deleteAllDocuments('tenant-a')).resolves.toEqual({
+        deleted: 12,
+      });
+      expect(deleteDocMany).toHaveBeenCalledWith({
+        where: { tenantId: 'tenant-a' },
+      });
+    });
+
+    it('never widens to tenantId: null when the tenant is missing', async () => {
+      // The whole risk of this method: without an id predicate, a falsy tenant
+      // reaching the query would empty every legacy null-tenant document in the
+      // table. It must not even reach Prisma.
+      await expect(service.deleteAllDocuments('')).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(deleteDocMany).not.toHaveBeenCalled();
+    });
+
+    it('resolves with zero on an already-empty knowledge base', async () => {
+      deleteDocMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.deleteAllDocuments('tenant-a')).resolves.toEqual({
+        deleted: 0,
+      });
+    });
+  });
 });
