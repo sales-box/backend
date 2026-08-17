@@ -34,6 +34,24 @@ export const ZOHO_OBJECT_MODEL: CrmObjectModel = {
 - If searchContacts returned ≥ 1 record for the sender email, createLead is also FORBIDDEN.`,
 };
 
+export const HUBSPOT_OBJECT_MODEL: CrmObjectModel = {
+  categoryModules: `1. Identity & Contact Info (Who the person/company is) -> Contacts
+2. Work & Follow-up Items (Actionable tasks, requests, or deadlines) -> Tasks
+3. Financial Intent & Revenue Opportunities (License purchases, pipeline deals) -> Deals
+4. Issues & Escalations (Support tickets, disputes, complaints) -> Tickets
+5. Context Worth Recording (Useful background with no immediate action or status change) -> Notes attached to the relevant Contact`,
+
+  investigation: `call searchContacts with the sender email. If it returns 0 records, treat as a new prospect and stop. Hard cap: 1 read call total.`,
+
+  identityRules: `- HubSpot has ONE Contacts object. A prospect and a customer are the same kind of record, told apart by the lifecyclestage property — there is no separate Leads module to create into.
+- If the sender is NOT found by searchContacts, propose creating a new Contact with lifecyclestage "lead", in addition to (not instead of) any other warranted action.
+- If a Contact with the matching email already exists — even if the company name differs from what is stated in the email — do NOT create a second Contact. Propose an updateContact call to reconcile the changed details (company, jobtitle, phone) on that record. The email address is the authoritative identity key; a company-name difference is a data correction, not a new identity.
+- Advancing lifecyclestage is an update, not a new record. A prospect who states buying intent moves to "salesqualifiedlead" on the SAME Contact.
+- Every Deal, Ticket, Task, and Note you propose must carry the sender's contact_id when searchContacts found them. HubSpot does not infer the link: a record created without it is real but attached to nobody, and will not appear on the contact's timeline.`,
+
+  duplicateRules: `- If searchContacts returned >= 1 record for the sender email, createContact is FORBIDDEN. Use updateContact on that record instead.`,
+};
+
 export const buildSystemPrompt = (crm: CrmObjectModel): string => `
 <Role>
 You are a professional B2B sales assistant. Your task is to investigate CRM state and propose warranted CRM write actions based on the provided email context, for human review by a sales engineer (SE).

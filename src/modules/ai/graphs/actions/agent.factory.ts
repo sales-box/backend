@@ -1,4 +1,4 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import {
   createAgent,
   piiMiddleware,
@@ -14,10 +14,19 @@ import { AiModelService } from '@/modules/ai/ai.model.service';
 import { CHECKPOINTER_TOKEN } from '../checkpointer/checkpointer.constants';
 import { buildTools } from './tools.factory';
 import { CrmProvider } from '@/modules/crm/crm.constants';
-import { ZOHO_OBJECT_MODEL, type CrmObjectModel } from './agent.prompt';
+import {
+  ZOHO_OBJECT_MODEL,
+  HUBSPOT_OBJECT_MODEL,
+  type CrmObjectModel,
+} from './agent.prompt';
+import { Client } from '@hubspot/api-client';
+import { CryptoService } from '@/modules/auth/crypto.service';
+import { buildHubSpotTools, fetchDealStages } from './hubspot-tools.factory';
 
 @Injectable()
 export class AgentFactory {
+  private readonly logger = new Logger(AgentFactory.name);
+
   private readonly toolCache = new Map<
     string,
     {
@@ -34,6 +43,7 @@ export class AgentFactory {
   constructor(
     private readonly aiModelService: AiModelService,
     private readonly prisma: PrismaService,
+    private readonly crypto: CryptoService,
     @Inject(CHECKPOINTER_TOKEN) private readonly checkpointer: PostgresSaver,
   ) {}
 
@@ -130,6 +140,10 @@ export class AgentFactory {
       return ZOHO_OBJECT_MODEL;
     }
 
+    if (connection?.provider === (CrmProvider.HubSpot as string)) {
+      return HUBSPOT_OBJECT_MODEL;
+    }
+
     throw new NotFoundException(
       `No CRM object model for provider "${connection?.provider ?? 'none'}" (tenant: ${tenantId})`,
     );
@@ -147,6 +161,10 @@ export class AgentFactory {
         );
       }
       return buildTools(await this.zohoPrimitives(mcpServerUrl));
+    }
+
+    if (provider === (CrmProvider.HubSpot as string)) {
+      return buildHubSpotTools(await this.hubSpotContext(tenantId));
     }
 
     throw new NotFoundException(
@@ -167,6 +185,45 @@ export class AgentFactory {
       createRecords: this.findToolByName('ZohoCRM_createRecords', allMcpTools),
       updateRecords: this.findToolByName('ZohoCRM_updateRecords', allMcpTools),
     };
+  }
+
+  /**
+   * HubSpot is reached over its REST API with the private app token the tenant
+   * already gave us on `crm_connections`, so there is no MCP server and no URL
+   * on the agent connection row.
+   */
+  private async hubSpotContext(tenantId: string) {
+    const connection = await this.prisma.crmConnection.findUnique({
+      where: { tenantId },
+    });
+
+    if (!connection || connection.status !== 'connected') {
+      throw new NotFoundException(
+        `HubSpot is the action CRM for tenant ${tenantId} but no connected HubSpot credential exists`,
+      );
+    }
+
+    const client = new Client({
+      accessToken: this.crypto.decrypt(connection.apiKey),
+    });
+
+    // Read once, cached with the tools. Deal stage ids are per-portal, so the
+    // deal tool cannot be built without them.
+    let dealStages: Awaited<ReturnType<typeof fetchDealStages>> = [];
+    try {
+      dealStages = await fetchDealStages(client);
+    } catch (error) {
+      // Losing deals is bad; losing every other action because the pipelines
+      // endpoint is unavailable is worse. buildHubSpotTools drops the deal tool
+      // when the list is empty.
+      this.logger.warn(
+        `Could not read HubSpot deal stages for tenant ${tenantId}: ` +
+          `${error instanceof Error ? error.message : String(error)}. ` +
+          'Continuing without the createDeal tool.',
+      );
+    }
+
+    return { client, dealStages };
   }
 
   private getInterruptOnConfig(
