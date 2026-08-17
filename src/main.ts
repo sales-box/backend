@@ -13,6 +13,38 @@ import { setupGracefulShutdown } from 'nestjs-graceful-shutdown';
 import { AppModule } from './app.module';
 import { setupSwagger } from './config/swagger';
 
+/**
+ * Keep one background failure from taking the whole API down.
+ *
+ * LangGraph's Postgres checkpointer writes concurrently with node execution
+ * and does not await the write, so when `PostgresSaver.put` rejects — a
+ * network blip, a database restart, a full disk — nothing is holding the
+ * promise. Node's default for an unhandled rejection is to throw, so the
+ * process died. This was observed three times: ENETUNREACH to the database,
+ * and twice on `could not extend file ... No space left on device`.
+ *
+ * A checkpoint that failed to persist is bad, but it is one request's problem.
+ * Logging it loudly and staying up is strictly better than dropping every
+ * other in-flight request and refusing new ones until someone notices.
+ *
+ * `uncaughtException` is not the same case: by then the process state may be
+ * inconsistent, so the only safe move is to log the cause — which today is
+ * lost entirely — and let the supervisor restart us.
+ */
+function installProcessErrorHandlers(logger: Logger): void {
+  process.on('unhandledRejection', (reason) => {
+    logger.error(
+      reason instanceof Error ? reason.stack : String(reason),
+      'UnhandledRejection',
+    );
+  });
+
+  process.on('uncaughtException', (error) => {
+    logger.error(error.stack ?? error.message, 'UncaughtException');
+    process.exit(1);
+  });
+}
+
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
@@ -24,7 +56,10 @@ async function bootstrap() {
   );
 
   // Route all framework logs through pino (structured JSON in prod).
-  app.useLogger(app.get(Logger));
+  const logger = app.get(Logger);
+  app.useLogger(logger);
+
+  installProcessErrorHandlers(logger);
 
   // Wire signal handling + Nest shutdown hooks for graceful termination.
   setupGracefulShutdown({ app });
