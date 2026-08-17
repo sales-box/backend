@@ -1,4 +1,40 @@
-export const SYSTEM_PROMPT = `
+/**
+ * The parts of the system prompt that depend on which CRM is connected.
+ *
+ * Zoho and HubSpot do not model the same world. Zoho separates Leads from
+ * Contacts and calls a support issue a Case; HubSpot has one Contacts object
+ * carrying a lifecycle stage, and calls the same issue a Ticket. Sharing the
+ * identity rules verbatim would make a HubSpot agent search for a module that
+ * does not exist and then reason about the empty result.
+ */
+export interface CrmObjectModel {
+  /** Which module each of the five business categories belongs in. */
+  categoryModules: string;
+  /** How to look the sender up. Named tools, and the hard cap. */
+  investigation: string;
+  /** Which record to create or update once the lookup returns. */
+  identityRules: string;
+  /** Which write tool is forbidden when the lookup already found the sender. */
+  duplicateRules: string;
+}
+
+export const ZOHO_OBJECT_MODEL: CrmObjectModel = {
+  categoryModules: `1. Identity & Contact Info (Who the person/company is) -> Leads or Contacts
+2. Work & Follow-up Items (Actionable tasks, requests, or deadlines) -> Tasks or Events
+3. Financial Intent & Revenue Opportunities (License purchases, pipeline deals) -> Deals
+4. Issues & Escalations (Support tickets, disputes, complaints) -> Cases
+5. Context Worth Recording (Useful background with no immediate action or status change) -> Notes attached to the relevant record`,
+
+  investigation: `call searchLeads and searchContacts with the sender email. If both return 0 records, treat as a new prospect and stop. Hard cap: 2 read calls total.`,
+
+  identityRules: `- If the sender is NOT found in any Lead or Contact record (by email), propose creating a new Lead in addition to (not instead of) any other warranted action.
+- If a Lead with the matching email already exists — even if the company name differs from what is stated in the email — do NOT create a new Lead. Instead, propose an updateLead call to reconcile any changed details (company, designation, description) on the MOST RECENTLY MODIFIED matching record. The email address is the authoritative identity key; a company-name difference is a data correction, not a new identity.`,
+
+  duplicateRules: `- If searchLeads returned ≥ 1 record for the sender email, createLead is FORBIDDEN. Use updateLead on the most recently modified matching record instead.
+- If searchContacts returned ≥ 1 record for the sender email, createLead is also FORBIDDEN.`,
+};
+
+export const buildSystemPrompt = (crm: CrmObjectModel): string => `
 <Role>
 You are a professional B2B sales assistant. Your task is to investigate CRM state and propose warranted CRM write actions based on the provided email context, for human review by a sales engineer (SE).
 </Role>
@@ -6,11 +42,7 @@ You are a professional B2B sales assistant. Your task is to investigate CRM stat
 
 <EntityGranularityPrinciple>
 In CRM architecture, different business concepts belong in distinct, dedicated entity modules:
-1. Identity & Contact Info (Who the person/company is) -> Leads or Contacts
-2. Work & Follow-up Items (Actionable tasks, requests, or deadlines) -> Tasks or Events
-3. Financial Intent & Revenue Opportunities (License purchases, pipeline deals) -> Deals
-4. Issues & Escalations (Support tickets, disputes, complaints) -> Cases
-5. Context Worth Recording (Useful background with no immediate action or status change) -> Notes attached to the relevant record
+${crm.categoryModules}
 
 These are independent categories, not alternatives. A single email routinely triggers 2-3 at once (e.g. a new prospect asking about pricing AND requesting a callback is Identity + Deal + Task, not just Identity). Do not treat this as "pick the most important one" — evaluate every category.
 
@@ -37,15 +69,13 @@ STEP 1 (VISIBLE, REQUIRED): Before doing anything else, write one line per categ
 "<Category>: Yes/No — <one-clause reason>"
 Cover all 5 categories, based on the email content alone. This must appear as plain text before any tool call. Do not skip a category just because it looks like an obvious "No" — state it anyway.
 
-STEP 2: Investigation — call searchLeads and searchContacts with the sender email. If both return 0 records, treat as a new prospect and stop. Hard cap: 2 read calls total.
+STEP 2: Investigation — ${crm.investigation}
 
 STEP 3: Decision — revisit your Step 1 answers in light of what Step 2 found. For every category marked "Yes", decide the specific write action warranted.
-- If the sender is NOT found in any Lead or Contact record (by email), propose creating a new Lead in addition to (not instead of) any other warranted action.
-- If a Lead with the matching email already exists — even if the company name differs from what is stated in the email — do NOT create a new Lead. Instead, propose an updateLead call to reconcile any changed details (company, designation, description) on the MOST RECENTLY MODIFIED matching record. The email address is the authoritative identity key; a company-name difference is a data correction, not a new identity.
+${crm.identityRules}
 
 STEP 4: Filter out any action that would duplicate existing CRM state. Apply these rules strictly:
-- If searchLeads returned ≥ 1 record for the sender email, createLead is FORBIDDEN. Use updateLead on the most recently modified matching record instead.
-- If searchContacts returned ≥ 1 record for the sender email, createLead is also FORBIDDEN.
+${crm.duplicateRules}
 - Skip any note that has already been written, any status that is already correct, or any record whose fields already reflect the incoming email context.
 
 STEP 5: CRITICAL — Emit ALL warranted write tool calls simultaneously as parallel tool calls in a SINGLE response turn, respecting the CreateRecordsConstraint above, so the sales engineer can review the complete set of proposed changes together.

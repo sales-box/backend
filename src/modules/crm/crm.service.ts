@@ -63,28 +63,33 @@ export class CrmService {
   }
 
   async getMcpConnectionStatus(tenantId: string) {
-    const connection = await this.prisma.zohoMcpConnection.findUnique({
+    const connection = await this.prisma.crmAgentConnection.findUnique({
       where: { tenantId },
     });
 
-    if (!connection || !connection.mcpServerUrl) {
+    // Reported per provider, because the panel needs to know WHICH CRM the
+    // agent will write to, not merely that some connection exists.
+    if (!connection) {
       return { connected: false };
     }
 
     return {
       connected: true,
+      provider: connection.provider,
       updatedAt: connection.updatedAt,
     };
   }
 
   async connectZohoMcp(tenantId: string, body: ConnectZohoMcpDto) {
-    const connection = await this.prisma.zohoMcpConnection.upsert({
+    const connection = await this.prisma.crmAgentConnection.upsert({
       where: { tenantId },
       create: {
         tenantId,
+        provider: CrmProvider.Zoho,
         mcpServerUrl: body.mcpServerUrl,
       },
       update: {
+        provider: CrmProvider.Zoho,
         mcpServerUrl: body.mcpServerUrl,
       },
     });
@@ -97,7 +102,7 @@ export class CrmService {
   }
 
   async disconnectZohoMcp(tenantId: string) {
-    await this.prisma.zohoMcpConnection.deleteMany({
+    await this.prisma.crmAgentConnection.deleteMany({
       where: { tenantId },
     });
 

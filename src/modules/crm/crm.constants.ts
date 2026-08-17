@@ -8,5 +8,6 @@ export const CRM_ADAPTER = Symbol('CRM_ADAPTER');
 
 export enum CrmProvider {
   HubSpot = 'hubspot',
+  Zoho = 'zoho',
   Mock = 'mock',
 }

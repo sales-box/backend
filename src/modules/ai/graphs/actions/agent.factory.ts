@@ -13,6 +13,8 @@ import { PrismaService } from '@/database/prisma.service';
 import { AiModelService } from '@/modules/ai/ai.model.service';
 import { CHECKPOINTER_TOKEN } from '../checkpointer/checkpointer.constants';
 import { buildTools } from './tools.factory';
+import { CrmProvider } from '@/modules/crm/crm.constants';
+import { ZOHO_OBJECT_MODEL, type CrmObjectModel } from './agent.prompt';
 
 @Injectable()
 export class AgentFactory {
@@ -21,7 +23,8 @@ export class AgentFactory {
     {
       readTools: StructuredTool[];
       writeTools: StructuredTool[];
-      mcpUrl: string;
+      provider: string;
+      mcpUrl: string | null;
       cachedAt: number;
     }
   >();
@@ -69,46 +72,101 @@ export class AgentFactory {
     return agent;
   }
 
+  /**
+   * The one place the supported CRMs differ.
+   *
+   * Everything downstream — the middleware chain, the approval gate, the
+   * checkpointer — consumes `{ readTools, writeTools }` and never learns which
+   * provider produced them. Adding a CRM means adding a builder and a branch
+   * here; nothing else in this file changes.
+   */
   private async getToolsForTenant(tenantId: string) {
-    const connection = await this.prisma.zohoMcpConnection.findUnique({
+    const connection = await this.prisma.crmAgentConnection.findUnique({
       where: { tenantId },
     });
 
-    if (!connection || !connection.mcpServerUrl) {
+    if (!connection) {
       throw new NotFoundException(
-        `No active Zoho MCP connection found for tenant: ${tenantId}`,
+        `No CRM connection found for tenant: ${tenantId}`,
       );
     }
 
     const cachedTools = this.getToolsFromCache(tenantId, connection);
-
     if (cachedTools !== null) {
       return cachedTools;
     }
 
-    const mcpClient = new MultiServerMCPClient({
-      zoho: {
-        transport: 'http',
-        url: connection.mcpServerUrl,
-      },
-    });
-
-    const allMcpTools: StructuredTool[] = await mcpClient.getTools();
-
-    const { readTools, writeTools } = buildTools({
-      searchRecords: this.findToolByName('ZohoCRM_searchRecords', allMcpTools),
-      createRecords: this.findToolByName('ZohoCRM_createRecords', allMcpTools),
-      updateRecords: this.findToolByName('ZohoCRM_updateRecords', allMcpTools),
-    });
+    const { readTools, writeTools } = await this.buildToolsForProvider(
+      connection.provider,
+      connection.mcpServerUrl,
+      tenantId,
+    );
 
     this.toolCache.set(tenantId, {
       readTools,
       writeTools,
+      provider: connection.provider,
       mcpUrl: connection.mcpServerUrl,
       cachedAt: Date.now(),
     });
 
     return { readTools, writeTools };
+  }
+
+  /**
+   * The prompt half of the same branch. Kept beside `buildToolsForProvider` so
+   * a new CRM is one edit in one place: tools and object model together, never
+   * one without the other.
+   */
+  public async getObjectModelForTenant(
+    tenantId: string,
+  ): Promise<CrmObjectModel> {
+    const connection = await this.prisma.crmAgentConnection.findUnique({
+      where: { tenantId },
+      select: { provider: true },
+    });
+
+    if (connection?.provider === (CrmProvider.Zoho as string)) {
+      return ZOHO_OBJECT_MODEL;
+    }
+
+    throw new NotFoundException(
+      `No CRM object model for provider "${connection?.provider ?? 'none'}" (tenant: ${tenantId})`,
+    );
+  }
+
+  private async buildToolsForProvider(
+    provider: string,
+    mcpServerUrl: string | null,
+    tenantId: string,
+  ) {
+    if (provider === (CrmProvider.Zoho as string)) {
+      if (!mcpServerUrl) {
+        throw new NotFoundException(
+          `Zoho is connected for tenant ${tenantId} but carries no MCP server URL`,
+        );
+      }
+      return buildTools(await this.zohoPrimitives(mcpServerUrl));
+    }
+
+    throw new NotFoundException(
+      `CRM provider "${provider}" has no action tools for tenant: ${tenantId}`,
+    );
+  }
+
+  /** The three primitives, as exposed by Zoho's MCP server. */
+  private async zohoPrimitives(mcpServerUrl: string) {
+    const mcpClient = new MultiServerMCPClient({
+      zoho: { transport: 'http', url: mcpServerUrl },
+    });
+
+    const allMcpTools: StructuredTool[] = await mcpClient.getTools();
+
+    return {
+      searchRecords: this.findToolByName('ZohoCRM_searchRecords', allMcpTools),
+      createRecords: this.findToolByName('ZohoCRM_createRecords', allMcpTools),
+      updateRecords: this.findToolByName('ZohoCRM_updateRecords', allMcpTools),
+    };
   }
 
   private getInterruptOnConfig(
@@ -130,13 +188,17 @@ export class AgentFactory {
 
   private getToolsFromCache(
     tenantId: string,
-    connection: { mcpServerUrl: string },
+    connection: { provider: string; mcpServerUrl: string | null },
   ) {
     const cached = this.toolCache.get(tenantId);
     const isFresh = cached && Date.now() - cached.cachedAt < this.CACHE_TTL_MS;
     const isUrlUnchanged = cached?.mcpUrl === connection.mcpServerUrl;
+    // Switching CRM must not serve the previous provider's tools for the rest
+    // of the TTL — the URL alone would not catch a swap to a provider that
+    // carries no URL at all.
+    const isSameProvider = cached?.provider === connection.provider;
 
-    if (cached && isUrlUnchanged && isFresh) {
+    if (cached && isSameProvider && isUrlUnchanged && isFresh) {
       return { readTools: cached.readTools, writeTools: cached.writeTools };
     }
 
