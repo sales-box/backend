@@ -1,4 +1,3 @@
-import { InjectQueue } from '@nestjs/bullmq';
 import {
   Injectable,
   Logger,
@@ -6,42 +5,24 @@ import {
   forwardRef,
   BadRequestException,
 } from '@nestjs/common';
-import { Queue } from 'bullmq';
-import { ClientRecord } from '../clients/clients.interface';
 import { ClientsService } from '../clients/clients.service';
 import { PrismaService } from '../../database/prisma.service';
 import { CryptoService } from '../auth/crypto.service';
-import { CrmAdapterFactory } from './crm-adapter.factory';
 import { HubSpotAdapter } from './hubspot-crm.adapter';
 import { MockCrmAdapter } from './mock-crm.adapter';
 import { verifyZohoMcpServer } from './zoho-mcp.verify';
 import { ConnectCrmDto } from './dto/connect-crm.dto';
 import { ConnectZohoMcpDto } from './dto/connect-zoho-mcp.dto';
-import {
-  CRM_QUEUE,
-  SYNC_CONTACT_JOB,
-  CREATE_DEAL_JOB,
-  LOG_NOTE_JOB,
-  CrmProvider,
-} from './crm.constants';
-import type { ICrmAdapter, NotePayload } from './crm.interface';
-
-const JOB_OPTS = {
-  attempts: 3,
-  backoff: { type: 'exponential' as const, delay: 1000 },
-  removeOnComplete: true,
-  removeOnFail: false,
-};
+import { CrmProvider } from './crm.constants';
+import type { ICrmAdapter } from './crm.interface';
 
 @Injectable()
 export class CrmService {
   private readonly logger = new Logger(CrmService.name);
 
   constructor(
-    @InjectQueue(CRM_QUEUE) private readonly queue: Queue,
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
-    private readonly factory: CrmAdapterFactory,
     @Inject(forwardRef(() => ClientsService))
     private readonly clientsService: ClientsService,
   ) {}
@@ -286,44 +267,5 @@ export class CrmService {
       removedClients: unlinked.count,
       status: 'disconnected',
     };
-  }
-
-  async enqueueContactSync(
-    tenantId: string,
-    client: ClientRecord,
-  ): Promise<void> {
-    await this.queue.add(SYNC_CONTACT_JOB, { tenantId, client }, JOB_OPTS);
-    this.logger.log(
-      `Enqueued ${SYNC_CONTACT_JOB} for ${client.email} (tenant: ${tenantId})`,
-    );
-  }
-
-  async enqueueDealSync(
-    tenantId: string,
-    contactId: string,
-    email: string,
-    classification: string,
-    subject: string,
-    company: string,
-  ): Promise<void> {
-    await this.queue.add(
-      CREATE_DEAL_JOB,
-      { tenantId, contactId, email, classification, subject, company },
-      JOB_OPTS,
-    );
-    this.logger.log(
-      `Enqueued ${CREATE_DEAL_JOB} for contact ${contactId} (tenant: ${tenantId})`,
-    );
-  }
-
-  async enqueueEngagementNote(
-    tenantId: string,
-    contactId: string,
-    note: NotePayload,
-  ): Promise<void> {
-    await this.queue.add(LOG_NOTE_JOB, { tenantId, contactId, note }, JOB_OPTS);
-    this.logger.log(
-      `Enqueued ${LOG_NOTE_JOB} for contact ${contactId} (tenant: ${tenantId})`,
-    );
   }
 }

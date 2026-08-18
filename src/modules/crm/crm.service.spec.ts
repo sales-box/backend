@@ -1,17 +1,9 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
-import { Queue } from 'bullmq';
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
 import { CrmService } from './crm.service';
 import { PrismaService } from '../../database/prisma.service';
 import { CryptoService } from '../auth/crypto.service';
-import { CrmAdapterFactory } from './crm-adapter.factory';
 import { ClientsService } from '../clients/clients.service';
-import {
-  SYNC_CONTACT_JOB,
-  CREATE_DEAL_JOB,
-  LOG_NOTE_JOB,
-  CrmProvider,
-} from './crm.constants';
-import { makeMockClient } from './crm.test-fixtures';
+import { CrmProvider } from './crm.constants';
 import { BadRequestException } from '@nestjs/common';
 
 // connectCrm builds a real HubSpotAdapter and calls fetchContacts to verify the
@@ -27,7 +19,6 @@ jest.mock('./hubspot-crm.adapter', () => ({
 }));
 
 describe('CrmService', () => {
-  let queue: { add: jest.Mock };
   let prisma: {
     crmConnection: {
       findUnique: jest.Mock;
@@ -43,14 +34,12 @@ describe('CrmService', () => {
     $transaction: jest.Mock;
   };
   let crypto: { encrypt: jest.Mock; decrypt: jest.Mock };
-  let factory: { getAdapterForTenant: jest.Mock };
   let clientsService: { getOrCreateClient: jest.Mock };
   let service: CrmService;
 
   const tenantId = 'tenant-123';
 
   beforeEach(() => {
-    queue = { add: jest.fn().mockResolvedValue({ id: 'job-1' }) };
     prisma = {
       crmConnection: {
         findUnique: jest.fn(),
@@ -73,18 +62,13 @@ describe('CrmService', () => {
       encrypt: jest.fn().mockReturnValue('encrypted-api-key'),
       decrypt: jest.fn().mockReturnValue('decrypted-api-key'),
     };
-    factory = {
-      getAdapterForTenant: jest.fn(),
-    };
     clientsService = {
       getOrCreateClient: jest.fn(),
     };
 
     service = new CrmService(
-      queue as unknown as Queue,
       prisma as unknown as PrismaService,
       crypto as unknown as CryptoService,
-      factory as unknown as CrmAdapterFactory,
       clientsService as unknown as ClientsService,
     );
   });
@@ -298,69 +282,6 @@ describe('CrmService', () => {
         where: { tenantId },
       });
       expect(prisma.$transaction).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe('enqueueContactSync', () => {
-    it('adds a sync-contact job carrying the client and tenantId', async () => {
-      const client = makeMockClient();
-      await service.enqueueContactSync(tenantId, client);
-
-      expect(queue.add).toHaveBeenCalledTimes(1);
-      const [jobName, data] = queue.add.mock.calls[0];
-      expect(jobName).toBe(SYNC_CONTACT_JOB);
-      expect(data).toEqual({ tenantId, client });
-    });
-
-    it('configures 3 attempts with exponential backoff', async () => {
-      await service.enqueueContactSync(tenantId, makeMockClient());
-
-      const opts = queue.add.mock.calls[0][2];
-      expect(opts.attempts).toBe(3);
-      expect(opts.backoff).toEqual({ type: 'exponential', delay: 1000 });
-      expect(opts.removeOnFail).toBe(false);
-    });
-  });
-
-  describe('enqueueDealSync', () => {
-    it('adds a create-deal job with contact, tenantId and deal data', async () => {
-      await service.enqueueDealSync(
-        tenantId,
-        'c-1',
-        'jane@acme.com',
-        'product_inquiry',
-        'Pricing',
-        'Acme',
-      );
-
-      expect(queue.add).toHaveBeenCalledTimes(1);
-      const [jobName, data] = queue.add.mock.calls[0];
-      expect(jobName).toBe(CREATE_DEAL_JOB);
-      expect(data).toEqual({
-        tenantId,
-        contactId: 'c-1',
-        email: 'jane@acme.com',
-        classification: 'product_inquiry',
-        subject: 'Pricing',
-        company: 'Acme',
-      });
-    });
-  });
-
-  describe('enqueueEngagementNote', () => {
-    it('adds a log-note job with contact, tenantId and note payload', async () => {
-      const note = {
-        subject: 'Hello',
-        summary: 'Test email',
-        classification: 'product_inquiry',
-        sentAt: '2026-07-09T00:00:00Z',
-      };
-      await service.enqueueEngagementNote(tenantId, 'c-1', note);
-
-      expect(queue.add).toHaveBeenCalledTimes(1);
-      const [jobName, data] = queue.add.mock.calls[0];
-      expect(jobName).toBe(LOG_NOTE_JOB);
-      expect(data).toEqual({ tenantId, contactId: 'c-1', note });
     });
   });
 });
