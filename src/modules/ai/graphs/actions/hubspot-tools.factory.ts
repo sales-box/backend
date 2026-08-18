@@ -27,6 +27,8 @@ export interface HubSpotToolContext {
   client: Client;
   /** Stages read from the tenant's portal. Empty means no deal tool. */
   dealStages: HubSpotDealStage[];
+  /** False when this portal cannot use Tickets. Removes the ticket tool. */
+  ticketsAvailable: boolean;
 }
 
 const CONTACT_PROPERTIES = ['email', 'firstname', 'lastname', 'company'];
@@ -62,6 +64,28 @@ export async function fetchDealStages(
 }
 
 /**
+ * Can this portal use Tickets at all?
+ *
+ * Tickets belong to Service Hub. On a portal without it, HubSpot does not just
+ * withhold the scope — it reports that the scope "isn't available for public
+ * use", so there is no checkbox for the tenant to tick and no way to fix it in
+ * settings. Offering createTicket there produces an action the reviewer can
+ * approve and that then fails, which is the worst possible ordering: the SE
+ * believes an escalation was logged and it was not.
+ *
+ * A read probe is enough to tell the two worlds apart, and unlike a write
+ * probe it cannot leave anything behind.
+ */
+export async function probeTicketsAvailable(client: Client): Promise<boolean> {
+  try {
+    await client.crm.tickets.basicApi.getPage(1, undefined, ['subject']);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The HubSpot half of the agent's toolset.
  *
  * Deliberately mirrors `buildTools` for Zoho: same return shape, same summary
@@ -84,7 +108,7 @@ export function buildHubSpotTools(ctx: HubSpotToolContext): {
   readTools: StructuredTool[];
   writeTools: StructuredTool[];
 } {
-  const { client, dealStages } = ctx;
+  const { client, dealStages, ticketsAvailable } = ctx;
 
   const SUMMARY = z
     .string()
@@ -402,7 +426,9 @@ export function buildHubSpotTools(ctx: HubSpotToolContext): {
       updateContact,
       createTask,
       createNote,
-      createTicket,
+      // Both of these are dropped rather than offered-and-broken when the
+      // portal cannot support them. See probeTicketsAvailable / fetchDealStages.
+      ...(ticketsAvailable ? [createTicket] : []),
       ...dealTools,
     ],
   };

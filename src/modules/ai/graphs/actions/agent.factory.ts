@@ -16,12 +16,16 @@ import { buildTools } from './tools.factory';
 import { CrmProvider } from '@/modules/crm/crm.constants';
 import {
   ZOHO_OBJECT_MODEL,
-  HUBSPOT_OBJECT_MODEL,
+  buildHubSpotObjectModel,
   type CrmObjectModel,
 } from './agent.prompt';
 import { Client } from '@hubspot/api-client';
 import { CryptoService } from '@/modules/auth/crypto.service';
-import { buildHubSpotTools, fetchDealStages } from './hubspot-tools.factory';
+import {
+  buildHubSpotTools,
+  fetchDealStages,
+  probeTicketsAvailable,
+} from './hubspot-tools.factory';
 
 @Injectable()
 export class AgentFactory {
@@ -32,6 +36,7 @@ export class AgentFactory {
     {
       readTools: StructuredTool[];
       writeTools: StructuredTool[];
+      objectModel: CrmObjectModel;
       provider: string;
       mcpUrl: string | null;
       cachedAt: number;
@@ -101,52 +106,41 @@ export class AgentFactory {
       );
     }
 
-    const cachedTools = this.getToolsFromCache(tenantId, connection);
-    if (cachedTools !== null) {
-      return cachedTools;
+    const cached = this.getToolsFromCache(tenantId, connection);
+    if (cached !== null) {
+      return cached;
     }
 
-    const { readTools, writeTools } = await this.buildToolsForProvider(
+    const built = await this.buildToolsForProvider(
       connection.provider,
       connection.mcpServerUrl,
       tenantId,
     );
 
     this.toolCache.set(tenantId, {
-      readTools,
-      writeTools,
+      ...built,
       provider: connection.provider,
       mcpUrl: connection.mcpServerUrl,
       cachedAt: Date.now(),
     });
 
-    return { readTools, writeTools };
+    return built;
   }
 
   /**
-   * The prompt half of the same branch. Kept beside `buildToolsForProvider` so
-   * a new CRM is one edit in one place: tools and object model together, never
-   * one without the other.
+   * The prompt half of the same build.
+   *
+   * This deliberately goes through `getToolsForTenant` rather than re-deriving
+   * the model from the provider name. On HubSpot the model depends on what the
+   * portal can actually do — a portal without Tickets gets a prompt that routes
+   * escalations to Notes — and deriving it separately would eventually let the
+   * prompt describe a tool that was not built.
    */
   public async getObjectModelForTenant(
     tenantId: string,
   ): Promise<CrmObjectModel> {
-    const connection = await this.prisma.crmAgentConnection.findUnique({
-      where: { tenantId },
-      select: { provider: true },
-    });
-
-    if (connection?.provider === (CrmProvider.Zoho as string)) {
-      return ZOHO_OBJECT_MODEL;
-    }
-
-    if (connection?.provider === (CrmProvider.HubSpot as string)) {
-      return HUBSPOT_OBJECT_MODEL;
-    }
-
-    throw new NotFoundException(
-      `No CRM object model for provider "${connection?.provider ?? 'none'}" (tenant: ${tenantId})`,
-    );
+    const { objectModel } = await this.getToolsForTenant(tenantId);
+    return objectModel;
   }
 
   private async buildToolsForProvider(
@@ -160,11 +154,20 @@ export class AgentFactory {
           `Zoho is connected for tenant ${tenantId} but carries no MCP server URL`,
         );
       }
-      return buildTools(await this.zohoPrimitives(mcpServerUrl));
+      return {
+        ...buildTools(await this.zohoPrimitives(mcpServerUrl)),
+        objectModel: ZOHO_OBJECT_MODEL,
+      };
     }
 
     if (provider === (CrmProvider.HubSpot as string)) {
-      return buildHubSpotTools(await this.hubSpotContext(tenantId));
+      const ctx = await this.hubSpotContext(tenantId);
+      return {
+        ...buildHubSpotTools(ctx),
+        objectModel: buildHubSpotObjectModel({
+          ticketsAvailable: ctx.ticketsAvailable,
+        }),
+      };
     }
 
     throw new NotFoundException(
@@ -209,6 +212,15 @@ export class AgentFactory {
 
     // Read once, cached with the tools. Deal stage ids are per-portal, so the
     // deal tool cannot be built without them.
+    // Both probes run once per cache fill, not per email.
+    const ticketsAvailable = await probeTicketsAvailable(client);
+    if (!ticketsAvailable) {
+      this.logger.warn(
+        `HubSpot portal for tenant ${tenantId} cannot use Tickets — ` +
+          'dropping createTicket and routing escalations to Notes.',
+      );
+    }
+
     let dealStages: Awaited<ReturnType<typeof fetchDealStages>> = [];
     try {
       dealStages = await fetchDealStages(client);
@@ -223,7 +235,7 @@ export class AgentFactory {
       );
     }
 
-    return { client, dealStages };
+    return { client, dealStages, ticketsAvailable };
   }
 
   private getInterruptOnConfig(
@@ -256,7 +268,11 @@ export class AgentFactory {
     const isSameProvider = cached?.provider === connection.provider;
 
     if (cached && isSameProvider && isUrlUnchanged && isFresh) {
-      return { readTools: cached.readTools, writeTools: cached.writeTools };
+      return {
+        readTools: cached.readTools,
+        writeTools: cached.writeTools,
+        objectModel: cached.objectModel,
+      };
     }
 
     return null;

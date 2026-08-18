@@ -34,11 +34,26 @@ export const ZOHO_OBJECT_MODEL: CrmObjectModel = {
 - If searchContacts returned ≥ 1 record for the sender email, createLead is also FORBIDDEN.`,
 };
 
-export const HUBSPOT_OBJECT_MODEL: CrmObjectModel = {
+/**
+ * HubSpot's object model, adjusted for what this particular portal can do.
+ *
+ * Tickets belong to Service Hub. On a portal without it the ticket tool is not
+ * built, so the prompt must not route escalations there either — otherwise the
+ * agent reasons its way to a tool that does not exist and either stalls or
+ * invents a substitute. Notes are the honest fallback: the escalation is still
+ * recorded against the contact, just not as a ticket.
+ */
+export const buildHubSpotObjectModel = (opts: {
+  ticketsAvailable: boolean;
+}): CrmObjectModel => ({
   categoryModules: `1. Identity & Contact Info (Who the person/company is) -> Contacts
 2. Work & Follow-up Items (Actionable tasks, requests, or deadlines) -> Tasks
 3. Financial Intent & Revenue Opportunities (License purchases, pipeline deals) -> Deals
-4. Issues & Escalations (Support tickets, disputes, complaints) -> Tickets
+4. Issues & Escalations (Support tickets, disputes, complaints) -> ${
+    opts.ticketsAvailable
+      ? 'Tickets'
+      : 'a Note on the Contact, clearly marked as an escalation. This portal has no Tickets — do not attempt to create one.'
+  }
 5. Context Worth Recording (Useful background with no immediate action or status change) -> Notes attached to the relevant Contact`,
 
   investigation: `call searchContacts with the sender email. If it returns 0 records, treat as a new prospect and stop. Hard cap: 1 read call total.`,
@@ -50,7 +65,7 @@ export const HUBSPOT_OBJECT_MODEL: CrmObjectModel = {
 - Every Deal, Ticket, Task, and Note you propose must carry the sender's contact_id when searchContacts found them. HubSpot does not infer the link: a record created without it is real but attached to nobody, and will not appear on the contact's timeline.`,
 
   duplicateRules: `- If searchContacts returned >= 1 record for the sender email, createContact is FORBIDDEN. Use updateContact on that record instead.`,
-};
+});
 
 export const buildSystemPrompt = (crm: CrmObjectModel): string => `
 <Role>

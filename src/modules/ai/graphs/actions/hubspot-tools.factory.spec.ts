@@ -4,6 +4,7 @@ import type { StructuredTool } from 'langchain';
 import {
   buildHubSpotTools,
   fetchDealStages,
+  probeTicketsAvailable,
   type HubSpotDealStage,
 } from './hubspot-tools.factory';
 
@@ -14,6 +15,7 @@ const mockTaskCreate = jest.fn();
 const mockNoteCreate = jest.fn();
 const mockTicketCreate = jest.fn();
 const mockDealCreate = jest.fn();
+const mockTicketGetPage = jest.fn();
 const mockPipelinesGetAll = jest.fn();
 
 function makeClient(): Client {
@@ -24,7 +26,9 @@ function makeClient(): Client {
         basicApi: { create: mockContactCreate, update: mockContactUpdate },
       },
       deals: { basicApi: { create: mockDealCreate } },
-      tickets: { basicApi: { create: mockTicketCreate } },
+      tickets: {
+        basicApi: { create: mockTicketCreate, getPage: mockTicketGetPage },
+      },
       objects: {
         tasks: { basicApi: { create: mockTaskCreate } },
         notes: { basicApi: { create: mockNoteCreate } },
@@ -50,6 +54,22 @@ function byName(tools: StructuredTool[], name: string): StructuredTool {
 }
 
 beforeEach(() => jest.clearAllMocks());
+
+describe('probeTicketsAvailable', () => {
+  it('is true when the portal answers', async () => {
+    mockTicketGetPage.mockResolvedValue({ results: [] });
+    await expect(probeTicketsAvailable(makeClient())).resolves.toBe(true);
+  });
+
+  it('is false when the portal refuses, without throwing', async () => {
+    mockTicketGetPage.mockRejectedValue(
+      Object.assign(new Error('scope not available for public use'), {
+        code: 403,
+      }),
+    );
+    await expect(probeTicketsAvailable(makeClient())).resolves.toBe(false);
+  });
+});
 
 describe('fetchDealStages', () => {
   it('flattens every pipeline into stages that remember which pipeline they came from', async () => {
@@ -87,6 +107,7 @@ describe('buildHubSpotTools — shape', () => {
     const { readTools, writeTools } = buildHubSpotTools({
       client: makeClient(),
       dealStages: STAGES,
+      ticketsAvailable: true,
     });
 
     expect(readTools.map((t) => t.name)).toEqual(['searchContacts']);
@@ -104,6 +125,7 @@ describe('buildHubSpotTools — shape', () => {
     const { writeTools } = buildHubSpotTools({
       client: makeClient(),
       dealStages: [],
+      ticketsAvailable: true,
     });
 
     expect(writeTools.map((t) => t.name)).not.toContain('createDeal');
@@ -111,10 +133,30 @@ describe('buildHubSpotTools — shape', () => {
     expect(writeTools).toHaveLength(5);
   });
 
+  it('drops createTicket on a portal that cannot use Tickets', () => {
+    const { writeTools } = buildHubSpotTools({
+      client: makeClient(),
+      dealStages: STAGES,
+      ticketsAvailable: false,
+    });
+
+    expect(writeTools.map((t) => t.name)).not.toContain('createTicket');
+    // Approving a ticket that then 403s is worse than never offering it: the
+    // SE believes the escalation was logged.
+    expect(writeTools.map((t) => t.name)).toEqual([
+      'createContact',
+      'updateContact',
+      'createTask',
+      'createNote',
+      'createDeal',
+    ]);
+  });
+
   it('never exposes a write tool without a summary field for the reviewer', () => {
     const { writeTools } = buildHubSpotTools({
       client: makeClient(),
       dealStages: STAGES,
+      ticketsAvailable: true,
     });
 
     for (const t of writeTools) {
@@ -129,6 +171,7 @@ describe('buildHubSpotTools — associations (the orphaned-record gap)', () => {
     const { writeTools } = buildHubSpotTools({
       client: makeClient(),
       dealStages: STAGES,
+      ticketsAvailable: true,
     });
 
     await byName(writeTools, 'createTask').invoke({
@@ -148,6 +191,7 @@ describe('buildHubSpotTools — associations (the orphaned-record gap)', () => {
     const { writeTools } = buildHubSpotTools({
       client: makeClient(),
       dealStages: STAGES,
+      ticketsAvailable: true,
     });
 
     await byName(writeTools, 'createTicket').invoke({
@@ -165,6 +209,7 @@ describe('buildHubSpotTools — associations (the orphaned-record gap)', () => {
     const { writeTools } = buildHubSpotTools({
       client: makeClient(),
       dealStages: STAGES,
+      ticketsAvailable: true,
     });
 
     await byName(writeTools, 'createDeal').invoke({
@@ -183,6 +228,7 @@ describe('buildHubSpotTools — associations (the orphaned-record gap)', () => {
     const { writeTools } = buildHubSpotTools({
       client: makeClient(),
       dealStages: STAGES,
+      ticketsAvailable: true,
     });
 
     await byName(writeTools, 'createTask').invoke({
@@ -201,6 +247,7 @@ describe('buildHubSpotTools — per-portal deal stages', () => {
     const { writeTools } = buildHubSpotTools({
       client: makeClient(),
       dealStages: STAGES,
+      ticketsAvailable: true,
     });
 
     await byName(writeTools, 'createDeal').invoke({
@@ -219,6 +266,7 @@ describe('buildHubSpotTools — per-portal deal stages', () => {
     const { writeTools } = buildHubSpotTools({
       client: makeClient(),
       dealStages: STAGES,
+      ticketsAvailable: true,
     });
 
     await expect(
@@ -236,6 +284,7 @@ describe('buildHubSpotTools — per-portal deal stages', () => {
     const { writeTools } = buildHubSpotTools({
       client: makeClient(),
       dealStages: STAGES,
+      ticketsAvailable: true,
     });
 
     await byName(writeTools, 'createDeal').invoke({
@@ -263,6 +312,7 @@ describe('buildHubSpotTools — contacts', () => {
     const { readTools } = buildHubSpotTools({
       client: makeClient(),
       dealStages: STAGES,
+      ticketsAvailable: true,
     });
 
     const out = await byName(readTools, 'searchContacts').invoke({
@@ -279,6 +329,7 @@ describe('buildHubSpotTools — contacts', () => {
     const { writeTools } = buildHubSpotTools({
       client: makeClient(),
       dealStages: STAGES,
+      ticketsAvailable: true,
     });
 
     await byName(writeTools, 'updateContact').invoke({
@@ -297,6 +348,7 @@ describe('buildHubSpotTools — contacts', () => {
     const { writeTools } = buildHubSpotTools({
       client: makeClient(),
       dealStages: STAGES,
+      ticketsAvailable: true,
     });
 
     await byName(writeTools, 'createContact').invoke({
