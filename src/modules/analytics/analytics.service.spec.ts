@@ -627,6 +627,7 @@ describe('AnalyticsService', () => {
     const mockClient = { id: 'c-1', name: 'Bob', company: 'Acme' };
     const mockInteraction = {
       id: 'int-1',
+      messageId: 'msg-1',
       date: new Date('2026-07-14T12:00:00Z'),
       type: 'email',
       subject: 'Hello',
@@ -636,6 +637,15 @@ describe('AnalyticsService', () => {
       recommendation: 'reply',
       client: mockClient,
     };
+
+    beforeEach(() => {
+      (prisma.allowlistEntry.findMany as jest.Mock).mockResolvedValue([
+        { email: 'se1@example.com' },
+      ]);
+      (prisma.generalAnalysis.findMany as jest.Mock).mockResolvedValue([
+        { messageId: 'msg-1' },
+      ]);
+    });
 
     it('returns activity feed mapped correctly with calendar date bounds (S4-V1)', async () => {
       (prisma.interaction.count as jest.Mock).mockResolvedValue(1);
@@ -653,6 +663,7 @@ describe('AnalyticsService', () => {
             lte: new Date(Date.UTC(2026, 6, 14, 23, 59, 59, 999)),
           },
           client: { tenantId: 'tenant-a' },
+          messageId: { in: ['msg-1'] },
         },
       });
 
@@ -663,6 +674,7 @@ describe('AnalyticsService', () => {
             lte: new Date(Date.UTC(2026, 6, 14, 23, 59, 59, 999)),
           },
           client: { tenantId: 'tenant-a' },
+          messageId: { in: ['msg-1'] },
         },
         include: { client: true },
         orderBy: { date: 'desc' },
@@ -705,6 +717,21 @@ describe('AnalyticsService', () => {
       expect(result.meta.totalPages).toBe(3);
     });
 
+    it('returns empty array when no SEs exist on allowlist', async () => {
+      (prisma.allowlistEntry.findMany as jest.Mock).mockResolvedValue([]);
+
+      const query = { page: 1, limit: 50, date: '2026-07-14' };
+      const result = await service.getActivityFeed('tenant-a', query);
+
+      expect(result.data).toEqual([]);
+      expect(result.meta).toEqual({
+        total: 0,
+        page: 1,
+        limit: 50,
+        totalPages: 0,
+      });
+    });
+
     it('returns empty array when no interactions match target date', async () => {
       (prisma.interaction.count as jest.Mock).mockResolvedValue(0);
       (prisma.interaction.findMany as jest.Mock).mockResolvedValue([]);
@@ -735,6 +762,7 @@ describe('AnalyticsService', () => {
             lte: new Date(Date.UTC(2026, 6, 14, 23, 59, 59, 999)),
           },
           client: { tenantId: 'tenant-b' },
+          messageId: { in: ['msg-1'] },
         },
       });
     });
@@ -804,8 +832,15 @@ describe('AnalyticsService', () => {
       });
 
       expect(prisma.connectedAccount.findMany).toHaveBeenCalledWith({
-        where: { tenantId: 'tenant-a' },
-        select: { email: true, lastLoginAt: true },
+        where: {
+          OR: [{ tenantId: 'tenant-a' }, { tenantId: null }],
+        },
+        select: {
+          email: true,
+          lastLoginAt: true,
+          createdAt: true,
+          status: true,
+        },
       });
 
       expect(prisma.generalAnalysis.groupBy).toHaveBeenCalledTimes(2);

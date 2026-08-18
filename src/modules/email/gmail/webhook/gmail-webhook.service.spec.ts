@@ -6,7 +6,7 @@ import { GmailWebhookService } from './gmail-webhook.service';
 
 type Handler = (p: { id: string; email: string }) => Promise<void>;
 
-function build(watchResult: unknown, watchThrows = false) {
+function build(watchResult: unknown, watchThrows = false, isAdmin = false) {
   const watch = watchThrows
     ? jest.fn().mockRejectedValue(new Error('watch failed'))
     : jest.fn().mockResolvedValue(watchResult);
@@ -15,8 +15,10 @@ function build(watchResult: unknown, watchThrows = false) {
   } as unknown as GmailClientFactory;
 
   const upsert = jest.fn().mockResolvedValue({});
+  const findUnique = jest.fn().mockResolvedValue({ isAdmin });
   const prisma = {
     webhookSubscription: { upsert },
+    connectedAccount: { findUnique },
   } as unknown as PrismaService;
 
   const config = {
@@ -27,11 +29,24 @@ function build(watchResult: unknown, watchThrows = false) {
   const trigger = (
     service as unknown as { handleGoogleAccountConnected: Handler }
   ).handleGoogleAccountConnected;
-  return { service, trigger: trigger.bind(service), upsert, watch };
+  return { service, trigger: trigger.bind(service), upsert, watch, findUnique };
 }
 
 describe('GmailWebhookService', () => {
-  it('seeds lastHistoryId on CREATE from the watch response historyId', async () => {
+  it('skips watch subscription for admin accounts (isAdmin: true)', async () => {
+    const { trigger, upsert, watch } = build(
+      { data: { expiration: '1893456000000', historyId: 12345 } },
+      false,
+      true, // isAdmin = true
+    );
+
+    await trigger({ id: 'acct-admin', email: 'admin@acme.com' });
+
+    expect(watch).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it('seeds lastHistoryId on CREATE from the watch response historyId for SE accounts', async () => {
     const { trigger, upsert } = build({
       data: { expiration: '1893456000000', historyId: 12345 },
     });

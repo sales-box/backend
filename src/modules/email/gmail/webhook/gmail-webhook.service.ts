@@ -22,6 +22,16 @@ export class GmailWebhookService {
     id: string;
     email: string;
   }): Promise<void> {
+    const account = await this.prisma.connectedAccount.findUnique({
+      where: { id: payload.id },
+      select: { isAdmin: true },
+    });
+    if (account?.isAdmin) {
+      this.logger.log(
+        `Skipping Gmail Pub/Sub watch subscription for admin account ${payload.email}`,
+      );
+      return;
+    }
     this.logger.log(
       `Detected new Google account connection for ${payload.email}. Initializing Pub/Sub...`,
     );
@@ -99,6 +109,17 @@ export class GmailWebhookService {
         this.logger.warn(
           `Skipping renewal for subscription ${sub.connectedAccountId}: no linked connected account email found.`,
         );
+        continue;
+      }
+      if (sub.connectedAccount.isAdmin) {
+        this.logger.log(
+          `Skipping subscription renewal for admin account ${sub.connectedAccount.email}; cleaning up subscription record`,
+        );
+        await this.prisma.webhookSubscription
+          .delete({
+            where: { id: sub.id },
+          })
+          .catch(() => {});
         continue;
       }
       try {

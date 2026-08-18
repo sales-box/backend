@@ -206,8 +206,15 @@ export class AnalyticsService {
             orderBy: { grantedAt: 'desc' },
           }),
           this.prisma.connectedAccount.findMany({
-            where: { tenantId },
-            select: { email: true, lastLoginAt: true },
+            where: {
+              OR: [{ tenantId }, { tenantId: null }],
+            },
+            select: {
+              email: true,
+              lastLoginAt: true,
+              createdAt: true,
+              status: true,
+            },
           }),
           // emailsReceived: every GeneralAnalysis row is scoped to a single
           // account+tenant at write time (classifier.processor.ts), so
@@ -227,30 +234,46 @@ export class AnalyticsService {
           }),
         ]);
 
-      // All three sources write lowercased/trimmed emails at their own write
-      // sites (AllowlistService.grantAccess, AuthService.upsertConnectedAccount,
-      // classifier.processor.ts's `account.email` which itself came from a
-      // ConnectedAccount row) — so a plain-string map key is safe here without
-      // re-normalizing.
-      const lastLoginByEmail = new Map(
-        connectedAccounts.map((a) => [a.email, a.lastLoginAt]),
+      const connectedByEmail = new Map(
+        connectedAccounts.map((a) => [a.email.toLowerCase().trim(), a]),
       );
       const receivedByEmail = new Map(
-        receivedGroups.map((g) => [g.accountEmail, g._count._all]),
+        receivedGroups.map((g) => [
+          g.accountEmail.toLowerCase().trim(),
+          g._count._all,
+        ]),
       );
       const sentByEmail = new Map(
-        sentGroups.map((g) => [g.accountEmail, g._count._all]),
+        sentGroups.map((g) => [
+          g.accountEmail.toLowerCase().trim(),
+          g._count._all,
+        ]),
       );
 
       return allowlistEntries.map((entry) => {
-        const emailsReceived = receivedByEmail.get(entry.email) ?? 0;
-        const repliesSent = sentByEmail.get(entry.email) ?? 0;
+        const key = entry.email.toLowerCase().trim();
+        const emailsReceived = receivedByEmail.get(key) ?? 0;
+        const repliesSent = sentByEmail.get(key) ?? 0;
+        const account = connectedByEmail.get(key);
+
+        const isConnected = !!(account && account.status !== 'revoked');
+        const lastLoginAt =
+          account?.lastLoginAt ?? (isConnected ? account.createdAt : null);
+
+        const status: 'granted' | 'verified' | 'revoked' =
+          entry.status === 'revoked'
+            ? 'revoked'
+            : isConnected || entry.verifiedAt || entry.status === 'verified'
+              ? 'verified'
+              : 'granted';
+
         return {
           email: entry.email,
-          status: entry.status,
+          status,
           grantedAt: entry.grantedAt,
-          verifiedAt: entry.verifiedAt,
-          lastLoginAt: lastLoginByEmail.get(entry.email) ?? null,
+          verifiedAt:
+            entry.verifiedAt ?? (status === 'verified' ? lastLoginAt : null),
+          lastLoginAt,
           emailsReceived,
           repliesSent,
           // Guard divide-by-zero explicitly rather than relying on NaN
@@ -557,17 +580,52 @@ export class AnalyticsService {
     const limit = query.limit ?? 50;
     const skip = (page - 1) * limit;
 
-    const where: Prisma.InteractionWhereInput = {
-      date: {
-        gte: start,
-        lte: end,
-      },
-      client: {
-        tenantId,
-      },
-    };
-
     try {
+      const allowlistEntries = await this.prisma.allowlistEntry.findMany({
+        where: {
+          tenantId,
+          status: { in: ['granted', 'verified'] },
+        },
+        select: { email: true },
+      });
+      const seEmails = allowlistEntries.map((e) =>
+        e.email.toLowerCase().trim(),
+      );
+
+      if (seEmails.length === 0) {
+        return {
+          data: [],
+          meta: {
+            total: 0,
+            page,
+            limit,
+            totalPages: 0,
+          },
+        };
+      }
+
+      const seAnalyses = await this.prisma.generalAnalysis.findMany({
+        where: {
+          tenantId,
+          accountEmail: { in: seEmails },
+        },
+        select: { messageId: true },
+      });
+      const seMessageIds = seAnalyses.map((a) => a.messageId);
+
+      const where: Prisma.InteractionWhereInput = {
+        date: {
+          gte: start,
+          lte: end,
+        },
+        client: {
+          tenantId,
+        },
+        messageId: {
+          in: seMessageIds,
+        },
+      };
+
       const [total, interactions] = await Promise.all([
         this.prisma.interaction.count({ where }),
         this.prisma.interaction.findMany({
@@ -605,6 +663,9 @@ export class AnalyticsService {
         },
       };
     } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
       this.logger.error('Failed to retrieve activity feed', error);
       throw new InternalServerErrorException(
         'Could not retrieve activity feed',
