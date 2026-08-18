@@ -580,17 +580,52 @@ export class AnalyticsService {
     const limit = query.limit ?? 50;
     const skip = (page - 1) * limit;
 
-    const where: Prisma.InteractionWhereInput = {
-      date: {
-        gte: start,
-        lte: end,
-      },
-      client: {
-        tenantId,
-      },
-    };
-
     try {
+      const allowlistEntries = await this.prisma.allowlistEntry.findMany({
+        where: {
+          tenantId,
+          status: { in: ['granted', 'verified'] },
+        },
+        select: { email: true },
+      });
+      const seEmails = allowlistEntries.map((e) =>
+        e.email.toLowerCase().trim(),
+      );
+
+      if (seEmails.length === 0) {
+        return {
+          data: [],
+          meta: {
+            total: 0,
+            page,
+            limit,
+            totalPages: 0,
+          },
+        };
+      }
+
+      const seAnalyses = await this.prisma.generalAnalysis.findMany({
+        where: {
+          tenantId,
+          accountEmail: { in: seEmails },
+        },
+        select: { messageId: true },
+      });
+      const seMessageIds = seAnalyses.map((a) => a.messageId);
+
+      const where: Prisma.InteractionWhereInput = {
+        date: {
+          gte: start,
+          lte: end,
+        },
+        client: {
+          tenantId,
+        },
+        messageId: {
+          in: seMessageIds,
+        },
+      };
+
       const [total, interactions] = await Promise.all([
         this.prisma.interaction.count({ where }),
         this.prisma.interaction.findMany({
@@ -628,6 +663,9 @@ export class AnalyticsService {
         },
       };
     } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
       this.logger.error('Failed to retrieve activity feed', error);
       throw new InternalServerErrorException(
         'Could not retrieve activity feed',
