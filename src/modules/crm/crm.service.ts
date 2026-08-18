@@ -14,6 +14,7 @@ import { CryptoService } from '../auth/crypto.service';
 import { CrmAdapterFactory } from './crm-adapter.factory';
 import { HubSpotAdapter } from './hubspot-crm.adapter';
 import { MockCrmAdapter } from './mock-crm.adapter';
+import { verifyZohoMcpServer } from './zoho-mcp.verify';
 import { ConnectCrmDto } from './dto/connect-crm.dto';
 import { ConnectZohoMcpDto } from './dto/connect-zoho-mcp.dto';
 import {
@@ -81,6 +82,20 @@ export class CrmService {
   }
 
   async connectZohoMcp(tenantId: string, body: ConnectZohoMcpDto) {
+    await this.assertNoOtherAgentCrm(tenantId, CrmProvider.Zoho);
+
+    // Verify before claiming success. This used to be a bare upsert that
+    // returned "connection established successfully" for any string at all,
+    // so a typo'd or expired URL looked connected until the first email came
+    // in and the agent failed with a 404 nobody could trace back to here.
+    try {
+      await verifyZohoMcpServer(body.mcpServerUrl);
+    } catch (error) {
+      throw new BadRequestException(
+        `Could not connect to Zoho: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
     const connection = await this.prisma.crmAgentConnection.upsert({
       where: { tenantId },
       create: {
@@ -112,6 +127,31 @@ export class CrmService {
     };
   }
 
+  /**
+   * One CRM per tenant, enforced rather than assumed.
+   *
+   * Nothing stopped a tenant connecting Zoho and HubSpot at once, and the agent
+   * would then write to whichever provider happened to be on the row — a
+   * silent coin toss over someone's CRM. Organisations use one or the other, so
+   * the second connection is refused and the fix is named.
+   */
+  private async assertNoOtherAgentCrm(
+    tenantId: string,
+    provider: CrmProvider,
+  ): Promise<void> {
+    const existing = await this.prisma.crmAgentConnection.findUnique({
+      where: { tenantId },
+      select: { provider: true },
+    });
+
+    if (existing && existing.provider !== (provider as string)) {
+      throw new BadRequestException(
+        `${existing.provider} is already connected as this workspace's CRM. ` +
+          `Disconnect it before connecting ${provider}.`,
+      );
+    }
+  }
+
   async connectCrm(tenantId: string, body: ConnectCrmDto) {
     let adapter: ICrmAdapter;
     if (body.provider === CrmProvider.HubSpot) {
@@ -123,6 +163,8 @@ export class CrmService {
         `Unsupported CRM provider: ${body.provider as string}`,
       );
     }
+
+    await this.assertNoOtherAgentCrm(tenantId, body.provider);
 
     let contacts: Array<{
       email: string;
@@ -153,6 +195,19 @@ export class CrmService {
         status: 'connected',
       },
     });
+
+    // Connecting means connected. The agent reads crm_agent_connections to
+    // learn which CRM to write to, and this flow never wrote to it — so a
+    // tenant could connect HubSpot in the dashboard, see "Connected", and
+    // still get "No CRM connection found" from the agent. Verification has
+    // already succeeded above, so this row is earned.
+    if (body.provider !== CrmProvider.Mock) {
+      await this.prisma.crmAgentConnection.upsert({
+        where: { tenantId },
+        create: { tenantId, provider: body.provider, mcpServerUrl: null },
+        update: { provider: body.provider, mcpServerUrl: null },
+      });
+    }
 
     let importedCount = 0;
     for (const contact of contacts) {
@@ -213,6 +268,12 @@ export class CrmService {
       }),
       this.prisma.crmConnection.delete({
         where: { tenantId },
+      }),
+      // The credential is gone, so the agent must stop pointing at it. Leaving
+      // the row behind would have the agent try to build tools from a
+      // connection that no longer exists.
+      this.prisma.crmAgentConnection.deleteMany({
+        where: { tenantId, provider: connection.provider },
       }),
     ]);
 

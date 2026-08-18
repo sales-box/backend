@@ -14,6 +14,18 @@ import {
 import { makeMockClient } from './crm.test-fixtures';
 import { BadRequestException } from '@nestjs/common';
 
+// connectCrm builds a real HubSpotAdapter and calls fetchContacts to verify the
+// credential. Without this the suite would reach hubapi.com on every run.
+jest.mock('./hubspot-crm.adapter', () => ({
+  HubSpotAdapter: jest.fn().mockImplementation(() => ({
+    fetchContacts: jest
+      .fn()
+      .mockResolvedValue([
+        { email: 'imported@example.com', name: 'Imported Person', crmId: '1' },
+      ]),
+  })),
+}));
+
 describe('CrmService', () => {
   let queue: { add: jest.Mock };
   let prisma: {
@@ -23,6 +35,11 @@ describe('CrmService', () => {
       delete: jest.Mock;
     };
     client: { deleteMany: jest.Mock; updateMany: jest.Mock };
+    crmAgentConnection: {
+      findUnique: jest.Mock;
+      upsert: jest.Mock;
+      deleteMany: jest.Mock;
+    };
     $transaction: jest.Mock;
   };
   let crypto: { encrypt: jest.Mock; decrypt: jest.Mock };
@@ -43,6 +60,11 @@ describe('CrmService', () => {
       client: {
         deleteMany: jest.fn(),
         updateMany: jest.fn(),
+      },
+      crmAgentConnection: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        upsert: jest.fn().mockResolvedValue({}),
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       // Execute the array of prisma operations, mirroring $transaction([...]).
       $transaction: jest.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
@@ -134,6 +156,78 @@ describe('CrmService', () => {
           apiKey: 'key',
         }),
       ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('connect means connected (phase 4) and one CRM per tenant (phase 5)', () => {
+    it('makes the connected provider the agent CRM, so the agent can find it', async () => {
+      prisma.crmConnection.upsert.mockResolvedValue({ status: 'connected' });
+
+      await service.connectCrm(tenantId, {
+        provider: CrmProvider.HubSpot,
+        apiKey: 'test-key',
+      });
+
+      expect(prisma.crmAgentConnection.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { tenantId },
+          update: { provider: CrmProvider.HubSpot, mcpServerUrl: null },
+        }),
+      );
+    });
+
+    it('does not make the mock provider the agent CRM', async () => {
+      prisma.crmConnection.upsert.mockResolvedValue({ status: 'connected' });
+
+      await service.connectCrm(tenantId, {
+        provider: CrmProvider.Mock,
+        apiKey: 'test-key',
+      });
+
+      expect(prisma.crmAgentConnection.upsert).not.toHaveBeenCalled();
+    });
+
+    it('refuses a second provider and names the way out', async () => {
+      prisma.crmAgentConnection.findUnique.mockResolvedValue({
+        provider: CrmProvider.Zoho,
+      });
+
+      await expect(
+        service.connectCrm(tenantId, {
+          provider: CrmProvider.HubSpot,
+          apiKey: 'test-key',
+        }),
+      ).rejects.toThrow(/zoho is already connected.*Disconnect it/i);
+    });
+
+    it('allows reconnecting the same provider', async () => {
+      prisma.crmAgentConnection.findUnique.mockResolvedValue({
+        provider: CrmProvider.HubSpot,
+      });
+      prisma.crmConnection.upsert.mockResolvedValue({ status: 'connected' });
+
+      await expect(
+        service.connectCrm(tenantId, {
+          provider: CrmProvider.HubSpot,
+          apiKey: 'new-key',
+        }),
+      ).resolves.toEqual(expect.objectContaining({ status: 'connected' }));
+    });
+
+    it('clears the agent CRM on disconnect so it never points at a dead credential', async () => {
+      prisma.crmConnection.findUnique.mockResolvedValue({
+        tenantId,
+        status: 'connected',
+        provider: CrmProvider.HubSpot,
+      });
+      prisma.client.updateMany.mockResolvedValue({ count: 0 });
+      prisma.crmConnection.delete.mockResolvedValue({ tenantId });
+
+      await service.disconnectCrm(tenantId);
+
+      expect(prisma.crmAgentConnection.deleteMany).toHaveBeenCalledWith({
+        where: { tenantId, provider: CrmProvider.HubSpot },
+      });
     });
   });
 
