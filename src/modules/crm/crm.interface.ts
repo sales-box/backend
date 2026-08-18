@@ -1,26 +1,19 @@
-import { ClientRecord } from '../clients/clients.interface';
-
-export interface NotePayload {
-  subject: string;
-  summary: string;
-  classification: string;
-  sentAt: string;
-}
-
+/**
+ * What the connect flow needs from a CRM, and nothing more.
+ *
+ * This used to carry syncContact / createOrUpdateDeal / logEngagementNote — a
+ * queue-driven write path that no caller ever reached. Writes now go through
+ * the actions agent, which the SE approves per action, so the adapters exist
+ * only to prove a credential works and to import the contact list once.
+ */
 export interface ICrmAdapter {
-  syncContact(client: ClientRecord): Promise<string>;
-
-  createOrUpdateDeal(
-    contactId: string,
-    classification: string,
-    subject: string,
-    company: string,
-  ): Promise<string>;
-
-  logEngagementNote(contactId: string, note: NotePayload): Promise<void>;
-
+  /** Look a contact up by email. Used to confirm a credential can read. */
   getContactByEmail(email: string): Promise<{ id: string } | null>;
 
+  /**
+   * The tenant's contacts, imported once at connect time. Doubles as the
+   * credential check: if this throws, the connection is not established.
+   */
   fetchContacts(): Promise<
     Array<{
       email: string;

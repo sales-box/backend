@@ -1,39 +1,45 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
-import { Queue } from 'bullmq';
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
 import { CrmService } from './crm.service';
 import { PrismaService } from '../../database/prisma.service';
 import { CryptoService } from '../auth/crypto.service';
-import { CrmAdapterFactory } from './crm-adapter.factory';
 import { ClientsService } from '../clients/clients.service';
-import {
-  SYNC_CONTACT_JOB,
-  CREATE_DEAL_JOB,
-  LOG_NOTE_JOB,
-  CrmProvider,
-} from './crm.constants';
-import { makeMockClient } from './crm.test-fixtures';
+import { CrmProvider } from './crm.constants';
 import { BadRequestException } from '@nestjs/common';
 
+// connectCrm builds a real HubSpotAdapter and calls fetchContacts to verify the
+// credential. Without this the suite would reach hubapi.com on every run.
+jest.mock('./hubspot-crm.adapter', () => ({
+  HubSpotAdapter: jest.fn().mockImplementation(() => ({
+    fetchContacts: jest
+      .fn()
+      .mockResolvedValue([
+        { email: 'imported@example.com', name: 'Imported Person', crmId: '1' },
+      ]),
+  })),
+}));
+
 describe('CrmService', () => {
-  let queue: { add: jest.Mock };
   let prisma: {
     crmConnection: {
       findUnique: jest.Mock;
       upsert: jest.Mock;
       delete: jest.Mock;
     };
-    client: { deleteMany: jest.Mock };
+    client: { deleteMany: jest.Mock; updateMany: jest.Mock };
+    crmAgentConnection: {
+      findUnique: jest.Mock;
+      upsert: jest.Mock;
+      deleteMany: jest.Mock;
+    };
     $transaction: jest.Mock;
   };
   let crypto: { encrypt: jest.Mock; decrypt: jest.Mock };
-  let factory: { getAdapterForTenant: jest.Mock };
   let clientsService: { getOrCreateClient: jest.Mock };
   let service: CrmService;
 
   const tenantId = 'tenant-123';
 
   beforeEach(() => {
-    queue = { add: jest.fn().mockResolvedValue({ id: 'job-1' }) };
     prisma = {
       crmConnection: {
         findUnique: jest.fn(),
@@ -42,6 +48,12 @@ describe('CrmService', () => {
       },
       client: {
         deleteMany: jest.fn(),
+        updateMany: jest.fn(),
+      },
+      crmAgentConnection: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        upsert: jest.fn().mockResolvedValue({}),
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       // Execute the array of prisma operations, mirroring $transaction([...]).
       $transaction: jest.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
@@ -50,18 +62,13 @@ describe('CrmService', () => {
       encrypt: jest.fn().mockReturnValue('encrypted-api-key'),
       decrypt: jest.fn().mockReturnValue('decrypted-api-key'),
     };
-    factory = {
-      getAdapterForTenant: jest.fn(),
-    };
     clientsService = {
       getOrCreateClient: jest.fn(),
     };
 
     service = new CrmService(
-      queue as unknown as Queue,
       prisma as unknown as PrismaService,
       crypto as unknown as CryptoService,
-      factory as unknown as CrmAdapterFactory,
       clientsService as unknown as ClientsService,
     );
   });
@@ -136,6 +143,78 @@ describe('CrmService', () => {
     });
   });
 
+  describe('connect means connected (phase 4) and one CRM per tenant (phase 5)', () => {
+    it('makes the connected provider the agent CRM, so the agent can find it', async () => {
+      prisma.crmConnection.upsert.mockResolvedValue({ status: 'connected' });
+
+      await service.connectCrm(tenantId, {
+        provider: CrmProvider.HubSpot,
+        apiKey: 'test-key',
+      });
+
+      expect(prisma.crmAgentConnection.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { tenantId },
+          update: { provider: CrmProvider.HubSpot, mcpServerUrl: null },
+        }),
+      );
+    });
+
+    it('does not make the mock provider the agent CRM', async () => {
+      prisma.crmConnection.upsert.mockResolvedValue({ status: 'connected' });
+
+      await service.connectCrm(tenantId, {
+        provider: CrmProvider.Mock,
+        apiKey: 'test-key',
+      });
+
+      expect(prisma.crmAgentConnection.upsert).not.toHaveBeenCalled();
+    });
+
+    it('refuses a second provider and names the way out', async () => {
+      prisma.crmAgentConnection.findUnique.mockResolvedValue({
+        provider: CrmProvider.Zoho,
+      });
+
+      await expect(
+        service.connectCrm(tenantId, {
+          provider: CrmProvider.HubSpot,
+          apiKey: 'test-key',
+        }),
+      ).rejects.toThrow(/zoho is already connected.*Disconnect it/i);
+    });
+
+    it('allows reconnecting the same provider', async () => {
+      prisma.crmAgentConnection.findUnique.mockResolvedValue({
+        provider: CrmProvider.HubSpot,
+      });
+      prisma.crmConnection.upsert.mockResolvedValue({ status: 'connected' });
+
+      await expect(
+        service.connectCrm(tenantId, {
+          provider: CrmProvider.HubSpot,
+          apiKey: 'new-key',
+        }),
+      ).resolves.toEqual(expect.objectContaining({ status: 'connected' }));
+    });
+
+    it('clears the agent CRM on disconnect so it never points at a dead credential', async () => {
+      prisma.crmConnection.findUnique.mockResolvedValue({
+        tenantId,
+        status: 'connected',
+        provider: CrmProvider.HubSpot,
+      });
+      prisma.client.updateMany.mockResolvedValue({ count: 0 });
+      prisma.crmConnection.delete.mockResolvedValue({ tenantId });
+
+      await service.disconnectCrm(tenantId);
+
+      expect(prisma.crmAgentConnection.deleteMany).toHaveBeenCalledWith({
+        where: { tenantId, provider: CrmProvider.HubSpot },
+      });
+    });
+  });
+
   describe('disconnectCrm', () => {
     it('is idempotent — no connection means nothing to remove', async () => {
       prisma.crmConnection.findUnique.mockResolvedValue(null);
@@ -151,92 +230,58 @@ describe('CrmService', () => {
       expect(prisma.crmConnection.delete).not.toHaveBeenCalled();
     });
 
-    it('deletes the connection and CRM-imported clients in one transaction', async () => {
+    it('never deletes a client — Interaction cascades, so a delete here destroys the history', async () => {
       prisma.crmConnection.findUnique.mockResolvedValue({
         tenantId,
         status: 'connected',
       });
-      prisma.client.deleteMany.mockResolvedValue({ count: 3 });
+      prisma.client.updateMany.mockResolvedValue({ count: 2 });
+      prisma.crmConnection.delete.mockResolvedValue({ tenantId });
+
+      await service.disconnectCrm(tenantId);
+
+      expect(prisma.client.deleteMany).not.toHaveBeenCalled();
+    });
+
+    it('leaves locally-created clients alone — they never had a crmId to clear', async () => {
+      prisma.crmConnection.findUnique.mockResolvedValue({
+        tenantId,
+        status: 'connected',
+      });
+      prisma.client.updateMany.mockResolvedValue({ count: 0 });
+      prisma.crmConnection.delete.mockResolvedValue({ tenantId });
+
+      await service.disconnectCrm(tenantId);
+
+      expect(prisma.client.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { tenantId, crmId: { not: null } } }),
+      );
+    });
+
+    it('deletes the connection and unlinks CRM-imported clients in one transaction', async () => {
+      prisma.crmConnection.findUnique.mockResolvedValue({
+        tenantId,
+        status: 'connected',
+      });
+      prisma.client.updateMany.mockResolvedValue({ count: 3 });
       prisma.crmConnection.delete.mockResolvedValue({ tenantId });
 
       const result = await service.disconnectCrm(tenantId);
 
       expect(result).toEqual({
-        message: 'CRM disconnected — removed 3 imported clients.',
+        message: 'CRM disconnected — 3 clients kept with their history.',
         removedClients: 3,
         status: 'disconnected',
       });
-      // Only CRM-sourced clients (crmId set) are removed.
-      expect(prisma.client.deleteMany).toHaveBeenCalledWith({
+      // Only CRM-sourced clients (crmId set) are touched.
+      expect(prisma.client.updateMany).toHaveBeenCalledWith({
         where: { tenantId, crmId: { not: null } },
+        data: { crmId: null },
       });
       expect(prisma.crmConnection.delete).toHaveBeenCalledWith({
         where: { tenantId },
       });
       expect(prisma.$transaction).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe('enqueueContactSync', () => {
-    it('adds a sync-contact job carrying the client and tenantId', async () => {
-      const client = makeMockClient();
-      await service.enqueueContactSync(tenantId, client);
-
-      expect(queue.add).toHaveBeenCalledTimes(1);
-      const [jobName, data] = queue.add.mock.calls[0];
-      expect(jobName).toBe(SYNC_CONTACT_JOB);
-      expect(data).toEqual({ tenantId, client });
-    });
-
-    it('configures 3 attempts with exponential backoff', async () => {
-      await service.enqueueContactSync(tenantId, makeMockClient());
-
-      const opts = queue.add.mock.calls[0][2];
-      expect(opts.attempts).toBe(3);
-      expect(opts.backoff).toEqual({ type: 'exponential', delay: 1000 });
-      expect(opts.removeOnFail).toBe(false);
-    });
-  });
-
-  describe('enqueueDealSync', () => {
-    it('adds a create-deal job with contact, tenantId and deal data', async () => {
-      await service.enqueueDealSync(
-        tenantId,
-        'c-1',
-        'jane@acme.com',
-        'product_inquiry',
-        'Pricing',
-        'Acme',
-      );
-
-      expect(queue.add).toHaveBeenCalledTimes(1);
-      const [jobName, data] = queue.add.mock.calls[0];
-      expect(jobName).toBe(CREATE_DEAL_JOB);
-      expect(data).toEqual({
-        tenantId,
-        contactId: 'c-1',
-        email: 'jane@acme.com',
-        classification: 'product_inquiry',
-        subject: 'Pricing',
-        company: 'Acme',
-      });
-    });
-  });
-
-  describe('enqueueEngagementNote', () => {
-    it('adds a log-note job with contact, tenantId and note payload', async () => {
-      const note = {
-        subject: 'Hello',
-        summary: 'Test email',
-        classification: 'product_inquiry',
-        sentAt: '2026-07-09T00:00:00Z',
-      };
-      await service.enqueueEngagementNote(tenantId, 'c-1', note);
-
-      expect(queue.add).toHaveBeenCalledTimes(1);
-      const [jobName, data] = queue.add.mock.calls[0];
-      expect(jobName).toBe(LOG_NOTE_JOB);
-      expect(data).toEqual({ tenantId, contactId: 'c-1', note });
     });
   });
 });

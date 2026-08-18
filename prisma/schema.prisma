@@ -70,15 +70,25 @@ model CrmConnection {
   @@map("crm_connections")
 }
 
-model ZohoMcpConnection {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId     String   @unique @map("tenant_id") @db.Uuid
-  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  mcpServerUrl String   @map("mcp_server_url")
+/// Which CRM this tenant's action agent writes to, and how to reach it.
+///
+/// Was `ZohoMcpConnection`. Renamed when HubSpot gained write access: the agent
+/// stack is provider-neutral, and a table named after one provider made it look
+/// otherwise. One row per tenant — an organisation uses exactly one CRM.
+model CrmAgentConnection {
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @unique @map("tenant_id") @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// 'zoho' | 'hubspot'. Defaults to zoho so existing rows keep working.
+  provider String @default("zoho")
+  /// Only providers reached over MCP carry a URL. HubSpot authenticates with the
+  /// private app token already held (encrypted) on CrmConnection, so this is null
+  /// for it — hence nullable.
+  mcpServerUrl String?  @map("mcp_server_url")
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  @@map("zoho_mcp_connections")
+  @@map("crm_agent_connections")
 }
 
 model ConnectedAccount {
@@ -306,7 +316,7 @@ model Tenant {
   driveConnections  DriveConnection[]
   knowledgeGaps     KnowledgeGap[]
   allowlistEntries  AllowlistEntry[]
-  zohoMcpConnection ZohoMcpConnection?
+  crmAgentConnection CrmAgentConnection?
 
   @@map("tenants")
 }
