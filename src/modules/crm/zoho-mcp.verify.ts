@@ -1,4 +1,7 @@
+import { Logger } from '@nestjs/common';
 import { MultiServerMCPClient } from '@langchain/mcp-adapters';
+
+const logger = new Logger('ZohoMcpVerify');
 
 /**
  * The three primitives every CRM tool for Zoho is built from.
@@ -32,10 +35,21 @@ export async function verifyZohoMcpServer(mcpServerUrl: string): Promise<void> {
     const tools = await client.getTools();
     toolNames = tools.map((t) => t.name);
   } catch (error) {
-    throw new Error(
-      `could not reach the Zoho MCP server — ${
+    // The raw failure is worth keeping, but not worth showing. The MCP client
+    // reports a transport error that embeds the entire HTTP response — for a
+    // URL that answers with a web page, that is the page's HTML. Pasting that
+    // into a toast tells the tenant nothing and buries the one sentence that
+    // would help. It goes to the log; they get the sentence.
+    logger.warn(
+      `Zoho MCP verification failed for ${mcpServerUrl}: ${
         error instanceof Error ? error.message : String(error)
-      }. Check the URL is the presigned one Zoho gave you and that it has not expired.`,
+      }`,
+    );
+
+    throw new Error(
+      'no Zoho MCP server answered at that address. ' +
+        'Paste the presigned URL exactly as Zoho generated it — these expire, ' +
+        'so generate a fresh one if yours is old.',
     );
   }
 
