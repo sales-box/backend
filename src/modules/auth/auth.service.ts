@@ -147,9 +147,12 @@ export class AuthService {
     // tenant association exists) a plain email lookup is the only option —
     // the row gains a tenantId later when setAdminPassword links identities.
     const existing = tenantId
-      ? await this.prisma.connectedAccount.findUnique({
+      ? ((await this.prisma.connectedAccount.findUnique({
           where: { tenantId_email: { tenantId, email } },
-        })
+        })) ??
+        (await this.prisma.connectedAccount.findFirst({
+          where: { email, tenantId: null },
+        })))
       : await this.prisma.connectedAccount.findFirst({
           where: { email },
         });

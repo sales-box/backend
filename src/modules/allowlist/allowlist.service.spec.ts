@@ -76,15 +76,23 @@ describe('AllowlistService', () => {
       expect(result).toEqual({ tenantId: 't1' });
     });
 
-    it('does not re-update an already verified entry, still returns its tenant', async () => {
+    it('filters by tenantId when tenantId parameter is supplied', async () => {
       prisma.allowlistEntry.findFirst.mockResolvedValue({
-        id: 'e1',
-        status: 'verified',
-        tenantId: 't1',
+        id: 'e2',
+        status: 'granted',
+        tenantId: 't2',
       });
-      const result = await service.verifyAccess('se@acme.com');
-      expect(prisma.allowlistEntry.update).not.toHaveBeenCalled();
-      expect(result).toEqual({ tenantId: 't1' });
+      const result = await service.verifyAccess('se@acme.com', 't2');
+
+      expect(prisma.allowlistEntry.findFirst).toHaveBeenCalledWith({
+        where: {
+          email: { equals: 'se@acme.com', mode: 'insensitive' },
+          status: { in: ['granted', 'verified'] },
+          tenantId: 't2',
+        },
+        orderBy: { grantedAt: 'desc' },
+      });
+      expect(result).toEqual({ tenantId: 't2' });
     });
   });
 
