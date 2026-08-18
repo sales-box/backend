@@ -24,6 +24,7 @@ import { CryptoService } from '@/modules/auth/crypto.service';
 import {
   buildHubSpotTools,
   fetchDealStages,
+  fetchSoleOwnerId,
   probeTicketsAvailable,
 } from './hubspot-tools.factory';
 
@@ -212,8 +213,11 @@ export class AgentFactory {
 
     // Read once, cached with the tools. Deal stage ids are per-portal, so the
     // deal tool cannot be built without them.
-    // Both probes run once per cache fill, not per email.
-    const ticketsAvailable = await probeTicketsAvailable(client);
+    // These probes run once per cache fill, not per email.
+    const [ticketsAvailable, defaultOwnerId] = await Promise.all([
+      probeTicketsAvailable(client),
+      fetchSoleOwnerId(client),
+    ]);
     if (!ticketsAvailable) {
       this.logger.warn(
         `HubSpot portal for tenant ${tenantId} cannot use Tickets — ` +
@@ -235,7 +239,7 @@ export class AgentFactory {
       );
     }
 
-    return { client, dealStages, ticketsAvailable };
+    return { client, dealStages, ticketsAvailable, defaultOwnerId };
   }
 
   private getInterruptOnConfig(

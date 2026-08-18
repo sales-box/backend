@@ -29,6 +29,12 @@ export interface HubSpotToolContext {
   dealStages: HubSpotDealStage[];
   /** False when this portal cannot use Tickets. Removes the ticket tool. */
   ticketsAvailable: boolean;
+  /**
+   * Who to assign work to when the contact has no owner of its own. Null on a
+   * portal with several owners, where guessing would put the task on the wrong
+   * person's list.
+   */
+  defaultOwnerId: string | null;
 }
 
 const CONTACT_PROPERTIES = ['email', 'firstname', 'lastname', 'company'];
@@ -61,6 +67,29 @@ export async function fetchDealStages(
       pipelineId: pipeline.id,
     })),
   );
+}
+
+/**
+ * The one owner to fall back on, when there is exactly one.
+ *
+ * A task with no owner is created and associated correctly, but HubSpot's task
+ * list is filtered to "assigned to me" by default, so it appears in nobody's
+ * queue. On a single-user portal the right owner is unambiguous. With several
+ * owners it is not, and picking one would quietly route work to the wrong
+ * person — worse than leaving it unassigned, so we return null and the task is
+ * created without an owner exactly as before.
+ */
+export async function fetchSoleOwnerId(client: Client): Promise<string | null> {
+  try {
+    const { results } = await client.crm.owners.ownersApi.getPage(
+      undefined,
+      undefined,
+      2,
+    );
+    return results.length === 1 ? results[0].id : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -108,7 +137,7 @@ export function buildHubSpotTools(ctx: HubSpotToolContext): {
   readTools: StructuredTool[];
   writeTools: StructuredTool[];
 } {
-  const { client, dealStages, ticketsAvailable } = ctx;
+  const { client, dealStages, ticketsAvailable, defaultOwnerId } = ctx;
 
   const SUMMARY = z
     .string()
@@ -130,6 +159,29 @@ export function buildHubSpotTools(ctx: HubSpotToolContext): {
       ],
     },
   ];
+
+  /**
+   * Whose queue this task belongs in: the contact's own owner if they have one,
+   * otherwise the portal's single owner. An unowned task is invisible in the
+   * default "assigned to me" task view, so it gets created and then never
+   * worked on.
+   */
+  const resolveTaskOwner = async (
+    contactId?: string,
+  ): Promise<string | null> => {
+    if (contactId) {
+      try {
+        const contact = await client.crm.contacts.basicApi.getById(contactId, [
+          'hubspot_owner_id',
+        ]);
+        const owner = contact.properties.hubspot_owner_id;
+        if (owner) return owner;
+      } catch {
+        // The contact read is a nicety; never fail the write over it.
+      }
+    }
+    return defaultOwnerId;
+  };
 
   const searchContacts = tool(
     async ({ email }): Promise<unknown> => {
@@ -249,6 +301,8 @@ export function buildHubSpotTools(ctx: HubSpotToolContext): {
       priority,
       body,
     }): Promise<unknown> => {
+      const ownerId = await resolveTaskOwner(contact_id);
+
       const created = await client.crm.objects.tasks.basicApi.create({
         properties: {
           hs_task_subject: subject,
@@ -257,6 +311,7 @@ export function buildHubSpotTools(ctx: HubSpotToolContext): {
           hs_timestamp: new Date(`${due_date}T09:00:00Z`).toISOString(),
           ...(priority ? { hs_task_priority: priority } : {}),
           ...(body ? { hs_task_body: body } : {}),
+          ...(ownerId ? { hubspot_owner_id: ownerId } : {}),
         },
         associations: contact_id
           ? toContact(contact_id, AssociationTypes.taskToContact)
@@ -411,7 +466,12 @@ export function buildHubSpotTools(ctx: HubSpotToolContext): {
             dealname,
             dealstage: stage.id,
             pipeline: stage.pipelineId,
-            ...(amount !== undefined ? { amount: String(amount) } : {}),
+            // Zero is not a price, it is a missing price. HubSpot sums amount
+            // across the pipeline, so writing "0" reports a real opportunity as
+            // worth nothing; leaving it unset reports it as not yet valued.
+            ...(amount !== undefined && amount > 0
+              ? { amount: String(amount) }
+              : {}),
             ...(closedate
               ? { closedate: new Date(`${closedate}T00:00:00Z`).toISOString() }
               : {}),

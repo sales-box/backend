@@ -4,6 +4,7 @@ import type { StructuredTool } from 'langchain';
 import {
   buildHubSpotTools,
   fetchDealStages,
+  fetchSoleOwnerId,
   probeTicketsAvailable,
   type HubSpotDealStage,
 } from './hubspot-tools.factory';
@@ -16,6 +17,8 @@ const mockNoteCreate = jest.fn();
 const mockTicketCreate = jest.fn();
 const mockDealCreate = jest.fn();
 const mockTicketGetPage = jest.fn();
+const mockContactGetById = jest.fn();
+const mockOwnersGetPage = jest.fn();
 const mockPipelinesGetAll = jest.fn();
 
 function makeClient(): Client {
@@ -23,7 +26,11 @@ function makeClient(): Client {
     crm: {
       contacts: {
         searchApi: { doSearch: mockContactSearch },
-        basicApi: { create: mockContactCreate, update: mockContactUpdate },
+        basicApi: {
+          create: mockContactCreate,
+          update: mockContactUpdate,
+          getById: mockContactGetById,
+        },
       },
       deals: { basicApi: { create: mockDealCreate } },
       tickets: {
@@ -34,6 +41,7 @@ function makeClient(): Client {
         notes: { basicApi: { create: mockNoteCreate } },
       },
       pipelines: { pipelinesApi: { getAll: mockPipelinesGetAll } },
+      owners: { ownersApi: { getPage: mockOwnersGetPage } },
     },
   } as unknown as Client;
 }
@@ -108,6 +116,7 @@ describe('buildHubSpotTools — shape', () => {
       client: makeClient(),
       dealStages: STAGES,
       ticketsAvailable: true,
+      defaultOwnerId: null,
     });
 
     expect(readTools.map((t) => t.name)).toEqual(['searchContacts']);
@@ -126,6 +135,7 @@ describe('buildHubSpotTools — shape', () => {
       client: makeClient(),
       dealStages: [],
       ticketsAvailable: true,
+      defaultOwnerId: null,
     });
 
     expect(writeTools.map((t) => t.name)).not.toContain('createDeal');
@@ -138,6 +148,7 @@ describe('buildHubSpotTools — shape', () => {
       client: makeClient(),
       dealStages: STAGES,
       ticketsAvailable: false,
+      defaultOwnerId: null,
     });
 
     expect(writeTools.map((t) => t.name)).not.toContain('createTicket');
@@ -157,6 +168,7 @@ describe('buildHubSpotTools — shape', () => {
       client: makeClient(),
       dealStages: STAGES,
       ticketsAvailable: true,
+      defaultOwnerId: null,
     });
 
     for (const t of writeTools) {
@@ -172,6 +184,7 @@ describe('buildHubSpotTools — associations (the orphaned-record gap)', () => {
       client: makeClient(),
       dealStages: STAGES,
       ticketsAvailable: true,
+      defaultOwnerId: null,
     });
 
     await byName(writeTools, 'createTask').invoke({
@@ -192,6 +205,7 @@ describe('buildHubSpotTools — associations (the orphaned-record gap)', () => {
       client: makeClient(),
       dealStages: STAGES,
       ticketsAvailable: true,
+      defaultOwnerId: null,
     });
 
     await byName(writeTools, 'createTicket').invoke({
@@ -210,6 +224,7 @@ describe('buildHubSpotTools — associations (the orphaned-record gap)', () => {
       client: makeClient(),
       dealStages: STAGES,
       ticketsAvailable: true,
+      defaultOwnerId: null,
     });
 
     await byName(writeTools, 'createDeal').invoke({
@@ -229,6 +244,7 @@ describe('buildHubSpotTools — associations (the orphaned-record gap)', () => {
       client: makeClient(),
       dealStages: STAGES,
       ticketsAvailable: true,
+      defaultOwnerId: null,
     });
 
     await byName(writeTools, 'createTask').invoke({
@@ -248,6 +264,7 @@ describe('buildHubSpotTools — per-portal deal stages', () => {
       client: makeClient(),
       dealStages: STAGES,
       ticketsAvailable: true,
+      defaultOwnerId: null,
     });
 
     await byName(writeTools, 'createDeal').invoke({
@@ -267,6 +284,7 @@ describe('buildHubSpotTools — per-portal deal stages', () => {
       client: makeClient(),
       dealStages: STAGES,
       ticketsAvailable: true,
+      defaultOwnerId: null,
     });
 
     await expect(
@@ -279,12 +297,36 @@ describe('buildHubSpotTools — per-portal deal stages', () => {
     expect(mockDealCreate).not.toHaveBeenCalled();
   });
 
+  it('treats a zero amount as unknown rather than writing a worthless deal', async () => {
+    // HubSpot sums amount across the pipeline. "0" reports a real opportunity
+    // as worth nothing; unset reports it as not yet valued.
+    mockDealCreate.mockResolvedValue({ id: 'deal-4' });
+    const { writeTools } = buildHubSpotTools({
+      client: makeClient(),
+      dealStages: STAGES,
+      ticketsAvailable: true,
+      defaultOwnerId: null,
+    });
+
+    await byName(writeTools, 'createDeal').invoke({
+      dealname: 'Early stage enquiry',
+      dealstage: 'appointmentscheduled',
+      amount: 0,
+      summary: 'Open the opportunity.',
+    });
+
+    expect(mockDealCreate.mock.calls[0][0].properties).not.toHaveProperty(
+      'amount',
+    );
+  });
+
   it('does not invent an amount that the email never stated', async () => {
     mockDealCreate.mockResolvedValue({ id: 'deal-3' });
     const { writeTools } = buildHubSpotTools({
       client: makeClient(),
       dealStages: STAGES,
       ticketsAvailable: true,
+      defaultOwnerId: null,
     });
 
     await byName(writeTools, 'createDeal').invoke({
@@ -295,6 +337,116 @@ describe('buildHubSpotTools — per-portal deal stages', () => {
 
     expect(mockDealCreate.mock.calls[0][0].properties).not.toHaveProperty(
       'amount',
+    );
+  });
+});
+
+describe('fetchSoleOwnerId', () => {
+  it('returns the id when the portal has exactly one owner', async () => {
+    mockOwnersGetPage.mockResolvedValue({ results: [{ id: '95826980' }] });
+    await expect(fetchSoleOwnerId(makeClient())).resolves.toBe('95826980');
+  });
+
+  it('returns null when several owners exist — guessing routes work to the wrong person', async () => {
+    mockOwnersGetPage.mockResolvedValue({
+      results: [{ id: '1' }, { id: '2' }],
+    });
+    await expect(fetchSoleOwnerId(makeClient())).resolves.toBeNull();
+  });
+
+  it('returns null instead of throwing when owners cannot be read', async () => {
+    mockOwnersGetPage.mockRejectedValue(new Error('403'));
+    await expect(fetchSoleOwnerId(makeClient())).resolves.toBeNull();
+  });
+});
+
+describe('buildHubSpotTools — task ownership', () => {
+  it("prefers the contact's own owner", async () => {
+    mockTaskCreate.mockResolvedValue({ id: 'task-5' });
+    mockContactGetById.mockResolvedValue({
+      properties: { hubspot_owner_id: 'owner-of-contact' },
+    });
+    const { writeTools } = buildHubSpotTools({
+      client: makeClient(),
+      dealStages: STAGES,
+      ticketsAvailable: true,
+      defaultOwnerId: 'sole-owner',
+    });
+
+    await byName(writeTools, 'createTask').invoke({
+      subject: 'x',
+      due_date: '2026-08-27',
+      contact_id: 'contact-9',
+      summary: 's',
+    });
+
+    expect(mockTaskCreate.mock.calls[0][0].properties.hubspot_owner_id).toBe(
+      'owner-of-contact',
+    );
+  });
+
+  it('falls back to the portal owner when the contact has none', async () => {
+    mockTaskCreate.mockResolvedValue({ id: 'task-6' });
+    mockContactGetById.mockResolvedValue({ properties: {} });
+    const { writeTools } = buildHubSpotTools({
+      client: makeClient(),
+      dealStages: STAGES,
+      ticketsAvailable: true,
+      defaultOwnerId: 'sole-owner',
+    });
+
+    await byName(writeTools, 'createTask').invoke({
+      subject: 'x',
+      due_date: '2026-08-27',
+      contact_id: 'contact-9',
+      summary: 's',
+    });
+
+    expect(mockTaskCreate.mock.calls[0][0].properties.hubspot_owner_id).toBe(
+      'sole-owner',
+    );
+  });
+
+  it('leaves the task unowned when there is no defensible owner', async () => {
+    mockTaskCreate.mockResolvedValue({ id: 'task-7' });
+    const { writeTools } = buildHubSpotTools({
+      client: makeClient(),
+      dealStages: STAGES,
+      ticketsAvailable: true,
+      defaultOwnerId: null,
+    });
+
+    await byName(writeTools, 'createTask').invoke({
+      subject: 'x',
+      due_date: '2026-08-27',
+      summary: 's',
+    });
+
+    expect(mockTaskCreate.mock.calls[0][0].properties).not.toHaveProperty(
+      'hubspot_owner_id',
+    );
+  });
+
+  it('still creates the task when the contact lookup fails', async () => {
+    mockTaskCreate.mockResolvedValue({ id: 'task-8' });
+    mockContactGetById.mockRejectedValue(new Error('boom'));
+    const { writeTools } = buildHubSpotTools({
+      client: makeClient(),
+      dealStages: STAGES,
+      ticketsAvailable: true,
+      defaultOwnerId: 'sole-owner',
+    });
+
+    await byName(writeTools, 'createTask').invoke({
+      subject: 'x',
+      due_date: '2026-08-27',
+      contact_id: 'contact-9',
+      summary: 's',
+    });
+
+    expect(mockTaskCreate).toHaveBeenCalled();
+    expect(mockTaskCreate.mock.calls[0][0].properties.hubspot_owner_id).toBe(
+      'sole-owner',
     );
   });
 });
@@ -313,6 +465,7 @@ describe('buildHubSpotTools — contacts', () => {
       client: makeClient(),
       dealStages: STAGES,
       ticketsAvailable: true,
+      defaultOwnerId: null,
     });
 
     const out = await byName(readTools, 'searchContacts').invoke({
@@ -331,6 +484,7 @@ describe('buildHubSpotTools — contacts', () => {
       client: makeClient(),
       dealStages: STAGES,
       ticketsAvailable: true,
+      defaultOwnerId: null,
     });
 
     await byName(writeTools, 'updateContact').invoke({
@@ -350,6 +504,7 @@ describe('buildHubSpotTools — contacts', () => {
       client: makeClient(),
       dealStages: STAGES,
       ticketsAvailable: true,
+      defaultOwnerId: null,
     });
 
     await byName(writeTools, 'createContact').invoke({
