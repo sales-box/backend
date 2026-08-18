@@ -192,9 +192,24 @@ export class CrmService {
         status: 'disconnected',
       };
     }
-    const [removed] = await this.prisma.$transaction([
-      this.prisma.client.deleteMany({
+    // Unlink, do not delete.
+    //
+    // This used to be `client.deleteMany({ crmId: { not: null } })`, and
+    // Interaction cascades on Client, so disconnecting a CRM destroyed every
+    // conversation we had ever recorded with those people. That history is
+    // ours — it is built from the tenant's own mail, and the CRM only ever
+    // supplied the name and email to hang it on. Deleting it silently reset
+    // clientHistoryConfidence to the floor and degraded reply routing with no
+    // explanation. Observed live: a disconnect/reconnect took a client from
+    // five logged interactions to zero.
+    //
+    // Clearing crmId leaves the client as a locally-owned record with its
+    // history intact. Reconnecting re-matches by email in getOrCreateClient
+    // and puts the crmId back on the same row.
+    const [unlinked] = await this.prisma.$transaction([
+      this.prisma.client.updateMany({
         where: { tenantId, crmId: { not: null } },
+        data: { crmId: null },
       }),
       this.prisma.crmConnection.delete({
         where: { tenantId },
@@ -202,12 +217,12 @@ export class CrmService {
     ]);
 
     this.logger.log(
-      `Disconnected CRM for tenant ${tenantId} — removed ${removed.count} imported client(s)`,
+      `Disconnected CRM for tenant ${tenantId} — unlinked ${unlinked.count} client(s), history kept`,
     );
 
     return {
-      message: `CRM disconnected — removed ${removed.count} imported clients.`,
-      removedClients: removed.count,
+      message: `CRM disconnected — ${unlinked.count} clients kept with their history.`,
+      removedClients: unlinked.count,
       status: 'disconnected',
     };
   }

@@ -22,7 +22,7 @@ describe('CrmService', () => {
       upsert: jest.Mock;
       delete: jest.Mock;
     };
-    client: { deleteMany: jest.Mock };
+    client: { deleteMany: jest.Mock; updateMany: jest.Mock };
     $transaction: jest.Mock;
   };
   let crypto: { encrypt: jest.Mock; decrypt: jest.Mock };
@@ -42,6 +42,7 @@ describe('CrmService', () => {
       },
       client: {
         deleteMany: jest.fn(),
+        updateMany: jest.fn(),
       },
       // Execute the array of prisma operations, mirroring $transaction([...]).
       $transaction: jest.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
@@ -151,24 +152,53 @@ describe('CrmService', () => {
       expect(prisma.crmConnection.delete).not.toHaveBeenCalled();
     });
 
-    it('deletes the connection and CRM-imported clients in one transaction', async () => {
+    it('never deletes a client — Interaction cascades, so a delete here destroys the history', async () => {
       prisma.crmConnection.findUnique.mockResolvedValue({
         tenantId,
         status: 'connected',
       });
-      prisma.client.deleteMany.mockResolvedValue({ count: 3 });
+      prisma.client.updateMany.mockResolvedValue({ count: 2 });
+      prisma.crmConnection.delete.mockResolvedValue({ tenantId });
+
+      await service.disconnectCrm(tenantId);
+
+      expect(prisma.client.deleteMany).not.toHaveBeenCalled();
+    });
+
+    it('leaves locally-created clients alone — they never had a crmId to clear', async () => {
+      prisma.crmConnection.findUnique.mockResolvedValue({
+        tenantId,
+        status: 'connected',
+      });
+      prisma.client.updateMany.mockResolvedValue({ count: 0 });
+      prisma.crmConnection.delete.mockResolvedValue({ tenantId });
+
+      await service.disconnectCrm(tenantId);
+
+      expect(prisma.client.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { tenantId, crmId: { not: null } } }),
+      );
+    });
+
+    it('deletes the connection and unlinks CRM-imported clients in one transaction', async () => {
+      prisma.crmConnection.findUnique.mockResolvedValue({
+        tenantId,
+        status: 'connected',
+      });
+      prisma.client.updateMany.mockResolvedValue({ count: 3 });
       prisma.crmConnection.delete.mockResolvedValue({ tenantId });
 
       const result = await service.disconnectCrm(tenantId);
 
       expect(result).toEqual({
-        message: 'CRM disconnected — removed 3 imported clients.',
+        message: 'CRM disconnected — 3 clients kept with their history.',
         removedClients: 3,
         status: 'disconnected',
       });
-      // Only CRM-sourced clients (crmId set) are removed.
-      expect(prisma.client.deleteMany).toHaveBeenCalledWith({
+      // Only CRM-sourced clients (crmId set) are touched.
+      expect(prisma.client.updateMany).toHaveBeenCalledWith({
         where: { tenantId, crmId: { not: null } },
+        data: { crmId: null },
       });
       expect(prisma.crmConnection.delete).toHaveBeenCalledWith({
         where: { tenantId },
