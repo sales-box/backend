@@ -832,8 +832,15 @@ describe('AnalyticsService', () => {
       });
 
       expect(prisma.connectedAccount.findMany).toHaveBeenCalledWith({
-        where: { tenantId: 'tenant-a' },
-        select: { email: true, lastLoginAt: true },
+        where: {
+          OR: [{ tenantId: 'tenant-a' }, { tenantId: null }],
+        },
+        select: {
+          email: true,
+          lastLoginAt: true,
+          createdAt: true,
+          status: true,
+        },
       });
 
       expect(prisma.generalAnalysis.groupBy).toHaveBeenCalledTimes(2);

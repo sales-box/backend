@@ -92,13 +92,18 @@ export class AllowlistService {
    * (which match the live account by tenantId + email) actually reach an SE's
    * account, and gives SE tokens a real tenant before DEP-1 lands.
    */
-  async verifyAccess(rawEmail: string): Promise<{ tenantId: string }> {
+  async verifyAccess(
+    rawEmail: string,
+    tenantId?: string,
+  ): Promise<{ tenantId: string }> {
     const email = rawEmail.toLowerCase().trim();
     const entry = await this.prisma.allowlistEntry.findFirst({
       where: {
         email: { equals: email, mode: 'insensitive' },
         status: { in: [GRANTED, VERIFIED] },
+        ...(tenantId ? { tenantId } : {}),
       },
+      orderBy: { grantedAt: 'desc' },
     });
 
     if (!entry) {
@@ -161,16 +166,50 @@ export class AllowlistService {
 
   /** Lists a tenant's SEs for the team-management dashboard. */
   async listAllowlist(tenantId: string) {
-    return this.prisma.allowlistEntry.findMany({
-      where: { tenantId },
-      select: {
-        email: true,
-        status: true,
-        grantedAt: true,
-        verifiedAt: true,
-        revokedAt: true,
-      },
-      orderBy: { grantedAt: 'desc' },
+    const [entries, accounts] = await Promise.all([
+      this.prisma.allowlistEntry.findMany({
+        where: { tenantId },
+        select: {
+          email: true,
+          status: true,
+          grantedAt: true,
+          verifiedAt: true,
+          revokedAt: true,
+        },
+        orderBy: { grantedAt: 'desc' },
+      }),
+      this.prisma.connectedAccount.findMany({
+        where: { OR: [{ tenantId }, { tenantId: null }] },
+        select: {
+          email: true,
+          lastLoginAt: true,
+          createdAt: true,
+          status: true,
+        },
+      }),
+    ]);
+
+    const accountMap = new Map(
+      accounts.map((a) => [a.email.toLowerCase().trim(), a]),
+    );
+
+    return entries.map((entry) => {
+      const key = entry.email.toLowerCase().trim();
+      const account = accountMap.get(key);
+      const isConnected = !!(account && account.status !== 'revoked');
+      const status =
+        entry.status === 'revoked'
+          ? 'revoked'
+          : isConnected || entry.verifiedAt || entry.status === 'verified'
+            ? 'verified'
+            : 'granted';
+      return {
+        ...entry,
+        status,
+        verifiedAt:
+          entry.verifiedAt ??
+          (isConnected ? (account.lastLoginAt ?? account.createdAt) : null),
+      };
     });
   }
 }
