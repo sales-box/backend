@@ -9,6 +9,9 @@
   "engines": {
     "node": ">=22.13.0"
   },
+  "overrides": {
+    "deepmerge-ts": "^8.0.0"
+  },
   "scripts": {
     "build": "nest build && tsc-alias",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
