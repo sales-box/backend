@@ -151,12 +151,27 @@ export function buildHubSpotTools(ctx: HubSpotToolContext): {
         sorts: [],
       });
 
-      return result.results.map((c) => ({ id: c.id, ...c.properties }));
+      // Always an object, never a bare array.
+      //
+      // Returning `[]` on no match produced a ToolMessage whose content was an
+      // empty list, which reads to the model as no observation at all rather
+      // than as "nobody matched". It re-issued the identical search 18 times
+      // and the graph died on its recursion limit after 76 seconds — the panel
+      // showed "No suggested actions", so a hard failure looked like a verdict.
+      //
+      // `found: 0` is something the model can actually read and act on.
+      const contacts = result.results.map((c) => ({
+        id: c.id,
+        ...c.properties,
+      }));
+      return { found: contacts.length, contacts };
     },
     {
       name: 'searchContacts',
       description:
-        'Search HubSpot Contacts by sender email. Returns matching records or an empty array if not found. ' +
+        'Search HubSpot Contacts by sender email. Returns { found, contacts }; ' +
+        'found: 0 is a conclusive answer meaning this person is not in the CRM yet — ' +
+        'do not repeat the search, treat them as a new prospect. ' +
         'HubSpot has no separate Leads object — a prospect and a customer are both Contacts, ' +
         'told apart by the lifecyclestage property.',
       schema: z.object({

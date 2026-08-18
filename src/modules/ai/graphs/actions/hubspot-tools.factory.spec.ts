@@ -319,9 +319,10 @@ describe('buildHubSpotTools — contacts', () => {
       email: 'a@b.com',
     });
 
-    expect(out).toEqual([
-      { id: 'contact-9', email: 'a@b.com', firstname: 'Omar' },
-    ]);
+    expect(out).toEqual({
+      found: 1,
+      contacts: [{ id: 'contact-9', email: 'a@b.com', firstname: 'Omar' }],
+    });
   });
 
   it('omits fields the model left blank instead of writing empty strings over real data', async () => {
