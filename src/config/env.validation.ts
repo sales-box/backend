@@ -64,6 +64,10 @@ export class EnvironmentVariables {
   @Max(65535)
   REDIS_PORT: number = 6379;
 
+  @IsOptional()
+  @IsString()
+  REDIS_PASSWORD?: string;
+
   @IsString()
   @MinLength(16)
   COOKIE_SECRET!: string;

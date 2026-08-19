@@ -13,12 +13,16 @@ import { DEMO_QUEUE } from './queue.constants';
     // Shared BullMQ connection to Redis for all queues.
     BullModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        connection: {
-          host: config.get<string>('REDIS_HOST'),
-          port: config.get<number>('REDIS_PORT'),
-        },
-      }),
+      useFactory: (config: ConfigService) => {
+        const password = config.get<string>('REDIS_PASSWORD');
+        return {
+          connection: {
+            host: config.get<string>('REDIS_HOST'),
+            port: config.get<number>('REDIS_PORT'),
+            ...(password ? { password } : {}),
+          },
+        };
+      },
     }),
     BullModule.registerQueue({ name: DEMO_QUEUE }),
     // Bull Board dashboard mounted at /admin/queues (Fastify adapter).

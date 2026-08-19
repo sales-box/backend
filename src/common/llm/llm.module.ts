@@ -11,9 +11,11 @@ import { LlmKeyRotator } from './llm-key-rotator.service';
       provide: 'REDIS_CLIENT',
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
+        const password = config.get<string>('REDIS_PASSWORD');
         return new Redis({
           host: config.get<string>('REDIS_HOST'),
           port: config.get<number>('REDIS_PORT'),
+          ...(password ? { password } : {}),
         });
       },
     },
