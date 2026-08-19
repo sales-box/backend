@@ -1,6 +1,17 @@
-import { NotFoundException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { PlatformTenantsService } from './platform-tenants.service';
 import type { PrismaService } from '../../database/prisma.service';
+import type { AllowlistService } from '../allowlist/allowlist.service';
+
+/** An AllowlistService stub exposing the one method the service uses. */
+function stubAllowlist(
+  offboardTenant = jest.fn().mockResolvedValue(undefined),
+) {
+  return {
+    allowlist: { offboardTenant } as unknown as AllowlistService,
+    offboardTenant,
+  };
+}
 
 describe('PlatformTenantsService', () => {
   describe('list', () => {
@@ -15,7 +26,10 @@ describe('PlatformTenantsService', () => {
         tenant: { count, findMany },
         allowlistEntry: { groupBy },
       } as unknown as PrismaService;
-      return { service: new PlatformTenantsService(prisma), groupBy };
+      return {
+        service: new PlatformTenantsService(prisma, stubAllowlist().allowlist),
+        groupBy,
+      };
     }
 
     it('merges each tenant with its active-seat count', async () => {
@@ -68,7 +82,9 @@ describe('PlatformTenantsService', () => {
           }),
         },
       } as unknown as PrismaService;
-      return { service: new PlatformTenantsService(prisma) };
+      return {
+        service: new PlatformTenantsService(prisma, stubAllowlist().allowlist),
+      };
     }
 
     it('returns operational detail with counts', async () => {
@@ -97,6 +113,111 @@ describe('PlatformTenantsService', () => {
     it('throws NotFound for an unknown tenant', async () => {
       const { service } = makeService(null);
       await expect(service.getDetail('missing')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe('changeStatus', () => {
+    function makeService(status: string | null) {
+      const findUnique = jest
+        .fn()
+        .mockResolvedValue(status ? { status } : null);
+      const update = jest
+        .fn()
+        .mockImplementation(({ data }) =>
+          Promise.resolve({ id: 't1', ...data }),
+        );
+      const prisma = {
+        tenant: { findUnique, update },
+      } as unknown as PrismaService;
+      const { allowlist, offboardTenant } = stubAllowlist();
+      return {
+        service: new PlatformTenantsService(prisma, allowlist),
+        update,
+        offboardTenant,
+      };
+    }
+
+    it('suspends an active tenant', async () => {
+      const { service, update } = makeService('active');
+      const res = await service.changeStatus('t1', 'suspend');
+      expect(res).toEqual({ id: 't1', status: 'suspended' });
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { status: 'suspended' } }),
+      );
+    });
+
+    it('reactivates a suspended tenant', async () => {
+      const { service, update } = makeService('suspended');
+      const res = await service.changeStatus('t1', 'activate');
+      expect(res).toEqual({ id: 't1', status: 'active' });
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { status: 'active' } }),
+      );
+    });
+
+    it('offboards via the existing terminal path (revokes accounts)', async () => {
+      const { service, offboardTenant, update } = makeService('active');
+      const res = await service.changeStatus('t1', 'offboard');
+      expect(offboardTenant).toHaveBeenCalledWith('t1');
+      expect(update).not.toHaveBeenCalled();
+      expect(res).toEqual({ id: 't1', status: 'offboarded' });
+    });
+
+    it('rejects an illegal transition (suspend a suspended tenant) with 409', async () => {
+      const { service } = makeService('suspended');
+      await expect(
+        service.changeStatus('t1', 'suspend'),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('rejects reactivating a tenant that is not suspended with 409', async () => {
+      const { service } = makeService('active');
+      await expect(
+        service.changeStatus('t1', 'activate'),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('throws NotFound for an unknown tenant', async () => {
+      const { service } = makeService(null);
+      await expect(service.changeStatus('x', 'suspend')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe('changeTier', () => {
+    function makeService(exists: boolean) {
+      const findUnique = jest
+        .fn()
+        .mockResolvedValue(exists ? { id: 't1' } : null);
+      const update = jest
+        .fn()
+        .mockImplementation(({ data }) =>
+          Promise.resolve({ id: 't1', ...data }),
+        );
+      const prisma = {
+        tenant: { findUnique, update },
+      } as unknown as PrismaService;
+      return {
+        service: new PlatformTenantsService(prisma, stubAllowlist().allowlist),
+        update,
+      };
+    }
+
+    it('sets the tier', async () => {
+      const { service, update } = makeService(true);
+      const res = await service.changeTier('t1', 3);
+      expect(res).toEqual({ id: 't1', tier: 3 });
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { tier: 3 } }),
+      );
+    });
+
+    it('throws NotFound for an unknown tenant', async () => {
+      const { service } = makeService(false);
+      await expect(service.changeTier('x', 2)).rejects.toBeInstanceOf(
         NotFoundException,
       );
     });

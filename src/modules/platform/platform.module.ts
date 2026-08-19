@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { AllowlistModule } from '../allowlist/allowlist.module';
 import { PlatformAuthController } from './platform-auth.controller';
 import { PlatformAuthService } from './platform-auth.service';
 import { PlatformGuard } from './platform.guard';
@@ -8,11 +9,12 @@ import { PlatformTenantsService } from './platform-tenants.service';
 
 /**
  * The platform-operator console — the only module that acts across tenants.
- * Imports AuthModule solely for the shared JwtModule (one JWT engine for the
- * whole app). PrismaService comes from the global PrismaModule.
+ * Imports AuthModule for the shared JwtModule (one JWT engine for the whole app)
+ * and AllowlistModule to reuse the terminal offboard path. PrismaService comes
+ * from the global PrismaModule.
  */
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, AllowlistModule],
   controllers: [PlatformAuthController, PlatformTenantsController],
   providers: [PlatformAuthService, PlatformGuard, PlatformTenantsService],
   exports: [PlatformGuard, PlatformAuthService],

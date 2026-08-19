@@ -1,11 +1,20 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
+import { AllowlistService } from '../allowlist/allowlist.service';
+import type { TenantStatusAction } from './dto/change-status.dto';
 
 const ACTIVE_SEAT_STATUSES = ['granted', 'verified'];
 
 @Injectable()
 export class PlatformTenantsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly allowlist: AllowlistService,
+  ) {}
 
   /** Every tenant on the platform (operator view), paginated. Metadata only. */
   async list(page: number, limit: number) {
@@ -70,6 +79,71 @@ export class PlatformTenantsService {
       emailCount,
       lastActivityAt: activity._max.lastLoginAt,
     };
+  }
+
+  /** Suspend / reactivate / offboard a tenant, enforcing the transition matrix. */
+  async changeStatus(id: string, action: TenantStatusAction) {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id },
+      select: { status: true },
+    });
+    if (!tenant) {
+      throw new NotFoundException('Tenant not found');
+    }
+
+    switch (action) {
+      case 'suspend':
+        this.assertTransition(tenant.status, ['active'], action);
+        return this.setStatus(id, 'suspended');
+      case 'activate':
+        this.assertTransition(tenant.status, ['suspended'], action);
+        return this.setStatus(id, 'active');
+      case 'offboard':
+        this.assertTransition(tenant.status, ['active', 'suspended'], action);
+        // Existing terminal path: revokes every account, sets status=offboarded.
+        await this.allowlist.offboardTenant(id);
+        return { id, status: 'offboarded' as const };
+    }
+  }
+
+  /** Set a tenant's plan tier (operator override; not a billing charge). */
+  async changeTier(id: string, tier: number) {
+    await this.assertExists(id);
+    return this.prisma.tenant.update({
+      where: { id },
+      data: { tier },
+      select: { id: true, tier: true },
+    });
+  }
+
+  private assertTransition(
+    current: string,
+    allowedFrom: string[],
+    action: TenantStatusAction,
+  ): void {
+    if (!allowedFrom.includes(current)) {
+      throw new ConflictException(
+        `Cannot ${action} a tenant that is '${current}'`,
+      );
+    }
+  }
+
+  private setStatus(id: string, status: 'active' | 'suspended') {
+    return this.prisma.tenant.update({
+      where: { id },
+      data: { status },
+      select: { id: true, status: true },
+    });
+  }
+
+  private async assertExists(id: string): Promise<void> {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!tenant) {
+      throw new NotFoundException('Tenant not found');
+    }
   }
 
   /** Active-seat (granted|verified) counts for the given tenants, in one query. */
