@@ -79,14 +79,18 @@ const isProd = process.env.NODE_ENV === 'production';
     CacheModule.registerAsync({
       isGlobal: true,
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        stores: [
-          createKeyv(
-            `redis://${config.get<string>('REDIS_HOST')}:${config.get<number>('REDIS_PORT')}`,
-          ),
-        ],
-        ttl: 30_000,
-      }),
+      useFactory: (config: ConfigService) => {
+        const host = config.get<string>('REDIS_HOST');
+        const port = config.get<number>('REDIS_PORT');
+        const password = config.get<string>('REDIS_PASSWORD');
+        const redisUrl = password
+          ? `redis://:${encodeURIComponent(password)}@${host}:${port}`
+          : `redis://${host}:${port}`;
+        return {
+          stores: [createKeyv(redisUrl)],
+          ttl: 30_000,
+        };
+      },
     }),
     // Rate limiting backed by Redis so limits are shared across all instances.
     ThrottlerModule.forRootAsync({
