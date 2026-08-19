@@ -292,6 +292,9 @@ model KnowledgeGapReport {
 enum TenantStatus {
   pending
   active
+  // Reversible operator pause (platform-admin console). Blocks all the tenant's
+  // users via the tenant guards; re-activating restores access with no data loss.
+  suspended
   abandoned
   offboarded
 
@@ -333,4 +336,21 @@ model AllowlistEntry {
 
   @@unique([tenantId, email])
   @@map("allowlist_entries")
+}
+
+/// Platform operator (the Salesbox team) — a separate identity domain from
+/// tenant users. NOT a ConnectedAccount and NOT tied to any tenant: platform
+/// admins authenticate with their own login and a platform JWT (no tenantId),
+/// and are the only role allowed to act across tenants. Seeded, never self-serve.
+/// An email here is never also a ConnectedAccount (separation of duties, enforced
+/// at seed time).
+model PlatformAdmin {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String    @unique
+  passwordHash String    @map("password_hash")
+  name         String?
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz(6)
+
+  @@map("platform_admins")
 }
