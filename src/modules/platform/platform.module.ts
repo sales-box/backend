@@ -3,6 +3,8 @@ import { AuthModule } from '../auth/auth.module';
 import { PlatformAuthController } from './platform-auth.controller';
 import { PlatformAuthService } from './platform-auth.service';
 import { PlatformGuard } from './platform.guard';
+import { PlatformTenantsController } from './platform-tenants.controller';
+import { PlatformTenantsService } from './platform-tenants.service';
 
 /**
  * The platform-operator console — the only module that acts across tenants.
@@ -11,8 +13,8 @@ import { PlatformGuard } from './platform.guard';
  */
 @Module({
   imports: [AuthModule],
-  controllers: [PlatformAuthController],
-  providers: [PlatformAuthService, PlatformGuard],
+  controllers: [PlatformAuthController, PlatformTenantsController],
+  providers: [PlatformAuthService, PlatformGuard, PlatformTenantsService],
   exports: [PlatformGuard, PlatformAuthService],
 })
 export class PlatformModule {}
