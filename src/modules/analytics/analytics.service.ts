@@ -588,9 +588,23 @@ export class AnalyticsService {
         },
         select: { email: true },
       });
-      const seEmails = allowlistEntries.map((e) =>
-        e.email.toLowerCase().trim(),
-      );
+      let seEmails = allowlistEntries
+        .map((e) => (e.email ? e.email.toLowerCase().trim() : ''))
+        .filter(Boolean);
+
+      // Fallback: If no allowlist entries exist, query all SE emails that have processed emails for this tenant
+      if (seEmails.length === 0) {
+        const tenantAnalyses = await this.prisma.generalAnalysis.findMany({
+          where: { tenantId },
+          select: { accountEmail: true },
+          distinct: ['accountEmail'],
+        });
+        seEmails = tenantAnalyses
+          .map((a) =>
+            a.accountEmail ? a.accountEmail.toLowerCase().trim() : '',
+          )
+          .filter(Boolean);
+      }
 
       if (seEmails.length === 0) {
         return {
@@ -614,10 +628,7 @@ export class AnalyticsService {
       const seMessageIds = seAnalyses.map((a) => a.messageId);
 
       const where: Prisma.InteractionWhereInput = {
-        date: {
-          gte: start,
-          lte: end,
-        },
+        ...(query.date ? { date: { gte: start, lte: end } } : {}),
         client: {
           tenantId,
         },
@@ -671,5 +682,138 @@ export class AnalyticsService {
         'Could not retrieve activity feed',
       );
     }
+  }
+
+  async getEscalations(
+    tenantId: string,
+    page = 1,
+    limit = 50,
+    status?: string,
+    date?: string,
+  ) {
+    if (!tenantId) {
+      throw new BadRequestException('tenantId is required');
+    }
+    const skip = (page - 1) * limit;
+
+    let dateFilter: Prisma.EscalationItemWhereInput = {};
+    if (date) {
+      const d = new Date(date);
+      if (!Number.isNaN(d.getTime())) {
+        const start = new Date(d);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(d);
+        end.setHours(23, 59, 59, 999);
+        dateFilter = { createdAt: { gte: start, lte: end } };
+      }
+    }
+
+    const where: Prisma.EscalationItemWhereInput = {
+      tenantId,
+      ...(status ? { status } : {}),
+      ...dateFilter,
+    };
+
+    try {
+      const [total, items] = await Promise.all([
+        this.prisma.escalationItem.count({ where }),
+        this.prisma.escalationItem.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          skip,
+          take: limit,
+          include: {
+            generalAnalysis: {
+              select: {
+                intent: true,
+                intentConfidence: true,
+                isUrgent: true,
+                urgencyReason: true,
+                reasoning: true,
+                supervisorLabel: true,
+                createdAt: true,
+              },
+            },
+          },
+        }),
+      ]);
+
+      const messageIds = items.map((i) => i.messageId);
+      const interactions =
+        messageIds.length > 0
+          ? await this.prisma.interaction.findMany({
+              where: {
+                tenantId,
+                messageId: { in: messageIds },
+              },
+              include: {
+                client: {
+                  select: { name: true, email: true, company: true },
+                },
+              },
+            })
+          : [];
+
+      const interactionByMessageId = new Map(
+        interactions.map((int) => [int.messageId, int]),
+      );
+
+      const data = items.map((item) => {
+        const interaction = interactionByMessageId.get(item.messageId);
+        return {
+          id: item.id,
+          messageId: item.messageId,
+          accountEmail: item.accountEmail,
+          severity: item.severity,
+          reason: item.reason,
+          status: item.status,
+          reviewedBy: item.reviewedBy,
+          reviewedAt: item.reviewedAt,
+          createdAt: item.createdAt,
+          analysis: item.generalAnalysis,
+          client: interaction?.client ?? null,
+          subject: interaction?.subject ?? null,
+        };
+      });
+
+      return {
+        data,
+        meta: {
+          total,
+          page,
+          limit,
+          totalPages: Math.ceil(total / limit),
+        },
+      };
+    } catch (error) {
+      this.logger.error('Failed to retrieve escalations', error);
+      throw new InternalServerErrorException('Could not retrieve escalations');
+    }
+  }
+
+  async resolveEscalation(
+    id: string,
+    tenantId: string,
+    adminEmail: string,
+    status: 'reviewed' | 'dismissed' = 'reviewed',
+  ) {
+    if (!tenantId) {
+      throw new BadRequestException('tenantId is required');
+    }
+    const existing = await this.prisma.escalationItem.findFirst({
+      where: { id, tenantId },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Escalation item with ID ${id} not found`);
+    }
+
+    return this.prisma.escalationItem.update({
+      where: { id },
+      data: {
+        status,
+        reviewedBy: adminEmail,
+        reviewedAt: new Date(),
+      },
+    });
   }
 }

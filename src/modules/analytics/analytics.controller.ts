@@ -145,4 +145,46 @@ export class AnalyticsController {
   ): Promise<KnowledgeGap> {
     return this.analyticsService.resolveGap(id, req.user.tenantId ?? undefined);
   }
+
+  @Get('escalations')
+  @ApiOperation({
+    summary: 'Get escalated urgent/sensitive items for admin oversight',
+  })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiQuery({ name: 'status', required: false, type: String })
+  @ApiQuery({ name: 'date', required: false, type: String })
+  @ApiResponse({ status: 200, description: 'List of escalation items.' })
+  async getEscalations(
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+    @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit: number,
+    @Query('status') status: string | undefined,
+    @Query('date') date: string | undefined,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.analyticsService.getEscalations(
+      req.user.tenantId!,
+      page,
+      limit,
+      status,
+      date,
+    );
+  }
+
+  @Patch('escalations/:id/resolve')
+  @ApiOperation({ summary: 'Mark an escalation item as reviewed or dismissed' })
+  @ApiParam({ name: 'id', description: 'Escalation item ID' })
+  @ApiResponse({ status: 200, description: 'The updated escalation item.' })
+  async resolveEscalation(
+    @Param('id') id: string,
+    @Body('status') status: 'reviewed' | 'dismissed' | undefined,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.analyticsService.resolveEscalation(
+      id,
+      req.user.tenantId!,
+      req.user.email,
+      status ?? 'reviewed',
+    );
+  }
 }
