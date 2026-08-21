@@ -40,7 +40,15 @@ export class AiOrchestratorService {
     const existing = await this.prisma.generalAnalysis.findUnique({
       where: { messageId },
     });
-    if (existing) return existing;
+    if (existing) {
+      if (!existing.tenantId && tenantId) {
+        return this.prisma.generalAnalysis.update({
+          where: { id: existing.id },
+          data: { tenantId },
+        });
+      }
+      return existing;
+    }
 
     // Fast path missed it — call the same classify() the background processor
     // uses, then persist so a later webhook pass finds it already done.
@@ -281,6 +289,43 @@ export class AiOrchestratorService {
         clientHistoryConfidence: supervision.clientHistoryConfidence,
         supervisorLabel,
       };
+    }
+
+    const targetTenantId = updatedClassification.tenantId || tenantId;
+    if (
+      updatedClassification.id &&
+      targetTenantId &&
+      (updatedClassification.isUrgent ||
+        updatedClassification.intent === 'sensitive' ||
+        updatedClassification.supervisorLabel === 'red')
+    ) {
+      const severity =
+        updatedClassification.isUrgent &&
+        updatedClassification.intent === 'sensitive'
+          ? 'high'
+          : updatedClassification.supervisorLabel === 'red'
+            ? 'low'
+            : 'medium';
+      await this.prisma.escalationItem
+        .upsert({
+          where: { generalAnalysisId: updatedClassification.id },
+          create: {
+            tenantId: targetTenantId,
+            generalAnalysisId: updatedClassification.id,
+            messageId,
+            accountEmail,
+            severity,
+            reason:
+              updatedClassification.urgencyReason ||
+              updatedClassification.reasoning ||
+              'Flagged for attention',
+          },
+          update: {
+            severity,
+            tenantId: targetTenantId,
+          },
+        })
+        .catch(() => {});
     }
 
     // Enrich the same captured row even when drafting failed. A retry never

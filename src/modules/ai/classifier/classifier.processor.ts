@@ -273,7 +273,7 @@ export class ClassifierProcessor extends WorkerHost {
     }
 
     try {
-      await this.prisma.generalAnalysis.create({
+      const created = await this.prisma.generalAnalysis.create({
         data: {
           messageId,
           threadId: parsed.threadId || null,
@@ -287,6 +287,29 @@ export class ClassifierProcessor extends WorkerHost {
           promptVersion: CLASSIFIER_PROMPT_VERSION,
         },
       });
+
+      if (
+        created?.id &&
+        account.tenantId &&
+        (result.isUrgent || result.intent === 'sensitive')
+      ) {
+        const severity =
+          result.isUrgent && result.intent === 'sensitive' ? 'high' : 'medium';
+        await this.prisma.escalationItem
+          .upsert({
+            where: { generalAnalysisId: created.id },
+            create: {
+              tenantId: account.tenantId,
+              generalAnalysisId: created.id,
+              messageId,
+              accountEmail: account.email,
+              severity,
+              reason: result.urgencyReason || result.reasoning,
+            },
+            update: {},
+          })
+          .catch(() => {});
+      }
     } catch (error) {
       // P2002: a concurrent worker stored it first — the result exists, done.
       if (

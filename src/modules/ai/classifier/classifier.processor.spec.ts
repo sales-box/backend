@@ -43,6 +43,10 @@ function makePrisma(overrides: Record<string, unknown> = {}) {
     },
     generalAnalysis: {
       findUnique: jest.fn().mockResolvedValue(null),
+      create: jest.fn().mockResolvedValue({ id: 'analysis-1' }),
+    },
+    escalationItem: {
+      upsert: jest.fn().mockResolvedValue({}),
       create: jest.fn().mockResolvedValue({}),
     },
     ...overrides,
