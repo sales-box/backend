@@ -165,6 +165,7 @@ model GeneralAnalysis {
   clientHistoryConfidence Float?    @map("client_history_confidence")
   supervisorLabel         String?   @map("supervisor_label")
   reviewedAt              DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  escalationItem          EscalationItem?
 
   @@index([tenantId, isUrgent])
   // Supports AnalyticsService.getTeamStats — groupBy(accountEmail) scoped
@@ -320,6 +321,7 @@ model Tenant {
   knowledgeGaps     KnowledgeGap[]
   allowlistEntries  AllowlistEntry[]
   crmAgentConnection CrmAgentConnection?
+  escalationItems   EscalationItem[]
 
   @@map("tenants")
 }
@@ -353,4 +355,28 @@ model PlatformAdmin {
   lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz(6)
 
   @@map("platform_admins")
+}
+
+model EscalationItem {
+  id                String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId          String          @map("tenant_id") @db.Uuid
+  tenant            Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  generalAnalysisId String          @unique @map("general_analysis_id") @db.Uuid
+  generalAnalysis   GeneralAnalysis @relation(fields: [generalAnalysisId], references: [id], onDelete: Cascade)
+  
+  messageId         String          @map("message_id")
+  accountEmail      String          @map("account_email") // The SE email address
+  
+  severity          String          // "high" (urgent+sensitive), "medium" (urgent or sensitive), "low" (red label)
+  reason            String          // Stored urgencyReason or reasoning
+  status            String          @default("pending") // "pending" | "reviewed" | "dismissed"
+  
+  reviewedBy        String?         @map("reviewed_by")
+  reviewedAt        DateTime?       @map("reviewed_at") @db.Timestamptz(6)
+  
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([tenantId, status, createdAt])
+  @@map("escalation_items")
 }
