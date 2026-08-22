@@ -1,4 +1,8 @@
-import { ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import {
+  ExecutionContext,
+  ForbiddenException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '@/database/prisma.service';
 import { TenantAllowlistGuard } from './tenant-allowlist.guard';
@@ -58,5 +62,23 @@ describe('TenantAllowlistGuard', () => {
     await expect(guard.canActivate(ctx(`Bearer ${bad}`))).rejects.toThrow(
       UnauthorizedException,
     );
+  });
+
+  it('rejects a connected account whose tenant has been suspended', async () => {
+    const prisma = {
+      connectedAccount: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'a1', status: 'connected', tenantId: 't1' }),
+      },
+      tenant: {
+        findUnique: jest.fn().mockResolvedValue({ status: 'suspended' }),
+      },
+    } as unknown as PrismaService;
+    const suspendedGuard = new TenantAllowlistGuard(prisma, jwt);
+
+    await expect(
+      suspendedGuard.canActivate(ctx(`Bearer ${tokenFor('se@acme.com')}`)),
+    ).rejects.toThrow(ForbiddenException);
   });
 });

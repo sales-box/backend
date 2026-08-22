@@ -13,6 +13,7 @@ import { AiOrchestratorService } from './ai-orchestrator.service';
 import { KnowledgeBaseController } from '../knowledge-base/knowledge-base.controller';
 import { KnowledgeBaseService } from '../knowledge-base/knowledge-base.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { PrismaService } from '../../database/prisma.service';
 
 // A plain route with NO @Throttle note. It proves the GLOBAL 100/min still
 // applies everywhere else — tightening upload/ai must not drop this to 5 or 10.
@@ -46,6 +47,17 @@ describe('route rate limiting', () => {
         {
           provide: AiOrchestratorService,
           useValue: { processEmail: jest.fn() },
+        },
+        // KnowledgeBaseController pulls in AdminTenantGuard, which now depends on
+        // PrismaService. The guard isn't exercised here (auth is bypassed, and no
+        // tested route hits it) — this stub just lets it be constructed.
+        {
+          provide: PrismaService,
+          useValue: {
+            tenant: {
+              findUnique: jest.fn().mockResolvedValue({ status: 'active' }),
+            },
+          },
         },
       ],
     })

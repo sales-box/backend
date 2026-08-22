@@ -7,6 +7,7 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import type { AdminJwtPayload } from '../auth/admin-auth.service';
 import { PrismaService } from '@/database/prisma.service';
+import { assertTenantActive } from '@/common/guards/assert-tenant-active';
 
 interface SeRequest {
   headers: { authorization?: string };
@@ -57,6 +58,12 @@ export class TenantAllowlistGuard implements CanActivate {
     });
     if (!account) {
       throw new UnauthorizedException('Account is not connected');
+    }
+
+    // A platform-operator suspend/offboard blocks the SE here too, on their next
+    // request. (Legacy accounts with no tenant are left alone.)
+    if (account.tenantId) {
+      await assertTenantActive(this.prisma, account.tenantId);
     }
 
     // Expose the verified claims to handlers, same contract as JwtAuthGuard.

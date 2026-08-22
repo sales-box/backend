@@ -6,6 +6,8 @@ import {
   SetMetadata,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { PrismaService } from '@/database/prisma.service';
+import { assertTenantActive } from './assert-tenant-active';
 
 // The admin "badge". Populated by the admin login (JWT) once it exists.
 interface AdminRequest {
@@ -35,9 +37,12 @@ export const AllowNonAdmin = () => SetMetadata(ALLOW_NON_ADMIN, true);
  */
 @Injectable()
 export class AdminTenantGuard implements CanActivate {
-  constructor(private readonly reflector: Reflector) {}
+  constructor(
+    private readonly reflector: Reflector,
+    private readonly prisma: PrismaService,
+  ) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<AdminRequest>();
     const user = req.user;
 
@@ -51,6 +56,8 @@ export class AdminTenantGuard implements CanActivate {
       if (!user?.tenantId) {
         throw new ForbiddenException('Authentication required');
       }
+      // Suspended/offboarded tenants are blocked here too (platform-admin).
+      await assertTenantActive(this.prisma, user.tenantId);
       return true;
     }
 
@@ -63,6 +70,9 @@ export class AdminTenantGuard implements CanActivate {
       throw new ForbiddenException("Cannot access another tenant's data");
     }
 
+    // A platform-operator suspend/offboard takes effect on the admin's next
+    // request, without waiting for the token to expire.
+    await assertTenantActive(this.prisma, user.tenantId);
     return true;
   }
 }
