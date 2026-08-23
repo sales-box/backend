@@ -12,6 +12,7 @@ import { AiController } from './ai.controller';
 import { AiOrchestratorService } from './ai-orchestrator.service';
 import { KnowledgeBaseController } from '../knowledge-base/knowledge-base.controller';
 import { KnowledgeBaseService } from '../knowledge-base/knowledge-base.service';
+import { KbSearchService } from '../knowledge-base/kb-search.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PrismaService } from '../../database/prisma.service';
 
@@ -42,6 +43,8 @@ describe('route rate limiting', () => {
         // The upload handler is never reached before the throttle blocks it, so a
         // stub service is enough to let the controller be constructed.
         { provide: KnowledgeBaseService, useValue: { ingest: jest.fn() } },
+        // Same reasoning for the KB test route: constructed, never invoked.
+        { provide: KbSearchService, useValue: { search: jest.fn() } },
         // AiController now requires AiOrchestratorService — stub it out since
         // this suite only tests throttle behaviour (the handler is never called).
         {
@@ -94,6 +97,21 @@ describe('route rate limiting', () => {
       expect(res.statusCode).not.toBe(429); // within the 60/min limit
     }
     const overflow = await hit('POST', '/knowledge-base/upload');
+    expect(overflow.statusCode).toBe(429);
+    expect(overflow.headers['retry-after']).toBeDefined();
+  });
+
+  it('KB test route: 20 pass, the 21st is blocked with 429 + retry-after', async () => {
+    // Tighter than upload on purpose: every call embeds the question, which is
+    // a real round trip to the embedding provider (up to 45s with retries).
+    // Throttles are per-route and are NOT inherited, so this route having its
+    // own is the only thing standing between a held-down Enter key and 60
+    // concurrent embedding calls.
+    for (let i = 1; i <= 20; i++) {
+      const res = await hit('POST', '/knowledge-base/test');
+      expect(res.statusCode).not.toBe(429);
+    }
+    const overflow = await hit('POST', '/knowledge-base/test');
     expect(overflow.statusCode).toBe(429);
     expect(overflow.headers['retry-after']).toBeDefined();
   });

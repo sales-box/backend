@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  Body,
   Controller,
   Delete,
   Get,
@@ -17,11 +18,14 @@ import {
   ApiConsumes,
   ApiNoContentResponse,
   ApiOkResponse,
+  ApiOperation,
   ApiParam,
   ApiTags,
 } from '@nestjs/swagger';
 import { KnowledgeBaseService } from './knowledge-base.service';
+import { KbSearchService } from './kb-search.service';
 import { UploadResponseDto } from './dto/upload-response.dto';
+import { KbSearchRequestDto, KbSearchResponseDto } from './dto/kb-search.dto';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { AuthenticatedRequest } from '../auth/jwt-auth.guard';
@@ -33,7 +37,37 @@ import { Throttle } from '@nestjs/throttler';
 @UseGuards(JwtAuthGuard) // tenant identity comes from the JWT claim
 @Controller('knowledge-base')
 export class KnowledgeBaseController {
-  constructor(private readonly knowledgeBaseService: KnowledgeBaseService) {}
+  constructor(
+    private readonly knowledgeBaseService: KnowledgeBaseService,
+    private readonly kbSearchService: KbSearchService,
+  ) {}
+
+  // 20/min, far below the upload route's 60: every call embeds the question,
+  // which is a real network round trip to the embedding provider (up to 45s
+  // with retries). Throttles are per-route and are NOT inherited.
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
+  @Post('test')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Ask the knowledge base a question and see what would be retrieved',
+    description:
+      'Runs the same hybrid retrieval a real reply is grounded in — semantic + keyword, fused — and stops before the LLM. Nothing is written and no reply is generated.',
+  })
+  @ApiOkResponse({ type: KbSearchResponseDto })
+  async testKnowledgeBase(
+    @Body() dto: KbSearchRequestDto,
+    @Req() req: AuthenticatedRequest,
+  ): Promise<KbSearchResponseDto> {
+    // The JWT's tenantId is nullable, and the retrieval helpers throw a raw
+    // Error on a falsy tenant rather than a typed HTTP one — which would reach
+    // the client as a 500. Refuse here, in the tenant's own language.
+    const { tenantId } = req.user;
+    if (!tenantId) {
+      throw new BadRequestException('Your session carries no company');
+    }
+    return this.kbSearchService.search(tenantId, dto.question);
+  }
 
   @Throttle({ default: { limit: 60, ttl: 60000 } }) // 60 uploads/min per IP — bulk-friendly for the 200-doc KB, still abuse-limited
   @Post('upload')
