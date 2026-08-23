@@ -285,16 +285,36 @@ export class ClassifierProcessor extends WorkerHost {
           intentConfidence: result.intentConfidence,
           reasoning: result.reasoning,
           promptVersion: CLASSIFIER_PROMPT_VERSION,
+          isComplaint: result.isComplaint,
+          complaintAbout: result.complaintAbout,
         },
       });
+
+      // A complaint about the sales engineer, or about how the company treated
+      // the client, has to reach the admin on its own account. Routed only to
+      // the SE's inbox, the person being complained about is the one who
+      // decides whether anyone else ever hears about it — which is exactly the
+      // oversight this product is supposed to provide.
+      const isOversightComplaint =
+        result.isComplaint &&
+        (result.complaintAbout === 'person' ||
+          result.complaintAbout === 'service');
 
       if (
         created?.id &&
         account.tenantId &&
-        (result.isUrgent || result.intent === 'sensitive')
+        (result.isUrgent ||
+          result.intent === 'sensitive' ||
+          isOversightComplaint)
       ) {
+        // A complaint naming the individual outranks everything: it is the one
+        // case where the usual routing has a conflict of interest built in.
         const severity =
-          result.isUrgent && result.intent === 'sensitive' ? 'high' : 'medium';
+          result.complaintAbout === 'person'
+            ? 'high'
+            : result.isUrgent && result.intent === 'sensitive'
+              ? 'high'
+              : 'medium';
         await this.prisma.escalationItem
           .upsert({
             where: { generalAnalysisId: created.id },

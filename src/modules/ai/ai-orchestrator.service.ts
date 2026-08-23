@@ -177,6 +177,11 @@ export class AiOrchestratorService {
         clientHistoryConfidence: null,
         supervisorLabel: null,
         reviewedAt: null,
+        // Classification failed, so nothing was detected — not "we looked and
+        // found nothing". Claiming a complaint here would put an email in the
+        // admin's escalation feed on the strength of an error.
+        isComplaint: false,
+        complaintAbout: 'none',
       };
     }
 
