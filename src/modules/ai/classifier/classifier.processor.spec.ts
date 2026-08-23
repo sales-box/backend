@@ -21,6 +21,8 @@ const CLASSIFICATION = {
   urgencyReason: 'deadline',
   intent: 'product inquiry',
   intentConfidence: 0.9,
+  isComplaint: false,
+  complaintAbout: 'none',
 };
 const PARSED = {
   id: 'm1',
@@ -591,6 +593,89 @@ describe('ClassifierProcessor', () => {
     expect(prisma.webhookSubscription.update).toHaveBeenCalledWith({
       where: { connectedAccountId: 'acct-1' },
       data: { lastHistoryId: '250' },
+    });
+  });
+
+  describe('complaint escalation', () => {
+    /** Runs one message through the processor with a given classification. */
+    const run = async (over: Record<string, unknown>) => {
+      const prisma = makePrisma();
+      const classifier = {
+        classify: jest.fn().mockResolvedValue({ ...CLASSIFICATION, ...over }),
+      } as unknown as ClassifierService;
+      const processor = new ClassifierProcessor(
+        prisma,
+        makeGmail(),
+        classifier,
+        makeClients(),
+      );
+      await processor.process(makeJob(jobData));
+      return prisma as unknown as {
+        generalAnalysis: { create: jest.Mock };
+        escalationItem: { upsert: jest.Mock };
+      };
+    };
+
+    const escalation = (p: { escalationItem: { upsert: jest.Mock } }) =>
+      (p.escalationItem.upsert.mock.calls as unknown[][])[0]?.[0] as
+        { create: { severity: string } } | undefined;
+
+    it('persists the complaint fields on the analysis row', async () => {
+      const prisma = await run({ isComplaint: true, complaintAbout: 'person' });
+      const created = (
+        prisma.generalAnalysis.create.mock.calls as unknown[][]
+      )[0][0] as { data: Record<string, unknown> };
+      expect(created.data).toMatchObject({
+        isComplaint: true,
+        complaintAbout: 'person',
+      });
+    });
+
+    it('escalates a complaint about a person at HIGH, urgent or not', async () => {
+      // The case the whole feature exists for. Routed only to the SE's inbox,
+      // the person being complained about decides whether anyone hears it — so
+      // it must reach the admin on its own, and near the top of the feed.
+      const prisma = await run({
+        isUrgent: false,
+        urgencyReason: null,
+        intent: 'support',
+        isComplaint: true,
+        complaintAbout: 'person',
+      });
+      expect(escalation(prisma)?.create.severity).toBe('high');
+    });
+
+    it('escalates a complaint about the company', async () => {
+      const prisma = await run({
+        isUrgent: false,
+        urgencyReason: null,
+        intent: 'support',
+        isComplaint: true,
+        complaintAbout: 'service',
+      });
+      expect(escalation(prisma)).toBeDefined();
+    });
+
+    it('does NOT escalate a plain product complaint', async () => {
+      // A broken product is a support ticket. It belongs with the SE on the
+      // account, and there is no conflict of interest to work around.
+      const prisma = await run({
+        isUrgent: false,
+        urgencyReason: null,
+        intent: 'support',
+        isComplaint: true,
+        complaintAbout: 'product',
+      });
+      expect(prisma.escalationItem.upsert).not.toHaveBeenCalled();
+    });
+
+    it('does NOT escalate a calm non-complaint', async () => {
+      const prisma = await run({
+        isUrgent: false,
+        urgencyReason: null,
+        intent: 'follow-up',
+      });
+      expect(prisma.escalationItem.upsert).not.toHaveBeenCalled();
     });
   });
 });

@@ -10,6 +10,22 @@ import { SupervisorService } from '@/modules/ai/supervisor/supervisor.service';
 import { SupervisorInput } from '@/modules/ai/supervisor/supervisor.types';
 import { CRMActionsAgent } from './graphs/actions/crm-actions.agent';
 
+/** high > medium > low. Used to make an escalation's severity monotonic. */
+const SEVERITY_RANK: Record<string, number> = { low: 0, medium: 1, high: 2 };
+
+/**
+ * The higher of the two, or the new one when there is nothing to compare to.
+ * Two independent writers touch the same escalation — the background
+ * classifier and the on-demand pipeline — and they see different evidence.
+ * Whichever runs second must not be able to talk the first one down.
+ */
+function raiseSeverity(existing: string | undefined, next: string): string {
+  if (!existing) return next;
+  return (SEVERITY_RANK[existing] ?? 0) >= (SEVERITY_RANK[next] ?? 0)
+    ? existing
+    : next;
+}
+
 @Injectable()
 export class AiOrchestratorService {
   private readonly logger = new Logger(AiOrchestratorService.name);
@@ -66,6 +82,13 @@ export class AiOrchestratorService {
           intentConfidence: result.intentConfidence,
           reasoning: result.reasoning,
           promptVersion: CLASSIFIER_PROMPT_VERSION,
+          // Easy to miss and impossible to recover: Prisma types a column with
+          // a default as OPTIONAL on create, so omitting these compiles fine
+          // and silently stores "no complaint". The background processor
+          // short-circuits on an existing row, so nothing ever corrects it —
+          // a complaint first seen through the panel would be lost for good.
+          isComplaint: result.isComplaint,
+          complaintAbout: result.complaintAbout,
         },
       });
     } catch (error) {
@@ -297,20 +320,39 @@ export class AiOrchestratorService {
     }
 
     const targetTenantId = updatedClassification.tenantId || tenantId;
+    // A complaint about the sales engineer, or about how the company treated
+    // the client, has to reach the admin independently of that engineer. Same
+    // rule as the background classifier — this is the other writer, and it
+    // reaches emails the webhook has not processed yet.
+    const isOversightComplaint =
+      updatedClassification.isComplaint &&
+      (updatedClassification.complaintAbout === 'person' ||
+        updatedClassification.complaintAbout === 'service');
+
     if (
       updatedClassification.id &&
       targetTenantId &&
       (updatedClassification.isUrgent ||
         updatedClassification.intent === 'sensitive' ||
-        updatedClassification.supervisorLabel === 'red')
+        updatedClassification.supervisorLabel === 'red' ||
+        isOversightComplaint)
     ) {
       const severity =
-        updatedClassification.isUrgent &&
-        updatedClassification.intent === 'sensitive'
+        updatedClassification.complaintAbout === 'person'
           ? 'high'
-          : updatedClassification.supervisorLabel === 'red'
-            ? 'low'
-            : 'medium';
+          : updatedClassification.isUrgent &&
+              updatedClassification.intent === 'sensitive'
+            ? 'high'
+            : updatedClassification.supervisorLabel === 'red'
+              ? 'low'
+              : 'medium';
+      const existing = await this.prisma.escalationItem
+        .findUnique({
+          where: { generalAnalysisId: updatedClassification.id },
+          select: { severity: true },
+        })
+        .catch(() => null);
+
       await this.prisma.escalationItem
         .upsert({
           where: { generalAnalysisId: updatedClassification.id },
@@ -326,7 +368,12 @@ export class AiOrchestratorService {
               'Flagged for attention',
           },
           update: {
-            severity,
+            // Only ever raises. This used to write `severity` outright, so an
+            // item the classifier had already recorded as high — a complaint
+            // naming a person — was quietly demoted to medium or low the
+            // moment an SE opened the email, dropping it down the admin's
+            // feed. An escalation should not get less serious on re-read.
+            severity: raiseSeverity(existing?.severity, severity),
             tenantId: targetTenantId,
           },
         })

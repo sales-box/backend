@@ -40,9 +40,10 @@ export interface KbSearchHit {
    *  the keyword query has no comparable score, and 0 would read as "no match". */
   similarity: number | null;
   /**
-   * How well this passage actually matches. A keyword-only hit is 'strong' by
-   * definition — it contains the literal token the client typed, which is the
-   * whole reason that half exists.
+   * How well this passage actually matches. A hit the keyword half found never
+   * falls below 'moderate' — it contains a literal token — but never gets
+   * 'strong' on that alone, because the keyword query is OR over every word and
+   * one shared ordinary word is enough to produce a hit.
    */
   strength: MatchStrength;
   foundBy: FoundBy;
@@ -154,7 +155,7 @@ export class KbSearchService {
         chunkIndex: chunk.chunkIndex,
         content: chunk.content,
         similarity,
-        strength: strengthOf(similarity),
+        strength: strengthOf(similarity, found),
         foundBy: found,
         isLowConfidence: chunk.isLowConfidence,
       };
@@ -197,15 +198,36 @@ export class KbSearchService {
 }
 
 /**
- * A keyword-only hit has no similarity but is a literal token match — the
- * exact case embeddings are worst at (SKUs, part numbers), which is why the
- * keyword half exists at all. Treating "no score" as "weak" would bury the
- * strongest kind of match there is.
+ * How good a match is, given both what the cosine says and which halves found
+ * it.
+ *
+ * The keyword half matters independently: it fires on a literal token, the
+ * exact case embeddings are worst at (SKUs, part codes), so a hit it found is
+ * never merely noise. But it is not automatically the best kind of match
+ * either — its query is OR over every word, so one shared ordinary word is
+ * enough to produce a hit, and calling that "strong" would tell the admin the
+ * knowledge base answers something it does not. 'moderate' is the honest floor:
+ * a real token matched, and nothing more is claimed.
+ *
+ * The floor also fixes an incoherence. Strength used to be a function of
+ * similarity alone, so a passage found by BOTH halves at cosine 0.2 was labelled
+ * 'weak' while the very same passage found by keyword alone was 'strong' —
+ * finding it in more places made it look worse.
  */
-function strengthOf(similarity: number | null): MatchStrength {
-  if (similarity === null) return 'strong';
-  if (similarity >= STRONG_SIMILARITY) return 'strong';
-  return similarity >= MODERATE_SIMILARITY ? 'moderate' : 'weak';
+function strengthOf(similarity: number | null, found: FoundBy): MatchStrength {
+  const bySimilarity: MatchStrength =
+    similarity === null
+      ? 'weak'
+      : similarity >= STRONG_SIMILARITY
+        ? 'strong'
+        : similarity >= MODERATE_SIMILARITY
+          ? 'moderate'
+          : 'weak';
+
+  if (found === 'semantic') return bySimilarity;
+  // Keyword was involved: never below moderate, but the cosine can still raise
+  // it when the two halves agree.
+  return bySimilarity === 'strong' ? 'strong' : 'moderate';
 }
 
 function foundBy(inSemantic: boolean, inKeyword: boolean): FoundBy {

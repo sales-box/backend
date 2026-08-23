@@ -164,9 +164,12 @@ describe('KbSearchService', () => {
       expect(res.hits[0].strength).toBe(expected);
     });
 
-    it('treats a keyword-only hit as strong despite having no score', async () => {
-      // A literal token match is the case embeddings are WORST at — SKUs, part
-      // numbers. Calling "no similarity" weak would bury the best kind of hit.
+    it('gives a keyword-only hit moderate — a real token, but no more', async () => {
+      // A literal token match is the case embeddings are WORST at (SKUs, part
+      // numbers), so it is never merely noise. But the keyword query is OR over
+      // every word, so one shared ordinary word also produces a hit — calling
+      // that 'strong' would claim the knowledge base answers something it does
+      // not.
       keywordSearch.mockResolvedValue([chunk({ id: 'kw', similarity: 0 })]);
       const { service } = make([{ id: 'doc-1', filename: 'a.pdf' }]);
 
@@ -174,8 +177,35 @@ describe('KbSearchService', () => {
 
       expect(res.hits[0]).toMatchObject({
         similarity: null,
-        strength: 'strong',
+        strength: 'moderate',
       });
+    });
+
+    it('never rates a hit found by BOTH halves below one found by keyword alone', async () => {
+      // The incoherence this replaced: strength was a function of similarity
+      // only, so the same passage scored 'weak' when both halves found it and
+      // 'strong' when only the keyword half did. Finding it in more places made
+      // it look worse.
+      const low = chunk({ id: 'x', similarity: 0.1 });
+      semanticSearch.mockResolvedValue([low]);
+      keywordSearch.mockResolvedValue([low]);
+      const { service } = make([{ id: 'doc-1', filename: 'a.pdf' }]);
+
+      const res = await service.search(TENANT, 'WP-120');
+
+      expect(res.hits[0].foundBy).toBe('both');
+      expect(res.hits[0].strength).toBe('moderate');
+    });
+
+    it('lets a strong cosine raise a both-hit above the keyword floor', async () => {
+      const good = chunk({ id: 'x', similarity: 0.7 });
+      semanticSearch.mockResolvedValue([good]);
+      keywordSearch.mockResolvedValue([good]);
+      const { service } = make([{ id: 'doc-1', filename: 'a.pdf' }]);
+
+      expect((await service.search(TENANT, 'q')).hits[0].strength).toBe(
+        'strong',
+      );
     });
 
     it('says weak_match when passages came back but none of them answers', async () => {
