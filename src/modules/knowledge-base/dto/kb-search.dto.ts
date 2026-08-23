@@ -1,6 +1,43 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsString, MaxLength, MinLength } from 'class-validator';
 
+export class RubricCriterionDto {
+  @ApiProperty({ example: 'price' }) category!: string;
+
+  @ApiProperty({
+    example: 'Does the document state a price?',
+    description: 'The question the scorer asks of every document',
+  })
+  asks!: string;
+
+  @ApiProperty({
+    example: 'Price: 45,000 EGP per unit (ex-VAT)',
+    description: 'A line that would satisfy this criterion',
+  })
+  example!: string;
+
+  @ApiProperty({
+    example: 25,
+    description: 'Points this criterion is worth, out of 100',
+  })
+  worth!: number;
+}
+
+export class QualityCriteriaResponseDto {
+  @ApiProperty({
+    type: [RubricCriterionDto],
+    description: 'Most valuable first',
+  })
+  criteria!: RubricCriterionDto[];
+
+  @ApiProperty({
+    example: { good: 80, fair: 50 },
+    description:
+      'Score bands. At or above good is healthy; below fair is weak. Published here so the dashboard cannot disagree with the scorer.',
+  })
+  bands!: { good: number; fair: number };
+}
+
 export class KbSearchRequestDto {
   @ApiProperty({
     example: 'What is the lead time on the WP-120 pump?',

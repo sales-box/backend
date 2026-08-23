@@ -25,7 +25,12 @@ import {
 import { KnowledgeBaseService } from './knowledge-base.service';
 import { KbSearchService } from './kb-search.service';
 import { UploadResponseDto } from './dto/upload-response.dto';
-import { KbSearchRequestDto, KbSearchResponseDto } from './dto/kb-search.dto';
+import {
+  KbSearchRequestDto,
+  KbSearchResponseDto,
+  QualityCriteriaResponseDto,
+} from './dto/kb-search.dto';
+import { describeRubric } from './quality/rubric.describe';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { AuthenticatedRequest } from '../auth/jwt-auth.guard';
@@ -41,6 +46,20 @@ export class KnowledgeBaseController {
     private readonly knowledgeBaseService: KnowledgeBaseService,
     private readonly kbSearchService: KbSearchService,
   ) {}
+
+  @Get('quality/criteria')
+  @ApiOperation({
+    summary: 'What the quality score measures, and what each part is worth',
+    description:
+      'The same rubric the scorer uses, described for a human. Static per deployment — safe to cache client-side.',
+  })
+  @ApiOkResponse({ type: QualityCriteriaResponseDto })
+  qualityCriteria(): QualityCriteriaResponseDto {
+    // Sorted most-valuable-first so the panel leads with what moves the score
+    // most, rather than with whatever order the rules happen to be declared in.
+    const { criteria, bands } = describeRubric();
+    return { criteria: [...criteria].sort((a, b) => b.worth - a.worth), bands };
+  }
 
   // 20/min, far below the upload route's 60: every call embeds the question,
   // which is a real network round trip to the embedding provider (up to 45s
