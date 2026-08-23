@@ -38,6 +38,72 @@ export class QualityCriteriaResponseDto {
   bands!: { good: number; fair: number };
 }
 
+export class QualityGapDto {
+  @ApiProperty({ example: 'price' }) category!: string;
+
+  @ApiProperty({ example: 'Does the document state a price?' })
+  asks!: string;
+
+  @ApiProperty({
+    example: 'Price: 45,000 EGP per unit (ex-VAT)',
+    description: 'A line that would close this gap',
+  })
+  example!: string;
+
+  @ApiProperty({
+    example: 25,
+    description: 'Points adding it would gain',
+  })
+  worth!: number;
+}
+
+export class QualityPreviewResponseDto {
+  @ApiProperty({ example: 'pricing.pdf' }) filename!: string;
+
+  @ApiProperty({
+    example: 67,
+    description: 'Coverage score out of 100, computed without storing anything',
+  })
+  score!: number;
+
+  @ApiProperty({
+    example: 12,
+    description: 'How many passages this file would be split into',
+  })
+  chunks!: number;
+
+  @ApiProperty({
+    description:
+      'True when the text extraction itself looks unreliable — a scanned PDF, a near-empty file. Independent of the score.',
+  })
+  isLowConfidence!: boolean;
+
+  @ApiPropertyOptional({
+    example: 'Very little extractable text (42 characters)',
+  })
+  qualityReason?: string;
+
+  @ApiProperty({
+    type: [String],
+    description: 'Criteria this file already satisfies',
+    example: ['price', 'technical_specs'],
+  })
+  covers!: string[];
+
+  @ApiProperty({
+    type: [QualityGapDto],
+    description: 'What is missing, most valuable first',
+  })
+  gaps!: QualityGapDto[];
+
+  @ApiProperty({
+    description:
+      'Always false here. Repetition is measured by comparing chunk embeddings, which do not exist until the file is stored and indexed — so a preview cannot report it, and says so rather than implying a complete verdict.',
+    example: false,
+  })
+  redundancyMeasured!: boolean;
+}
+
 export class KbSearchRequestDto {
   @ApiProperty({
     example: 'What is the lead time on the WP-120 pump?',

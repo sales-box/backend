@@ -29,6 +29,7 @@ import {
   KbSearchRequestDto,
   KbSearchResponseDto,
   QualityCriteriaResponseDto,
+  QualityPreviewResponseDto,
 } from './dto/kb-search.dto';
 import { describeRubric } from './quality/rubric.describe';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
@@ -36,6 +37,38 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { AuthenticatedRequest } from '../auth/jwt-auth.guard';
 import { AdminTenantGuard } from '../../common/guards/admin-tenant.guard';
 import { Throttle } from '@nestjs/throttler';
+
+/**
+ * Pulls the single uploaded file off a multipart request.
+ *
+ * Shared by upload and preview so they cannot drift: the null-file check and
+ * the try/catch around toBuffer are not tidiness. @fastify/multipart throws
+ * past the 25MB limit registered in main.ts, and this backend has no global
+ * exception filter — without the catch, that error reaches the client as a
+ * raw 413 instead of a sentence.
+ */
+async function readUploadedFile(req: AuthenticatedRequest): Promise<{
+  filename: string;
+  mimetype: string;
+  buffer: Buffer;
+}> {
+  if (!req.isMultipart()) {
+    throw new BadRequestException('Request must be multipart/form-data');
+  }
+  const file = await req.file();
+  if (!file) {
+    throw new BadRequestException('A file field is required');
+  }
+  try {
+    return {
+      filename: file.filename,
+      mimetype: file.mimetype,
+      buffer: await file.toBuffer(),
+    };
+  } catch {
+    throw new BadRequestException('File exceeds the 25MB size limit');
+  }
+}
 
 @ApiTags('knowledge-base')
 @ApiBearerAuth()
@@ -88,6 +121,33 @@ export class KnowledgeBaseController {
     return this.kbSearchService.search(tenantId, dto.question);
   }
 
+  // Same 60/min as upload: this is the step BEFORE an upload, so anything
+  // tighter would make the preview the bottleneck on a bulk import. Cheap by
+  // comparison — parsing and regex, no database, no embedding call.
+  @Throttle({ default: { limit: 60, ttl: 60000 } })
+  @Post('quality/preview')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Score a file without storing it',
+    description:
+      'Runs the same extraction, chunking and rubric an upload runs, and writes nothing — no document row, no chunks, and no replacement of an existing file with the same name. Repetition is not measured: that needs embeddings, which need storage.',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: { file: { type: 'string', format: 'binary' } },
+      required: ['file'],
+    },
+  })
+  @ApiOkResponse({ type: QualityPreviewResponseDto })
+  async previewQuality(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<QualityPreviewResponseDto> {
+    const { filename, buffer } = await readUploadedFile(req);
+    return this.knowledgeBaseService.previewQuality(filename, buffer);
+  }
+
   @Throttle({ default: { limit: 60, ttl: 60000 } }) // 60 uploads/min per IP — bulk-friendly for the 200-doc KB, still abuse-limited
   @Post('upload')
   @ApiConsumes('multipart/form-data')
@@ -100,29 +160,9 @@ export class KnowledgeBaseController {
   })
   @ApiOkResponse({ type: UploadResponseDto })
   async upload(@Req() req: AuthenticatedRequest): Promise<UploadResponseDto> {
-    if (!req.isMultipart()) {
-      throw new BadRequestException('Request must be multipart/form-data');
-    }
-
-    const file = await req.file();
-    if (!file) {
-      throw new BadRequestException('A file field is required');
-    }
-
-    let buffer: Buffer;
-    try {
-      // Throws when the 25MB limit (set in main.ts) is exceeded.
-      buffer = await file.toBuffer();
-    } catch {
-      throw new BadRequestException('File exceeds the 25MB size limit');
-    }
-
+    const { filename, mimetype, buffer } = await readUploadedFile(req);
     return this.knowledgeBaseService.ingest(
-      {
-        filename: file.filename,
-        mimetype: file.mimetype,
-        buffer,
-      },
+      { filename, mimetype, buffer },
       { tenantId: req.user.tenantId, uploadedBy: req.user.email },
     );
   }

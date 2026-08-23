@@ -61,6 +61,7 @@ describe('KnowledgeBaseService', () => {
     documentChunk: { createMany: jest.Mock };
   };
   let paginate: jest.Mock;
+  let embeddingsQueue: { add: jest.Mock };
   let deleteDocMany: jest.Mock;
   let prisma: {
     $transaction: jest.Mock;
@@ -85,7 +86,7 @@ describe('KnowledgeBaseService', () => {
       document: { deleteMany: deleteDocMany },
       extended: { document: { paginate } },
     };
-    const embeddingsQueue = { add: jest.fn().mockResolvedValue(undefined) };
+    embeddingsQueue = { add: jest.fn().mockResolvedValue(undefined) };
     service = new KnowledgeBaseService(
       prisma as unknown as PrismaService,
       embeddingsQueue as never,
@@ -202,6 +203,85 @@ describe('KnowledgeBaseService', () => {
 
     expect(res.isLowConfidence).toBe(false);
     expect(res.qualityReason).toBeUndefined();
+  });
+
+  describe('previewQuality', () => {
+    const SALES_DOC =
+      'Widget Pump WP-120 datasheet. Price: 45,000 EGP per unit. ' +
+      'Flow rate 120 m3/h. Delivery within 14 days. ' +
+      'Designed for industrial dewatering. ';
+
+    const preview = (text: string, filename = 'doc.txt') =>
+      service.previewQuality(filename, Buffer.from(text, 'utf-8'));
+
+    it('writes absolutely nothing', async () => {
+      // The entire point. persist() deletes any existing document with the
+      // same filename BEFORE it writes, so a "let me just upload it and see
+      // the score" loop would already have destroyed the better version of
+      // Pricing.txt by the time the number appeared.
+      await preview(SALES_DOC.repeat(5), 'Pricing.txt');
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(tx.document.create).not.toHaveBeenCalled();
+      expect(tx.document.deleteMany).not.toHaveBeenCalled();
+      expect(tx.documentChunk.createMany).not.toHaveBeenCalled();
+      expect(embeddingsQueue.add).not.toHaveBeenCalled();
+    });
+
+    it('scores the same number the stored document would get', async () => {
+      // The preview and the real upload must agree, or the admin watches the
+      // badge change after committing. Both go through analyse().
+      const text = SALES_DOC.repeat(5);
+      const previewed = await preview(text, 'same.txt');
+      const analysed = await service.analyse(
+        'same.txt',
+        Buffer.from(text, 'utf-8'),
+      );
+
+      expect(previewed.score).toBe(analysed.coverage.score);
+      expect(previewed.chunks).toBe(analysed.chunks.length);
+    });
+
+    it('lists what is missing, most valuable first, with an example', async () => {
+      const res = await preview('Nothing measurable here at all. '.repeat(20));
+
+      expect(res.score).toBe(0);
+      expect(res.covers).toEqual([]);
+      expect(res.gaps.map((g) => g.worth)).toEqual([25, 25, 17, 17, 8, 8]);
+      expect(res.gaps[0].example).toBeTruthy();
+      expect(res.gaps[0].asks).toBeTruthy();
+    });
+
+    it('separates what is covered from what is not', async () => {
+      const res = await preview('Price: 45,000 EGP per unit. '.repeat(5));
+
+      expect(res.covers).toContain('price');
+      expect(res.gaps.map((g) => g.category)).not.toContain('price');
+    });
+
+    it('never claims to have measured repetition', async () => {
+      // computeRedundancy compares chunk EMBEDDINGS in SQL — impossible before
+      // the file is stored and indexed. Saying nothing would read as a perfect
+      // conciseness score, so it says so outright.
+      const res = await preview(SALES_DOC.repeat(5));
+      expect(res.redundancyMeasured).toBe(false);
+      expect(res).not.toHaveProperty('concisenessScore');
+    });
+
+    it('reports an unreadable file as low confidence, not as a bad score', async () => {
+      // Two different problems: "we could not read this" and "we read it and
+      // it says nothing useful". Both surface, separately.
+      const res = await preview('barely any text here', 'scan.pdf.txt');
+      expect(res.isLowConfidence).toBe(true);
+      expect(res.qualityReason).toContain('characters');
+    });
+
+    it('rejects a file type it cannot read, before touching anything', async () => {
+      await expect(
+        service.previewQuality('malware.exe', Buffer.from('MZ')),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects a corrupt PDF with 400 and writes nothing', async () => {
