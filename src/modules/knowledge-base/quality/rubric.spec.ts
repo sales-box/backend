@@ -22,6 +22,7 @@ describe('BUILTIN_RULES detectors', () => {
       category: 'iso',
       asks: 'ISO?',
       weight: 1,
+      example: 'Certified to ISO 9001:2015',
       source: 'custom' as const,
       detector: { type: 'keywords' as const, any: ['ISO 9001'] },
     };

@@ -42,6 +42,26 @@ export default tseslint.config(
     }
   },
   {
+    // Developer scripts (evals, backfills, one-off probes). The repo's own
+    // `pnpm lint` has always scoped to {src,apps,libs,test} — scripts/ is
+    // deliberately outside it. lint-staged does not know that: it lints
+    // whatever is staged, by path, so the first commit that touches a script
+    // fails on rules the project never intended to apply to it.
+    //
+    // Type-aware linting also degrades here: these files sit outside the
+    // program eslint builds for src/, so imported types resolve to `any` and
+    // every field access trips a no-unsafe-* rule. Turning those off is
+    // honest — the type checking that matters is `tsc -p tsconfig.json`,
+    // which DOES cover scripts/ and which these files now pass.
+    files: ['scripts/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+    },
+  },
+  {
     // US-043 external content resolver: structurally forbid raw HTTP on client
     // URLs (only the Google Drive SDK may fetch) and any AI/LLM import (sprint
     // rule: zero AI). Tests are exempt — the behavioral no-fetch spec spies on
