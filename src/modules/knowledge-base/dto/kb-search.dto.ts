@@ -162,6 +162,12 @@ export class KbSearchHitDto {
       'True when the source document had an unreliable text extraction (e.g. a scanned PDF)',
   })
   isLowConfidence!: boolean;
+
+  @ApiProperty({
+    description:
+      'Whether a real reply would actually receive this passage. This preview returns more results than the reply pipeline forwards, so a passage ranked below the cutoff is shown for diagnosis only — it never counts towards the outcome.',
+  })
+  reachesModel!: boolean;
 }
 
 export class KbSearchResponseDto {
@@ -170,7 +176,7 @@ export class KbSearchResponseDto {
   @ApiProperty({
     enum: ['ok', 'weak_match', 'no_match', 'empty_knowledge_base'],
     description:
-      'ok = at least one passage really answers this. weak_match = passages came back but none of them answers it — the usual result for a topic the knowledge base does not cover. no_match = documents exist, retrieval found none. empty_knowledge_base = nothing indexed yet.',
+      'Judged only on passages the model actually receives (reachesModel). ok = at least one of those really answers this. weak_match = passages came back but none of the ones the model gets answers it — the usual result for a topic the knowledge base does not cover. no_match = documents exist, retrieval found none. empty_knowledge_base = nothing indexed yet.',
   })
   outcome!: 'ok' | 'weak_match' | 'no_match' | 'empty_knowledge_base';
 
@@ -182,6 +188,13 @@ export class KbSearchResponseDto {
     example: { semantic: 20, keyword: 6 },
   })
   candidates!: { semantic: number; keyword: number };
+
+  @ApiProperty({
+    example: 5,
+    description:
+      'How many passages a real reply is given. Everything ranked below this is preview-only. Read from the reply pipeline itself so the two can never disagree.',
+  })
+  modelTopK!: number;
 
   @ApiProperty({ type: [KbSearchHitDto], description: 'Best first' })
   hits!: KbSearchHitDto[];

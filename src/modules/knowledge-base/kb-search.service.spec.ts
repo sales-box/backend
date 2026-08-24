@@ -16,6 +16,9 @@ jest.mock('../ai/graphs/reply/nodes/matcher/matcher.node', () => {
 const semanticSearch = matcher.semanticSearch as jest.Mock;
 const keywordSearch = matcher.keywordSearch as jest.Mock;
 const expandNeighbours = matcher.expandNeighbours as jest.Mock;
+/** Read from the matcher, never re-declared — a copy here could drift and the
+ *  tests would then pass while the screen lied. */
+const MODEL_TOP_K = matcher.TOP_K;
 
 const TENANT = 'aaaaaaaa-0000-0000-0000-000000000001';
 
@@ -164,16 +167,21 @@ describe('KbSearchService', () => {
       expect(res.hits[0].strength).toBe(expected);
     });
 
-    it('gives a keyword-only hit moderate — a real token, but no more', async () => {
+    it('gives a keyword hit on a real SKU moderate — a real token, but no more', async () => {
       // A literal token match is the case embeddings are WORST at (SKUs, part
-      // numbers), so it is never merely noise. But the keyword query is OR over
-      // every word, so one shared ordinary word also produces a hit — calling
-      // that 'strong' would claim the knowledge base answers something it does
-      // not.
-      keywordSearch.mockResolvedValue([chunk({ id: 'kw', similarity: 0 })]);
+      // numbers), so it is never merely noise. But it is not automatically the
+      // best kind of match either — calling it 'strong' would claim the
+      // knowledge base answers something it does not.
+      keywordSearch.mockResolvedValue([
+        chunk({
+          id: 'kw',
+          similarity: 0,
+          content: 'The WP-120 ships in 14 days.',
+        }),
+      ]);
       const { service } = make([{ id: 'doc-1', filename: 'a.pdf' }]);
 
-      const res = await service.search(TENANT, 'WP-120');
+      const res = await service.search(TENANT, 'lead time on the WP-120?');
 
       expect(res.hits[0]).toMatchObject({
         similarity: null,
@@ -181,17 +189,43 @@ describe('KbSearchService', () => {
       });
     });
 
+    it('does NOT credit a keyword hit that only shares an ordinary word', async () => {
+      // "Do you sell submarines?" against a solar catalogue. The keyword query
+      // is OR over every word, so any chunk containing "you" comes back. An
+      // unconditional keyword floor turned that into a moderate hit and then
+      // into "the AI can answer this" — the precise failure this screen exists
+      // to catch, produced by the screen itself.
+      const noise = chunk({
+        id: 'noise',
+        similarity: 0.2,
+        content: 'Thank you for your enquiry about our solar modules.',
+      });
+      semanticSearch.mockResolvedValue([noise]);
+      keywordSearch.mockResolvedValue([noise]);
+      const { service } = make([{ id: 'doc-1', filename: 'a.pdf' }]);
+
+      const res = await service.search(TENANT, 'Do you sell submarines?');
+
+      expect(res.hits[0].foundBy).toBe('both');
+      expect(res.hits[0].strength).toBe('weak');
+      expect(res.outcome).toBe('weak_match');
+    });
+
     it('never rates a hit found by BOTH halves below one found by keyword alone', async () => {
       // The incoherence this replaced: strength was a function of similarity
       // only, so the same passage scored 'weak' when both halves found it and
       // 'strong' when only the keyword half did. Finding it in more places made
       // it look worse.
-      const low = chunk({ id: 'x', similarity: 0.1 });
+      const low = chunk({
+        id: 'x',
+        similarity: 0.1,
+        content: 'The WP-120 ships in 14 days.',
+      });
       semanticSearch.mockResolvedValue([low]);
       keywordSearch.mockResolvedValue([low]);
       const { service } = make([{ id: 'doc-1', filename: 'a.pdf' }]);
 
-      const res = await service.search(TENANT, 'WP-120');
+      const res = await service.search(TENANT, 'lead time on the WP-120?');
 
       expect(res.hits[0].foundBy).toBe('both');
       expect(res.hits[0].strength).toBe('moderate');
@@ -220,6 +254,48 @@ describe('KbSearchService', () => {
       expect(res.outcome).toBe('weak_match');
       expect(res.hits).toHaveLength(2); // still shown — this screen shows the truth
       expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    it('does NOT call it ok when the only real answer is below the cutoff', async () => {
+      // The bug this pins: the screen shows 8 results, the reply pipeline
+      // forwards 5. A strong passage at rank 6 is one the model never
+      // receives — reporting "the AI can answer this" from it tells the admin
+      // the exact opposite of what will happen on a real client email.
+      const weak = (i: number) => chunk({ id: `weak-${i}`, similarity: 0.15 });
+      semanticSearch.mockResolvedValue([
+        weak(1),
+        weak(2),
+        weak(3),
+        weak(4),
+        weak(5),
+        chunk({ id: 'the-answer', similarity: 0.9 }), // rank 6 — out of reach
+      ]);
+      const { service } = make([{ id: 'doc-1', filename: 'FAQ.pdf' }]);
+
+      const res = await service.search(TENANT, 'warranty on mounting kits?');
+
+      expect(res.outcome).toBe('weak_match');
+      // Still shown, and still labelled strong — the admin needs to SEE that
+      // the answer exists and sits one rank too low to be used.
+      const answer = res.hits.find((h) => h.chunkId === 'the-answer');
+      expect(answer).toMatchObject({ strength: 'strong', reachesModel: false });
+    });
+
+    it('marks exactly the first TOP_K hits as reaching the model', async () => {
+      semanticSearch.mockResolvedValue(
+        Array.from({ length: 8 }, (_, i) =>
+          chunk({ id: `c${i}`, similarity: 0.5 - i * 0.01 }),
+        ),
+      );
+      const { service } = make([{ id: 'doc-1', filename: 'a.pdf' }]);
+
+      const res = await service.search(TENANT, 'q');
+
+      expect(res.modelTopK).toBe(MODEL_TOP_K);
+      expect(res.hits.map((h) => h.reachesModel)).toEqual([
+        ...Array<boolean>(MODEL_TOP_K).fill(true),
+        ...Array<boolean>(res.hits.length - MODEL_TOP_K).fill(false),
+      ]);
     });
 
     it('one real answer among weak ones is still ok', async () => {

@@ -18,8 +18,12 @@ import { wrapUntrustedContent } from '@/common/security/untrusted-content.wrappe
 const logger = new Logger('MatcherNode');
 
 /** How many chunks we hand the LLM. Enough context for answers that span
- *  chunks, small enough to fit the prompt. */
-const TOP_K = 5;
+ *  chunks, small enough to fit the prompt.
+ *  Exported because the Test-KB screen has to draw the line in exactly the
+ *  same place: a passage below this rank is one the model never receives, and
+ *  a preview that quietly used its own number would tell the admin the AI can
+ *  answer from a passage it will never be given. */
+export const TOP_K = 5;
 /** How many candidates each search method contributes before fusion. */
 const SEARCH_POOL = 20;
 /** RRF dampening constant — the default from the paper that introduced
