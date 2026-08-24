@@ -11,6 +11,15 @@ node_modules/
 .env.development.local
 .env.test.local
 .env.production.local
+# Backups and timestamped copies. `.env` itself was already ignored, but a
+# copy of it was not — one `git add -A` away from the production DATABASE_URL
+# and every API key landing in the history.
+.env.bak*
+.env.*.bak
+.env.backup*
+.env.save
+.env.orig
+.env.*~
 
 # NestJS environment files
 apps/**/.env
