@@ -23,6 +23,8 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
+    "eval:classifier": "ts-node -r tsconfig-paths/register scripts/classifier-eval/run-eval.ts",
+    "eval:classifier:trace": "ts-node -r tsconfig-paths/register scripts/classifier-eval/trace.ts",
     "openapi:gen": "nest build && node dist/openapi-cli.js",
     "api:gen": "orval --config orval.config.ts",
     "prepare": "husky",

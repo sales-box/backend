@@ -17,10 +17,14 @@ import JSZip from 'jszip';
 import { PrismaService } from '../../database/prisma.service';
 import type { PaginationOptions } from '../../database/pagination/pagination.types';
 import { UploadResponseDto } from './dto/upload-response.dto';
+import type { QualityPreviewResponseDto } from './dto/kb-search.dto';
 import {
   EMBEDDINGS_QUEUE,
   EMBED_DOCUMENT_JOB,
 } from '../embeddings/embeddings.constants';
+import { evaluateCoverage } from './quality/rules-evaluator';
+import { BUILTIN_RULES } from './quality/rubric';
+import type { CoverageResult } from './quality/quality.types';
 
 const MAX_TOKENS_PER_CHUNK = 1000;
 const CHUNK_OVERLAP_TOKENS = 150; // ~15% of chunk size
@@ -65,6 +69,24 @@ interface Chunk {
   tokenCount: number;
 }
 
+/**
+ * What a file turns out to be, before anything is written down.
+ *
+ * Note what is absent: redundancy. `computeRedundancy` compares chunk
+ * embeddings in SQL, so it cannot exist until the chunks are stored AND
+ * embedded. A preview built from this is honestly incomplete, and says so
+ * rather than reporting a conciseness score it never measured.
+ */
+export interface AnalysedDocument {
+  fileType: FileType;
+  text: string;
+  chunks: Chunk[];
+  /** Layer 1 — did we read the file properly? */
+  extraction: DocumentQuality;
+  /** Layer 2 — does what we read actually answer sales questions? */
+  coverage: CoverageResult;
+}
+
 @Injectable()
 export class KnowledgeBaseService {
   private readonly logger = new Logger(KnowledgeBaseService.name);
@@ -82,15 +104,102 @@ export class KnowledgeBaseService {
     { filename, buffer }: IngestInput,
     owner?: UploadOwner,
   ): Promise<UploadResponseDto> {
+    const analysed = await this.analyse(filename, buffer);
+    return this.persist(
+      filename,
+      analysed.fileType,
+      analysed.chunks,
+      analysed.extraction,
+      owner,
+    );
+  }
+
+  /**
+   * Everything that can be known about a file without writing it down.
+   *
+   * Read the file, split it, judge it — and stop. No database, no queue, no
+   * side effect of any kind. This was inlined at the top of `ingest`, which
+   * meant the only way to find out what a document scored was to store it
+   * first: by the time the admin saw a number, the file was already in the
+   * knowledge base and had already replaced any earlier version of itself.
+   *
+   * Pulling it out costs nothing at upload time (`ingest` calls it) and makes
+   * a score-without-storing preview possible, which is the whole point.
+   */
+  async analyse(filename: string, buffer: Buffer): Promise<AnalysedDocument> {
     const fileType = this.resolveFileType(filename);
     const text = await this.extractText(buffer, fileType);
     const chunks = await this.chunk(text);
-    const quality = this.assessDocumentQuality(
+    const extraction = this.assessDocumentQuality(
       (text ?? '').trim().length,
       buffer.length,
       chunks.length,
     );
-    return this.persist(filename, fileType, chunks, quality, owner);
+    // Scored over the JOINED CHUNK TEXT rather than the raw extraction, because
+    // that is exactly what the async worker scores (it rebuilds this same
+    // string from the stored chunks). Scoring `text` here would give a
+    // different number — chunk overlap repeats ~15% of the content — and the
+    // preview would disagree with the score that lands minutes later.
+    const coverage = evaluateCoverage(
+      chunks.map((c) => c.content).join('\n'),
+      BUILTIN_RULES,
+    );
+    return { fileType, text, chunks, extraction, coverage };
+  }
+
+  /**
+   * What this file would score, without putting it in the knowledge base.
+   *
+   * The admin can look before they commit. That matters more than it sounds,
+   * because `persist` deletes any existing document with the same filename
+   * before it writes — so re-uploading a worse version of "Pricing.pdf" to see
+   * how it scores would already have destroyed the better one. A preview has
+   * no such cost.
+   *
+   * `redundancyMeasured: false` is stated rather than left to inference. The
+   * repetition check compares chunk embeddings in SQL and cannot run before
+   * the file is stored and indexed; reporting a conciseness score here would
+   * mean inventing one, and reporting nothing at all would look like a
+   * perfect result.
+   */
+  async previewQuality(
+    filename: string,
+    buffer: Buffer,
+  ): Promise<QualityPreviewResponseDto> {
+    const { chunks, extraction, coverage } = await this.analyse(
+      filename,
+      buffer,
+    );
+    const totalWeight = BUILTIN_RULES.reduce((sum, r) => sum + r.weight, 0);
+    const worthOf = (category: string) => {
+      const rule = BUILTIN_RULES.find((r) => r.category === category);
+      return rule && totalWeight > 0
+        ? Math.round((100 * rule.weight) / totalWeight)
+        : 0;
+    };
+
+    return {
+      filename,
+      score: coverage.score,
+      chunks: chunks.length,
+      isLowConfidence: extraction.isLowConfidence,
+      qualityReason: extraction.qualityReason ?? undefined,
+      covers: coverage.passed,
+      // Ordered by what closing each gap is worth, so the admin's first move is
+      // the one that moves the score most rather than whichever rule happens
+      // to be declared first.
+      gaps: coverage.failed
+        .map((gap) => ({
+          category: gap.category,
+          asks: gap.asks,
+          example:
+            BUILTIN_RULES.find((r) => r.category === gap.category)?.example ??
+            '',
+          worth: worthOf(gap.category),
+        }))
+        .sort((a, b) => b.worth - a.worth),
+      redundancyMeasured: false,
+    };
   }
 
   /**

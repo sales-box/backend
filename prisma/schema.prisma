@@ -165,6 +165,14 @@ model GeneralAnalysis {
   clientHistoryConfidence Float?    @map("client_history_confidence")
   supervisorLabel         String?   @map("supervisor_label")
   reviewedAt              DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  // Complaint detection. Separate from `intent` because the same email is
+  // often both a support ticket and something the admin must see independently:
+  // a complaint about the sales engineer cannot be routed only to that sales
+  // engineer. 'product' | 'service' | 'person' | 'none'.
+  // Defaults keep every row classified before this existed readable as
+  // "no complaint detected", which is the honest reading.
+  isComplaint             Boolean   @default(false) @map("is_complaint")
+  complaintAbout          String    @default("none") @map("complaint_about")
   escalationItem          EscalationItem?
 
   @@index([tenantId, isUrgent])
