@@ -27,15 +27,36 @@ export class PlatformTenantsService {
   ) {}
 
   /** Every tenant on the platform (operator view), paginated. Metadata only. */
-  async list(page: number, limit: number) {
+  async list(
+    page: number,
+    limit: number,
+    filters: { search?: string; status?: TenantStatus } = {},
+  ) {
     const skip = (page - 1) * limit;
+    const search = filters.search?.trim();
+    // Built once and reused for both queries — a count taken without the same
+    // filter would produce page numbers that do not match the rows on screen.
+    const where = {
+      ...(filters.status ? { status: filters.status } : {}),
+      ...(search
+        ? { companyName: { contains: search, mode: 'insensitive' as const } }
+        : {}),
+    };
+
     const [total, tenants] = await Promise.all([
-      this.prisma.tenant.count(),
+      this.prisma.tenant.count({ where }),
       this.prisma.tenant.findMany({
+        where,
         skip,
         take: limit,
         orderBy: { createdAt: 'desc' },
-        select: { id: true, companyName: true, status: true, tier: true },
+        select: {
+          id: true,
+          companyName: true,
+          status: true,
+          tier: true,
+          createdAt: true,
+        },
       }),
     ]);
 

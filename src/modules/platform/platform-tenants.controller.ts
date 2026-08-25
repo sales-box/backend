@@ -9,11 +9,11 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { PlatformGuard } from './platform.guard';
 import { PlatformTenantsService } from './platform-tenants.service';
 import { ChangeStatusDto } from './dto/change-status.dto';
 import { ChangeTierDto } from './dto/change-tier.dto';
+import { ListTenantsQueryDto } from './dto/list-tenants-query.dto';
 
 @ApiTags('platform')
 @UseGuards(PlatformGuard)
@@ -21,10 +21,13 @@ import { ChangeTierDto } from './dto/change-tier.dto';
 export class PlatformTenantsController {
   constructor(private readonly service: PlatformTenantsService) {}
 
-  /** List all tenants across the platform. */
+  /** List all tenants across the platform, optionally filtered. */
   @Get()
-  list(@Query() query: PaginationQueryDto) {
-    return this.service.list(query.page ?? 1, query.limit ?? 20);
+  list(@Query() query: ListTenantsQueryDto) {
+    return this.service.list(query.page ?? 1, query.limit ?? 20, {
+      search: query.search,
+      status: query.status,
+    });
   }
 
   /**

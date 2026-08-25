@@ -302,4 +302,68 @@ describe('PlatformTenantsService', () => {
       );
     });
   });
+
+  describe('list filters', () => {
+    function makeService() {
+      const count = jest.fn().mockResolvedValue(0);
+      const findMany = jest.fn().mockResolvedValue([]);
+      const groupBy = jest.fn().mockResolvedValue([]);
+      const prisma = {
+        tenant: { count, findMany },
+        allowlistEntry: { groupBy },
+      } as unknown as PrismaService;
+      return {
+        service: new PlatformTenantsService(prisma, stubAllowlist().allowlist),
+        count,
+        findMany,
+      };
+    }
+
+    /** Typed views of the recorded call args, to stay off an implicit `any`. */
+    type WhereArg = { where: Record<string, unknown> };
+    type FindManyArg = WhereArg & { select: Record<string, boolean> };
+
+    function whereOf(fn: jest.Mock): Record<string, unknown> {
+      return (fn.mock.calls as Array<[WhereArg]>)[0][0].where;
+    }
+
+    it('applies no where clause when no filters are given', async () => {
+      const { service, findMany } = makeService();
+      await service.list(1, 20);
+      expect(whereOf(findMany)).toEqual({});
+    });
+
+    it('filters by status', async () => {
+      const { service, findMany } = makeService();
+      await service.list(1, 20, { status: 'suspended' });
+      expect(whereOf(findMany)).toEqual({ status: 'suspended' });
+    });
+
+    it('searches company name case-insensitively', async () => {
+      const { service, findMany } = makeService();
+      await service.list(1, 20, { search: 'acme' });
+      expect(whereOf(findMany)).toEqual({
+        companyName: { contains: 'acme', mode: 'insensitive' },
+      });
+    });
+
+    it('ignores a whitespace-only search', async () => {
+      const { service, findMany } = makeService();
+      await service.list(1, 20, { search: '   ' });
+      expect(whereOf(findMany)).toEqual({});
+    });
+
+    it('counts with the same where clause so pagination matches the filter', async () => {
+      const { service, count, findMany } = makeService();
+      await service.list(1, 20, { status: 'active', search: 'beta' });
+      expect(whereOf(count)).toEqual(whereOf(findMany));
+    });
+
+    it('selects createdAt for the joined column', async () => {
+      const { service, findMany } = makeService();
+      await service.list(1, 20);
+      const arg = (findMany.mock.calls as Array<[FindManyArg]>)[0][0];
+      expect(arg.select.createdAt).toBe(true);
+    });
+  });
 });
