@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { PlatformTenantsService } from './platform-tenants.service';
 import type { PrismaService } from '../../database/prisma.service';
@@ -364,6 +366,125 @@ describe('PlatformTenantsService', () => {
       await service.list(1, 20);
       const arg = (findMany.mock.calls as Array<[FindManyArg]>)[0][0];
       expect(arg.select.createdAt).toBe(true);
+    });
+  });
+
+  describe('purge', () => {
+    /**
+     * A Prisma stub that records which delegates had a delete issued against
+     * them, in call order. `$transaction` receives an array of promises; the
+     * delegates have already been invoked by the time it is called, so the
+     * recorded order is the order the service wrote them in.
+     */
+    function makeService(status: string | null) {
+      const calls: string[] = [];
+      const del = (name: string) =>
+        jest.fn(() => {
+          calls.push(name);
+          return Promise.resolve({ count: 0 });
+        });
+
+      const models = [
+        'interaction',
+        'escalationItem',
+        'generalAnalysis',
+        'knowledgeGap',
+        'document',
+        'crmConnection',
+        'crmAgentConnection',
+        'driveConnection',
+        'allowedDomain',
+        'allowlistEntry',
+        'connectedAccount',
+        'client',
+      ];
+
+      const prisma: Record<string, unknown> = {
+        $transaction: jest.fn().mockResolvedValue([]),
+        tenant: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValue(status === null ? null : { status }),
+          delete: del('tenant'),
+        },
+      };
+      for (const m of models) {
+        prisma[m] = { deleteMany: del(m) };
+      }
+
+      return {
+        service: new PlatformTenantsService(
+          prisma as unknown as PrismaService,
+          stubAllowlist().allowlist,
+        ),
+        calls,
+        transaction: prisma.$transaction as jest.Mock,
+      };
+    }
+
+    it('refuses to delete an active tenant', async () => {
+      const { service, transaction } = makeService('active');
+      await expect(service.purge('t1')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(transaction).not.toHaveBeenCalled();
+    });
+
+    it('refuses to delete a suspended tenant', async () => {
+      const { service } = makeService('suspended');
+      await expect(service.purge('t1')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+    });
+
+    it('throws NotFound for an unknown tenant', async () => {
+      const { service } = makeService(null);
+      await expect(service.purge('nope')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it('deletes an offboarded tenant last, after its data', async () => {
+      const { service, calls, transaction } = makeService('offboarded');
+      await service.purge('t1');
+      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(calls[calls.length - 1]).toBe('tenant');
+    });
+
+    it('also deletes an abandoned tenant', async () => {
+      const { service, transaction } = makeService('abandoned');
+      await service.purge('t1');
+      expect(transaction).toHaveBeenCalledTimes(1);
+    });
+
+    /**
+     * The safety net. Three tenant-scoped tables have no foreign key, so
+     * nothing at the database level would complain if the purge forgot one —
+     * customer data would simply survive the delete. This reads the schema and
+     * fails the build if any table with a `tenantId` is not purged.
+     */
+    it('purges every tenant-scoped table in the schema', async () => {
+      const { service, calls } = makeService('offboarded');
+      await service.purge('t1');
+
+      const schema = readFileSync(
+        join(__dirname, '../../../prisma/schema.prisma'),
+        'utf8',
+      );
+      const scoped = new Set<string>();
+      let model = '';
+      for (const line of schema.split('\n')) {
+        const m = /^model\s+(\w+)/.exec(line);
+        if (m) model = m[1];
+        if (model && /^\s+tenantId\s/.test(line)) {
+          scoped.add(model[0].toLowerCase() + model.slice(1));
+        }
+      }
+
+      expect(scoped.size).toBeGreaterThan(0);
+      const purged = new Set(calls);
+      const missed = [...scoped].filter((t) => !purged.has(t));
+      expect(missed).toEqual([]);
     });
   });
 });
