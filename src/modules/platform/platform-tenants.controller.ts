@@ -27,6 +27,17 @@ export class PlatformTenantsController {
     return this.service.list(query.page ?? 1, query.limit ?? 20);
   }
 
+  /**
+   * Platform-wide tenant counts for the operator overview.
+   *
+   * MUST stay above `@Get(':id')` — that route parses its param as a UUID and
+   * would otherwise swallow `/stats` and reject it as malformed.
+   */
+  @Get('stats')
+  stats() {
+    return this.service.stats();
+  }
+
   /** One tenant's operational detail. */
   @Get(':id')
   getDetail(@Param('id', ParseUUIDPipe) id: string) {
