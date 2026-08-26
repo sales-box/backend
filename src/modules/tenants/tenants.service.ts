@@ -61,11 +61,19 @@ export class TenantsService {
    * The person is then stopped at set-password with "Connect the Google
    * account first", which they cannot act on. Fail here instead, where the
    * reason can still be explained.
+   *
+   * "Belongs to a tenant" is the whole test, hence the `tenantId: not null`.
+   * The Google connect creates the account row BEFORE set-password attaches it
+   * to a tenant, so an unattached row is this person's own half-finished
+   * signup, not somebody else's membership — setAdminPassword() goes looking
+   * for exactly that row to link. Matching on the address alone turned every
+   * broken signup into a permanent ban on re-registering, under a message
+   * about "another company" that names a company the address never joined.
    */
   private async assertEmailIsNotATenantUser(email: string): Promise<void> {
     const [tenantUser, invited] = await Promise.all([
       this.prisma.connectedAccount.findFirst({
-        where: { email },
+        where: { email, tenantId: { not: null } },
         select: { id: true },
       }),
       this.prisma.allowlistEntry.findFirst({

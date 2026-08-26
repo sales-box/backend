@@ -326,6 +326,21 @@ describe('TenantsService', () => {
       // The orphaned-active-tenant problem starts with this row existing.
       expect(mockTenantCreate).not.toHaveBeenCalled();
     });
+
+    it('ignores a Google account not yet attached to any tenant', async () => {
+      // The Google connect writes this row before set-password attaches it to
+      // a tenant, so a signup that broke in between leaves one behind. Matching
+      // on the address alone made that row a permanent ban on re-registering —
+      // and blamed "another company" the address had never joined.
+      await service
+        .signup({ companyName: 'Sales Co', adminEmail: 'se@acme.com' })
+        .catch(() => undefined);
+
+      const calls = mockConnectedAccountFindFirst.mock.calls as Array<
+        [{ where: { tenantId?: unknown } }]
+      >;
+      expect(calls[0][0].where.tenantId).toEqual({ not: null });
+    });
   });
 
   describe('resendVerification', () => {
