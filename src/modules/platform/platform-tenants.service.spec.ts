@@ -268,10 +268,10 @@ describe('PlatformTenantsService', () => {
   });
 
   describe('changeTier', () => {
-    function makeService(exists: boolean) {
+    function makeService(exists: boolean, status = 'active') {
       const findUnique = jest
         .fn()
-        .mockResolvedValue(exists ? { id: 't1' } : null);
+        .mockResolvedValue(exists ? { id: 't1', status } : null);
       const update = jest
         .fn()
         .mockImplementation(({ data }) =>
@@ -300,6 +300,27 @@ describe('PlatformTenantsService', () => {
       await expect(service.changeTier('x', 2)).rejects.toBeInstanceOf(
         NotFoundException,
       );
+    });
+
+    it('refuses to change the tier of an offboarded tenant', async () => {
+      const { service, update } = makeService(true, 'offboarded');
+      await expect(service.changeTier('t1', 3)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('refuses to change the tier of an abandoned tenant', async () => {
+      const { service } = makeService(true, 'abandoned');
+      await expect(service.changeTier('t1', 3)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+    });
+
+    it('allows a tier change on a pending tenant', async () => {
+      const { service, update } = makeService(true, 'pending');
+      await service.changeTier('t1', 3);
+      expect(update).toHaveBeenCalled();
     });
   });
 

@@ -10,6 +10,9 @@ import type { TenantStatusAction } from './dto/change-status.dto';
 
 const ACTIVE_SEAT_STATUSES = ['granted', 'verified'];
 
+/** A closed workspace's plan is frozen — there is nothing left to bill for. */
+const TERMINAL_STATUSES: TenantStatus[] = ['offboarded', 'abandoned'];
+
 export interface PlatformStats {
   total: number;
   byStatus: Record<TenantStatus, number>;
@@ -174,7 +177,20 @@ export class PlatformTenantsService {
 
   /** Set a tenant's plan tier (operator override; not a billing charge). */
   async changeTier(id: string, tier: number) {
-    await this.assertExists(id);
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id },
+      select: { status: true },
+    });
+    if (!tenant) {
+      throw new NotFoundException('Tenant not found');
+    }
+    // The console disables this control for a closed workspace; enforce it
+    // here too, because a UI-only check is not a check.
+    if (TERMINAL_STATUSES.includes(tenant.status)) {
+      throw new ConflictException(
+        `Cannot change the plan of a tenant that is '${tenant.status}'`,
+      );
+    }
     return this.prisma.tenant.update({
       where: { id },
       data: { tier },
@@ -200,16 +216,6 @@ export class PlatformTenantsService {
       data: { status },
       select: { id: true, status: true },
     });
-  }
-
-  private async assertExists(id: string): Promise<void> {
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { id },
-      select: { id: true },
-    });
-    if (!tenant) {
-      throw new NotFoundException('Tenant not found');
-    }
   }
 
   /** Active-seat (granted|verified) counts for the given tenants, in one query. */
