@@ -387,7 +387,11 @@ describe('AttachmentsService', () => {
       expect(result.text).toContain('## Slide 1');
     });
 
-    it('should NOT wrap xlsx structured data', async () => {
+    it('wraps xlsx structured data like every other attachment type', async () => {
+      // This spec used to assert the opposite -- it was literally named "should
+      // NOT wrap xlsx structured data" -- which pinned the one branch that fed
+      // the Composer prompt un-caged text. A spreadsheet cell is free text an
+      // outsider wrote, exactly like a PDF paragraph, so it gets the same cage.
       const result = await service.parseAttachmentCached(
         'tenant-a',
         'test@example.com',
@@ -400,7 +404,9 @@ describe('AttachmentsService', () => {
       );
 
       expect(result.structured).toBeDefined();
-      expect(result.structured).not.toContain('untrusted_content');
+      expect(result.structured).toContain(
+        '<untrusted_content source="attachment_text">',
+      );
     });
   });
 

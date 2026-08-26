@@ -353,6 +353,23 @@ export class KnowledgeBaseService {
     let documentId: string | null = null;
 
     await this.prisma.$transaction(async (tx) => {
+      // Serialise replacements of the same file within the same tenant.
+      //
+      // The delete-then-create below is a check-then-act, and uq_documents_file
+      // does not close the gap: it covers (tenant_id, filename, product_name),
+      // and Postgres treats NULLs as distinct in a unique index, so two rows
+      // with a NULL product_name — the normal case for an upload — never
+      // collide. Two uploads of one filename arriving together therefore both
+      // deleted nothing and both inserted, leaving the tenant with a duplicate
+      // document and double-counted chunks. Reproduced with two concurrent
+      // requests: 201/201, two rows, both product_name NULL.
+      //
+      // A transaction-scoped advisory lock is released automatically on commit
+      // or rollback, needs no schema change, and only ever contends with
+      // another upload of the very same file in the very same tenant.
+      const lockKey = `${owner?.tenantId ?? 'global'}:${filename}`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+
       // Replace the tenant's own document with the same filename; ON DELETE
       // CASCADE removes its old chunks, so no duplicates. Never touches
       // another tenant's file of the same name.

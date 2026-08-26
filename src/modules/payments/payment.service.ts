@@ -12,13 +12,8 @@ export class PaymentService {
     private readonly prisma: PrismaService,
   ) {}
 
-  async createPaymentIntent(tenantId: string, amount: number, tier?: number) {
-    const paymentIntent = await this.stripeService.createPaymentIntent(
-      tenantId,
-      amount,
-      tier,
-    );
-    return paymentIntent;
+  async createPaymentIntent(tenantId: string, tier: number) {
+    return this.stripeService.createPaymentIntent(tenantId, tier);
   }
 
   async getPayment(tenantId: string, id: string) {

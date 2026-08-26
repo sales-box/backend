@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { StripeService } from './stripe.service';
 
@@ -28,25 +29,45 @@ describe('StripeService', () => {
   });
 
   describe('createPaymentIntent', () => {
-    it('should call stripe.paymentIntents.create with correct parameters', async () => {
+    it('prices the plan from the server-side table, not from the caller', async () => {
       mockCreate.mockResolvedValue({
         id: 'pi_test_123',
         client_secret: 'secret_123',
       });
 
-      const result = await service.createPaymentIntent('tenant-abc', 5000);
+      // The caller names a tier and nothing else. This used to take an
+      // `amount` argument straight from the request body, and the webhook
+      // writes tenant.tier from the same metadata — so the buyer set the price.
+      const result = await service.createPaymentIntent('tenant-abc', 1);
 
       expect(mockCreate).toHaveBeenCalledWith({
-        amount: 5000,
+        amount: 4900, // Starter, from PLAN_PRICES
         currency: 'usd',
-        metadata: {
-          tenantId: 'tenant-abc',
-        },
+        metadata: { tenantId: 'tenant-abc', tier: '1' },
       });
       expect(result).toEqual({
         id: 'pi_test_123',
         client_secret: 'secret_123',
       });
+    });
+
+    it('charges the tier that was asked for, not a cheaper one', async () => {
+      mockCreate.mockResolvedValue({ id: 'pi_growth' });
+
+      await service.createPaymentIntent('tenant-abc', 2);
+
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ amount: 14900 }),
+      );
+    });
+
+    it('refuses a tier that has no self-serve price', async () => {
+      // Enterprise is quoted per customer. Inventing a number here is how the
+      // old checkout ended up sending amount 0.
+      await expect(
+        service.createPaymentIntent('tenant-abc', 3),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockCreate).not.toHaveBeenCalled();
     });
   });
 

@@ -355,8 +355,10 @@ export class AiOrchestratorService {
         })
         .catch(() => null);
 
-      await this.prisma.escalationItem
-        .upsert({
+      // Never rolls the pipeline back, but never silent either: a swallowed
+      // failure here is what hid the missing escalation_items table.
+      try {
+        await this.prisma.escalationItem.upsert({
           where: { generalAnalysisId: updatedClassification.id },
           create: {
             tenantId: targetTenantId,
@@ -378,8 +380,14 @@ export class AiOrchestratorService {
             severity: raiseSeverity(existing?.severity, severity),
             tenantId: targetTenantId,
           },
-        })
-        .catch(() => {});
+        });
+      } catch (escalationError) {
+        this.logger.error(
+          `Escalation write FAILED for message ${messageId} (tenant ${targetTenantId}, severity ${severity}): ` +
+            `${escalationError instanceof Error ? escalationError.message : String(escalationError)}. ` +
+            'The pipeline result was stored; the admin escalation feed will not show this email.',
+        );
+      }
     }
 
     // Enrich the same captured row even when drafting failed. A retry never

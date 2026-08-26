@@ -2,8 +2,10 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
   GoneException,
   Logger,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '@/database/prisma.service';
@@ -12,6 +14,21 @@ import { v4 as uuidv4 } from 'uuid';
 import * as nodemailer from 'nodemailer';
 import { Prisma } from '@prisma/client';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
+
+/**
+ * Statuses a fresh signup is allowed to take over instead of creating a second
+ * tenant for the same address.
+ *
+ * `pending`   — a signup still in flight; the person is retrying.
+ * `abandoned` — a pending signup the daily cleanup aged out after 7 days
+ *               (tenant-cleanup.service.ts). It is not a real account, so
+ *               refusing it would lock somebody out permanently for having
+ *               been slow.
+ *
+ * Everything else (`active`, `suspended`, `offboarded`) means a real account
+ * exists and signup must stop.
+ */
+const RECLAIMABLE_STATUSES = new Set<string>(['pending', 'abandoned']);
 
 @Injectable()
 export class TenantsService {
@@ -37,15 +54,61 @@ export class TenantsService {
     const token = uuidv4();
     const expiresAt = new Date();
     expiresAt.setHours(expiresAt.getHours() + 24);
+    // Stored lowercased so every later lookup — resend, verify, set-password —
+    // compares the same shape. This address is the only link between a pending
+    // tenant and the person who started it.
+    const adminEmail = dto.adminEmail.trim().toLowerCase();
 
-    const existingPending = await this.prisma.tenant.findFirst({
-      where: { companyName: dto.companyName, status: 'pending' },
+    // One signup per address.
+    //
+    // Signing up twice used to create a SECOND tenant every time the company
+    // name differed, so a single address could end up owning several companies.
+    // That is bad on its own, and it also makes "resend my link" ambiguous:
+    // with two pending tenants on one address the resend picks the newest and
+    // the older one can never be verified at all.
+    const existingForEmail = await this.prisma.tenant.findFirst({
+      where: { adminEmail },
+      orderBy: { createdAt: 'desc' },
     });
 
-    if (existingPending) {
+    if (
+      existingForEmail &&
+      !RECLAIMABLE_STATUSES.has(existingForEmail.status)
+    ) {
+      // A real account already exists for this address. Say so plainly rather
+      // than quietly starting a second registration the person can never
+      // finish. The company name is deliberately NOT included: an anonymous
+      // caller must not be able to read which company an address belongs to.
+      this.logger.log('Signup refused: address already has a live account');
+      throw new ConflictException(
+        'This email is already registered. Please sign in instead.',
+      );
+    }
+
+    // Reclaim rather than duplicate. `pending` is a signup still in flight;
+    // `abandoned` is only a pending signup that passed the 7-day cleanup
+    // (tenant-cleanup.service.ts), so refusing those would lock someone out of
+    // the product for good just because they were slow the first time.
+    const reclaimable =
+      existingForEmail ??
+      (await this.prisma.tenant.findFirst({
+        where: {
+          companyName: dto.companyName,
+          status: 'pending',
+          adminEmail: null,
+        },
+      }));
+
+    if (reclaimable) {
       await this.prisma.tenant.update({
-        where: { id: existingPending.id },
+        where: { id: reclaimable.id },
         data: {
+          // The person may have corrected the company name on the second
+          // attempt, so take the newer one.
+          companyName: dto.companyName,
+          adminEmail,
+          // An abandoned signup comes back to life as a normal pending one.
+          status: 'pending',
           emailVerificationToken: token,
           emailVerificationExpiresAt: expiresAt,
         },
@@ -55,6 +118,7 @@ export class TenantsService {
         data: {
           companyName: dto.companyName,
           status: 'pending',
+          adminEmail,
           emailVerificationToken: token,
           emailVerificationExpiresAt: expiresAt,
         },
@@ -104,24 +168,35 @@ export class TenantsService {
     const token = uuidv4();
     const expiresAt = new Date();
     expiresAt.setHours(expiresAt.getHours() + 24);
+    const email = dto.email.trim().toLowerCase();
 
-    let tenant = dto.companyName
-      ? await this.prisma.tenant.findFirst({
-          where: { companyName: dto.companyName, status: 'pending' },
-        })
-      : null;
+    // The tenant is resolved from the address that started the signup, and
+    // from nothing else.
+    //
+    // This used to fall back to "the most recently created pending tenant"
+    // whenever companyName was absent — which the dashboard omits as soon as
+    // the signup tab's sessionStorage is gone. The server then rotated THAT
+    // tenant's token and mailed it to the caller, so the person asking for
+    // their own link received a link that verifies a stranger's company while
+    // their own registration stayed stuck forever. It was also the first step
+    // of a full tenant takeover: name any company, receive its fresh token.
+    const tenant = await this.prisma.tenant.findFirst({
+      where: {
+        status: 'pending',
+        adminEmail: email,
+        ...(dto.companyName ? { companyName: dto.companyName } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+    });
 
     if (!tenant) {
-      tenant = await this.prisma.tenant.findFirst({
-        where: { status: 'pending' },
-        orderBy: { createdAt: 'desc' },
-      });
-    }
-
-    if (!tenant) {
-      throw new NotFoundException(
-        'No pending registration found to resend verification link.',
+      // Deliberately indistinguishable from success: telling a caller whether
+      // an address has a pending registration is an enumeration oracle. No
+      // token is rotated and no mail is sent.
+      this.logger.log(
+        'Resend requested for an address with no pending registration; nothing sent',
       );
+      return { message: 'Verification email resent successfully.' };
     }
 
     await this.prisma.tenant.update({
@@ -137,22 +212,29 @@ export class TenantsService {
     ).origin;
     const verifyUrl = new URL('/verify', frontendOrigin);
     verifyUrl.searchParams.set('token', token);
-    verifyUrl.searchParams.set('email', dto.email);
+    verifyUrl.searchParams.set('email', email);
     const verificationLink = verifyUrl.toString();
 
     try {
       await this.transporter.sendMail({
         from: this.config.getOrThrow<string>('SMTP_USER'),
-        to: dto.email,
+        to: email,
         subject: 'Verify your company account',
         text: `Welcome to Sales Copilot!\n\nVerify your company account by opening this link:\n${verificationLink}\n\nThis link expires in 24 hours.`,
         html: `<p>Welcome to Sales Copilot!</p><p>Please verify your account by clicking: <a href="${verificationLink}">Verify Account</a></p>`,
       });
-      this.logger.log(`Resent activation email to ${dto.email}`);
-    } catch (error: any) {
+      this.logger.log(`Resent activation email to ${email}`);
+    } catch (error: unknown) {
+      // A resend is a request the user made on purpose and is waiting on. This
+      // used to log and then return "resent successfully" regardless, so a
+      // misconfigured SMTP host looked identical to a delivered email — the
+      // user waits for a message that was never sent.
       this.logger.error(
         'Failed to resend activation email. Ensure SMTP is configured.',
         error instanceof Error ? error.stack : String(error),
+      );
+      throw new ServiceUnavailableException(
+        'We could not send the verification email just now. Please try again in a moment.',
       );
     }
 
@@ -171,6 +253,23 @@ export class TenantsService {
     if (!tenant) throw new NotFoundException('Invalid verification token');
     if (tenant.status !== 'pending')
       throw new BadRequestException('Tenant is already verified or abandoned');
+
+    // The email argument used to be logged and then ignored, so a token that
+    // reached the wrong inbox — by a mis-sent resend, a forwarded mail, or the
+    // takeover chain — activated the company for whoever presented it. Bind the
+    // two: this token belongs to this signup address.
+    //
+    // Tenants created before admin_email existed have none recorded; those keep
+    // the old token-only behaviour rather than becoming unverifiable.
+    if (
+      tenant.adminEmail &&
+      tenant.adminEmail !== adminEmail.trim().toLowerCase()
+    ) {
+      this.logger.warn(
+        `Verification token for tenant ${tenant.id} presented with a non-matching address`,
+      );
+      throw new NotFoundException('Invalid verification token');
+    }
 
     if (
       tenant.emailVerificationExpiresAt &&

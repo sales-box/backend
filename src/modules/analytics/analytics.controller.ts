@@ -8,6 +8,7 @@ import {
   Query,
   DefaultValuePipe,
   ParseIntPipe,
+  ParseUUIDPipe,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -176,7 +177,10 @@ export class AnalyticsController {
   @ApiParam({ name: 'id', description: 'Escalation item ID' })
   @ApiResponse({ status: 200, description: 'The updated escalation item.' })
   async resolveEscalation(
-    @Param('id') id: string,
+    // escalation_items.id is a uuid column, so a non-uuid path segment reaches
+    // Postgres as a cast error and comes back to the caller as a 500. Reject
+    // it here, the same way the knowledge-base controller does.
+    @Param('id', ParseUUIDPipe) id: string,
     @Body('status') status: 'reviewed' | 'dismissed' | undefined,
     @Req() req: AuthenticatedRequest,
   ) {

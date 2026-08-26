@@ -62,12 +62,23 @@ export class TenantsController {
     return this.tenantsService.verify(dto.token, dto.email);
   }
 
-  @Get(':id')
+  // The param is named tenantId, not id, on purpose: AdminTenantGuard scopes a
+  // request by comparing `req.params.tenantId` to the tenant in the verified
+  // JWT. Called `id`, the guard would authenticate the caller as some admin and
+  // then never check WHICH tenant they asked for.
+  @Get(':tenantId')
+  @ApiBearerAuth()
+  // This route had no guard at all, unlike the PATCH directly below it, so
+  // anyone holding a tenant UUID — and they appear in dashboard URLs — could
+  // read that company's name, plan tier and account status anonymously. Every
+  // caller in the dashboard (Overview, Team, Plans, Analytics, Settings) is
+  // already inside an authenticated route, so gating it breaks nothing.
+  @UseGuards(JwtAuthGuard, AdminTenantGuard)
   @ApiOperation({ summary: 'Get a tenant by id' })
-  @ApiParam({ name: 'id', description: 'Tenant id' })
+  @ApiParam({ name: 'tenantId', description: 'Tenant id' })
   @ApiResponse({ status: 200, description: 'The tenant.' })
-  async getTenant(@Param('id', ParseUUIDPipe) id: string) {
-    return this.tenantsService.getTenant(id);
+  async getTenant(@Param('tenantId', ParseUUIDPipe) tenantId: string) {
+    return this.tenantsService.getTenant(tenantId);
   }
 
   @Patch(':tenantId')

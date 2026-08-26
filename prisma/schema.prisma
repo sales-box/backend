@@ -315,6 +315,12 @@ model Tenant {
   companyName                String       @map("company_name")
   status                     TenantStatus @default(pending)
   tier                       Int          @default(1)
+  /// The address signup was started from, stored lowercased. Without it the
+  /// server had no way to tell which pending tenant a "resend my link" request
+  /// belonged to, so it guessed — and mailed the newest pending tenant's token
+  /// to whoever asked. Nullable because tenants created before this column
+  /// exists have no recorded signup address.
+  adminEmail                 String?      @map("admin_email")
   emailVerifiedAt            DateTime?    @map("email_verified_at")
   emailVerificationToken     String?      @unique @map("email_verification_token")
   emailVerificationExpiresAt DateTime?    @map("email_verification_expires_at")
@@ -331,6 +337,7 @@ model Tenant {
   crmAgentConnection CrmAgentConnection?
   escalationItems   EscalationItem[]
 
+  @@index([status, adminEmail])
   @@map("tenants")
 }
 

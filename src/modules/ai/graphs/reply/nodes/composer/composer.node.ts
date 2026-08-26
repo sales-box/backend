@@ -100,13 +100,27 @@ function getRelatedProductChunks(state: ReplyGraphStateType): string {
 
   const match = state.matchResult;
 
-  if (match && match.recommendedProduct) {
+  if (match?.recommendedProduct) {
     const productSection = `
     <RecommendedProduct>
       Recommended Product: ${match.recommendedProduct}
       Reasoning: ${match.reasoning ?? 'N/A'}
     </RecommendedProduct>`;
     sections.push(productSection);
+  } else if (match?.reasoning) {
+    // The Matcher has two outputs. On a product inquiry it recommends a product
+    // and explains why. On every other intent — support, follow-up, sensitive —
+    // it hard-sets recommendedProduct to null (matcher.node.ts:424) and puts
+    // the answer it retrieved from the knowledge base into `reasoning` alone.
+    //
+    // Gating the whole section behind recommendedProduct therefore threw that
+    // answer away on exactly the threads where the knowledge base had already
+    // done the work, and the Composer wrote its draft having never seen it.
+    const answerSection = `
+    <KnowledgeBaseAnswer>
+      ${match.reasoning}
+    </KnowledgeBaseAnswer>`;
+    sections.push(answerSection);
   }
 
   const requirements = requirementsFromState(state);

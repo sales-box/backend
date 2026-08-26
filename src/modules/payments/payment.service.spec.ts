@@ -39,12 +39,12 @@ describe('PaymentService', () => {
     it('should delegate to stripeService.createPaymentIntent', async () => {
       mockStripeService.createPaymentIntent.mockResolvedValue({ id: 'pi_123' });
 
-      const result = await service.createPaymentIntent('tenant-abc', 5000);
+      // Tier only — the price is looked up server-side.
+      const result = await service.createPaymentIntent('tenant-abc', 2);
 
       expect(mockStripeService.createPaymentIntent).toHaveBeenCalledWith(
         'tenant-abc',
-        5000,
-        undefined,
+        2,
       );
       expect(result).toEqual({ id: 'pi_123' });
     });

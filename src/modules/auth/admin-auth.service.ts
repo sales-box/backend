@@ -73,6 +73,16 @@ export class AdminAuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
+    // ConnectedAccount.lastLoginAt is what the Team page and /analytics/team
+    // render as "last active". Only the Google OAuth path stamped it
+    // (auth.service.ts), so an admin who signs in with email + password looked
+    // permanently inactive to their own dashboard. A failed login must not
+    // move it, so this sits after the password check.
+    await this.prisma.connectedAccount.update({
+      where: { id: account.id },
+      data: { lastLoginAt: new Date() },
+    });
+
     const payload: AdminJwtPayload = {
       sub: account.id,
       tenantId: account.tenantId,
@@ -88,11 +98,10 @@ export class AdminAuthService {
    * step: the password lands on the SAME ConnectedAccount row the Google
    * OAuth flow created for that email — never a duplicate account.
    *
-   * Guarded by: account must exist (Google-connected first), must not already
-   * have a password, tenant must be active, and the tenant must not already
-   * have a different admin (first-admin-per-tenant rule).
-   * TODO(tenant-verification): bind this to the tenant email-verification
-   * token once the allowlist grant step (Role 2) lands in the verify flow.
+   * Guarded by: the caller must be the address the company signed up with,
+   * the account must exist (Google-connected first), must not already have a
+   * password, the tenant must be active, and the tenant must not already have
+   * a different admin (first-admin-per-tenant rule).
    */
   async setAdminPassword(
     email: string,
@@ -104,6 +113,24 @@ export class AdminAuthService {
     });
     if (!tenant || tenant.status !== 'active') {
       throw new BadRequestException('Tenant is not active');
+    }
+
+    // This endpoint is unauthenticated by design — it is how a brand-new admin
+    // sets their first password — so the only thing standing between it and a
+    // stranger claiming an adminless tenant is that the caller must be the
+    // address the company signed up with. Without this check, anyone who had
+    // completed a Google connect could name any adminless tenant id and become
+    // its admin.
+    //
+    // Tenants created before admin_email existed have none recorded and keep
+    // the previous behaviour, so nobody already mid-onboarding is locked out.
+    if (tenant.adminEmail && tenant.adminEmail !== email.trim().toLowerCase()) {
+      this.logger.warn(
+        `set-password refused: ${email} is not the signup address for tenant ${tenantId}`,
+      );
+      throw new BadRequestException(
+        'This address did not register the company',
+      );
     }
 
     // Primary: tenant-scoped lookup prevents cross-tenant privilege escalation.
