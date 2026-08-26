@@ -107,3 +107,78 @@ describe('composerNode client history', () => {
     expect(request.messages[1].content).not.toContain('A'.repeat(6_001));
   });
 });
+
+describe('composerNode matcher output', () => {
+  const matchBase = {
+    matchConfidence: 0.8,
+    citedChunkDetails: [],
+  } as unknown as ReplyGraphStateType['matchResult'];
+
+  it('passes the recommendation and its reasoning on the product path', async () => {
+    const { config, deps, generateStructured } = makeHarness();
+    await composerNode(
+      makeState({
+        intent: 'product inquiry',
+        matchResult: {
+          ...matchBase,
+          recommendedProduct: 'WP-120',
+          reasoning: 'Closest match on flow rate and head.',
+        } as ReplyGraphStateType['matchResult'],
+      }),
+      config,
+      deps,
+    );
+
+    const user =
+      generateStructured.mock.calls[0]?.[0].messages[1]?.content ?? '';
+    expect(user).toContain('Recommended Product: WP-120');
+    expect(user).toContain('Closest match on flow rate and head.');
+  });
+
+  it('still passes the matcher answer when there is no product to recommend', async () => {
+    // On support / follow-up / sensitive the Matcher hard-sets
+    // recommendedProduct to null and puts the answer it retrieved into
+    // `reasoning` alone. The whole section used to be gated behind
+    // recommendedProduct, so on those threads the Composer never saw the
+    // Matcher's synthesis at all — only the raw cited chunks.
+    const { config, deps, generateStructured } = makeHarness();
+    await composerNode(
+      makeState({
+        intent: 'support',
+        matchResult: {
+          ...matchBase,
+          recommendedProduct: null,
+          reasoning: 'The warranty runs 24 months on parts and labour.',
+        } as ReplyGraphStateType['matchResult'],
+      }),
+      config,
+      deps,
+    );
+
+    const user =
+      generateStructured.mock.calls[0]?.[0].messages[1]?.content ?? '';
+    expect(user).toContain('The warranty runs 24 months on parts and labour.');
+    expect(user).toContain('<KnowledgeBaseAnswer>');
+  });
+
+  it('adds nothing when the matcher produced no answer either', async () => {
+    const { config, deps, generateStructured } = makeHarness();
+    await composerNode(
+      makeState({
+        intent: 'support',
+        matchResult: {
+          ...matchBase,
+          recommendedProduct: null,
+          reasoning: null,
+        } as unknown as ReplyGraphStateType['matchResult'],
+      }),
+      config,
+      deps,
+    );
+
+    const user =
+      generateStructured.mock.calls[0]?.[0].messages[1]?.content ?? '';
+    expect(user).not.toContain('<KnowledgeBaseAnswer>');
+    expect(user).not.toContain('<RecommendedProduct>');
+  });
+});

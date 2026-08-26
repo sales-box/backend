@@ -261,7 +261,14 @@ export class AttachmentsService {
         return {
           filename: attachment.filename,
           type: 'xlsx',
-          structured,
+          // Caged like every other attachment type. A spreadsheet is exactly as
+          // untrusted as a PDF or a DOCX -- a cell is free text an outsider
+          // wrote -- but this branch alone skipped the wrapper, so its contents
+          // reached the Composer prompt as bare text while PDF, DOCX, PPTX and
+          // image text arrived inside <untrusted_content>. Nothing downstream
+          // parses this JSON; the flattener only interpolates it into the
+          // prompt (attachment-flattener.ts:12), so wrapping it costs nothing.
+          structured: wrapUntrustedContent(structured, 'attachment_text'),
           skipped: false,
           lowQuality: false,
           fallbackToVision: false,

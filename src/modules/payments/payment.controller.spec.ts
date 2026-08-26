@@ -41,12 +41,13 @@ describe('PaymentController', () => {
         id: 'pi_123',
       });
 
-      const result = await controller.createPaymentIntent(mockReq, 5000);
+      const result = await controller.createPaymentIntent(mockReq, { tier: 2 });
 
+      // The tenant comes from the verified JWT and the price from the server;
+      // the body carries nothing but the plan.
       expect(mockPaymentService.createPaymentIntent).toHaveBeenCalledWith(
         tenantId,
-        5000,
-        undefined,
+        2,
       );
       expect(result).toEqual({ id: 'pi_123' });
     });

@@ -13,13 +13,13 @@ import {
   ApiOkResponse,
   ApiBearerAuth,
   ApiOperation,
-  ApiBody,
   ApiCreatedResponse,
   ApiParam,
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { AuthenticatedRequest } from '../auth/jwt-auth.guard';
 import { AdminTenantGuard } from '../../common/guards/admin-tenant.guard';
+import { CreatePaymentIntentDto } from './dto/create-payment-intent.dto';
 
 @ApiTags('payments')
 @ApiBearerAuth()
@@ -32,32 +32,21 @@ export class PaymentController {
   constructor(private readonly paymentService: PaymentService) {}
 
   @Post('create-payment-intent')
-  @ApiOperation({ summary: 'Create a Stripe payment intent for the tenant' })
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: {
-        amount: {
-          type: 'number',
-          description: 'Amount in the smallest currency unit',
-        },
-        tier: { type: 'number', description: 'Optional subscription tier' },
-      },
-      required: ['amount'],
-    },
+  @ApiOperation({
+    summary: 'Create a Stripe payment intent for the tenant',
+    description:
+      'The caller names a plan tier; the price is looked up server-side. The old `amount` field is gone — it let the buyer set their own price.',
   })
   @ApiCreatedResponse({
     description: 'Payment intent created (client secret returned).',
   })
   async createPaymentIntent(
     @Req() req: AuthenticatedRequest,
-    @Body('amount') amount: number,
-    @Body('tier') tier?: number,
+    @Body() dto: CreatePaymentIntentDto,
   ) {
     return this.paymentService.createPaymentIntent(
       req.user.tenantId!,
-      amount,
-      tier,
+      dto.tier,
     );
   }
 

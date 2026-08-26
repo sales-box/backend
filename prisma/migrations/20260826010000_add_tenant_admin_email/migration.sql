@@ -10,10 +10,14 @@
 -- and let `set-password` claim an adminless tenant.
 --
 -- Purely additive: one nullable column and one index. Existing rows keep a
--- NULL admin_email and are handled explicitly in code.
+-- NULL admin_email and are handled explicitly in code, so no existing tenant
+-- is affected and nothing is rewritten.
+--
+-- IF NOT EXISTS on both statements so the migration is safe to re-apply and
+-- safe on an environment that already picked the column up some other way.
 
 -- AlterTable
-ALTER TABLE "tenants" ADD COLUMN "admin_email" TEXT;
+ALTER TABLE "tenants" ADD COLUMN IF NOT EXISTS "admin_email" TEXT;
 
 -- CreateIndex
-CREATE INDEX "tenants_status_admin_email_idx" ON "tenants"("status", "admin_email");
+CREATE INDEX IF NOT EXISTS "tenants_status_admin_email_idx" ON "tenants"("status", "admin_email");
