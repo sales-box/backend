@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { assertOwnsGraphThread } from '@/modules/ai/graphs/reply/graph-thread-id';
 import { Prisma, GeneralAnalysis } from '@prisma/client';
 import { PrismaService } from '@/database/prisma.service';
 import { GmailProvider } from '@/modules/email/gmail/gmail-provider.service';
@@ -419,11 +420,18 @@ export class AiOrchestratorService {
    * Resumes an interrupted reply graph run with user-edited draft feedback.
    */
   async resumeGraph(
+    tenantId: string,
     graphThreadId: string,
     editedContent: string,
   ): Promise<{ memoryUpdated: boolean }> {
+    // Deliberately OUTSIDE the try: the catch below turns every failure into a
+    // 200 with memoryUpdated:false, which would silently swallow an
+    // authorization failure. A caller reaching for another tenant's draft must
+    // get a 403, not a quiet no-op.
+    assertOwnsGraphThread(tenantId, graphThreadId);
     try {
       const finalState = await this.replyService.resumeWithFeedback(
+        tenantId,
         graphThreadId,
         editedContent,
       );
