@@ -84,9 +84,6 @@ export class TenantsService {
   }
 
   async signup(dto: SignupTenantDto) {
-    const adminEmail = dto.adminEmail.trim().toLowerCase();
-    await this.assertEmailIsNotATenantUser(adminEmail);
-
     const token = uuidv4();
     const expiresAt = new Date();
     expiresAt.setHours(expiresAt.getHours() + 24);
@@ -94,6 +91,12 @@ export class TenantsService {
     // compares the same shape. This address is the only link between a pending
     // tenant and the person who started it.
     const adminEmail = dto.adminEmail.trim().toLowerCase();
+
+    // Separation of duties: an address that already belongs to somebody else's
+    // company cannot start a new one. Runs BEFORE the own-account check below,
+    // which only looks at tenants this address owns and would let an SE at
+    // another company straight through.
+    await this.assertEmailIsNotATenantUser(adminEmail);
 
     // One signup per address.
     //

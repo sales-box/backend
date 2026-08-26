@@ -36,6 +36,12 @@ describe('connectedAccount lookups are tenant-scoped', () => {
         'there is no authenticated tenant yet to scope by.',
     ],
     [
+      'tenants/tenants.service.ts',
+      'Signup separation-of-duties: must deliberately look ACROSS all tenants ' +
+        'to refuse an address that already belongs to another company. There ' +
+        'is no caller tenant yet — the caller is anonymous and registering.',
+    ],
+    [
       'platform/platform-admin.seeder.ts',
       'Separation of duties: must deliberately look ACROSS all tenants to ' +
         'refuse an email that already belongs to a tenant user.',
