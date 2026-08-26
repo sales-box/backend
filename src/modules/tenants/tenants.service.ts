@@ -229,9 +229,25 @@ export class TenantsService {
     });
 
     if (!tenant) {
-      // Deliberately indistinguishable from success: telling a caller whether
-      // an address has a pending registration is an enumeration oracle. No
-      // token is rotated and no mail is sent.
+      // An address that already finished verifying is told so, because the
+      // alternative is worse: the caller sits on "Check your inbox" waiting for
+      // a mail this endpoint deliberately did not send, and the only visible
+      // feedback is a success message that is a lie. This leaks nothing new —
+      // signup() already answers the same question for the same address with
+      // "This email is already registered. Please sign in instead."
+      const existing = await this.prisma.tenant.findFirst({
+        where: { adminEmail: email },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (existing && !RECLAIMABLE_STATUSES.has(existing.status)) {
+        throw new ConflictException(
+          'This account is already verified. Please sign in instead.',
+        );
+      }
+
+      // Genuinely unknown address: stay indistinguishable from success, so the
+      // endpoint cannot be used to enumerate who has an account here. No token
+      // is rotated and no mail is sent.
       this.logger.log(
         'Resend requested for an address with no pending registration; nothing sent',
       );

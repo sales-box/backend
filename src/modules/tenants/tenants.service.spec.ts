@@ -342,7 +342,8 @@ describe('TenantsService', () => {
       );
     });
 
-    it('says nothing and sends nothing when the address has no pending signup', async () => {
+    it('says nothing and sends nothing for an address with no account at all', async () => {
+      // No pending signup, and no account in any other state either.
       mockTenantFindFirst.mockResolvedValue(null);
 
       const result = await service.resendVerification({
@@ -354,6 +355,40 @@ describe('TenantsService', () => {
       // deliberately identical — but nothing is rotated and nothing is mailed.
       expect(result.message).toContain('Verification email resent');
       expect(mockTenantUpdate).not.toHaveBeenCalled();
+      expect(mockSendMail).not.toHaveBeenCalled();
+    });
+
+    it('tells an already-verified address to sign in instead of faking a resend', async () => {
+      // No pending signup for this address...
+      mockTenantFindFirst.mockResolvedValueOnce(null);
+      // ...but the address does own an account that finished verifying.
+      mockTenantFindFirst.mockResolvedValueOnce({
+        id: 'active-123',
+        status: 'active',
+        adminEmail: 'admin@test.com',
+      });
+
+      // The silent no-op left this caller on "Check your inbox" waiting for a
+      // mail that was never sent, under a success message.
+      await expect(
+        service.resendVerification({ email: 'admin@test.com' }),
+      ).rejects.toThrow(ConflictException);
+      expect(mockSendMail).not.toHaveBeenCalled();
+    });
+
+    it('stays silent for an abandoned signup, which is still reclaimable', async () => {
+      mockTenantFindFirst.mockResolvedValueOnce(null);
+      mockTenantFindFirst.mockResolvedValueOnce({
+        id: 'abandoned-123',
+        status: 'abandoned',
+        adminEmail: 'admin@test.com',
+      });
+
+      const result = await service.resendVerification({
+        email: 'admin@test.com',
+      });
+
+      expect(result.message).toContain('Verification email resent');
       expect(mockSendMail).not.toHaveBeenCalled();
     });
 
