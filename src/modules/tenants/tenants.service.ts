@@ -83,6 +83,28 @@ export class TenantsService {
     }
   }
 
+  /**
+   * True when a tenant has no sign-in identity of any kind behind it.
+   *
+   * `status: 'active'` is set the moment the emailed link is opened, which is
+   * several steps before a registration is actually finished: the Google
+   * connect and the password still have to happen, and each can fail or simply
+   * be abandoned. A tenant left in that gap is `active` with zero
+   * ConnectedAccounts — nobody can sign in to it, its verification token is
+   * already spent, and both signup and resend used to refuse the address as
+   * "already registered". That is a dead end for a person who never got an
+   * account at all, so an unfinished signup must stay resumable.
+   *
+   * Zero accounts is the deliberately strict test: it means there is provably
+   * nobody — no admin, no invited SE — whose access a reset could disrupt.
+   */
+  private async hasNoAccounts(tenantId: string): Promise<boolean> {
+    const accounts = await this.prisma.connectedAccount.count({
+      where: { tenantId },
+    });
+    return accounts === 0;
+  }
+
   async signup(dto: SignupTenantDto) {
     const token = uuidv4();
     const expiresAt = new Date();
@@ -112,12 +134,17 @@ export class TenantsService {
 
     if (
       existingForEmail &&
-      !RECLAIMABLE_STATUSES.has(existingForEmail.status)
+      !RECLAIMABLE_STATUSES.has(existingForEmail.status) &&
+      !(await this.hasNoAccounts(existingForEmail.id))
     ) {
       // A real account already exists for this address. Say so plainly rather
       // than quietly starting a second registration the person can never
       // finish. The company name is deliberately NOT included: an anonymous
       // caller must not be able to read which company an address belongs to.
+      //
+      // An `active` tenant with no accounts behind it is NOT this case: see
+      // hasNoAccounts(). It falls through and is reclaimed below, which is the
+      // only way out for someone whose signup broke after verification.
       this.logger.log('Signup refused: address already has a live account');
       throw new ConflictException(
         'This email is already registered. Please sign in instead.',
@@ -219,7 +246,7 @@ export class TenantsService {
     // their own link received a link that verifies a stranger's company while
     // their own registration stayed stuck forever. It was also the first step
     // of a full tenant takeover: name any company, receive its fresh token.
-    const tenant = await this.prisma.tenant.findFirst({
+    let tenant = await this.prisma.tenant.findFirst({
       where: {
         status: 'pending',
         adminEmail: email,
@@ -229,22 +256,39 @@ export class TenantsService {
     });
 
     if (!tenant) {
-      // An address that already finished verifying is told so, because the
-      // alternative is worse: the caller sits on "Check your inbox" waiting for
-      // a mail this endpoint deliberately did not send, and the only visible
-      // feedback is a success message that is a lie. This leaks nothing new —
-      // signup() already answers the same question for the same address with
-      // "This email is already registered. Please sign in instead."
+      // No signup in flight. Before going quiet, check for the one case that
+      // looks finished but is not: a tenant already flipped to `active` by the
+      // verification link whose signup then broke before it produced any
+      // account (see hasNoAccounts). Its token is spent, so the emailed link is
+      // dead, and staying silent here strands the person permanently — the
+      // exact "resend does nothing" they are reporting.
       const existing = await this.prisma.tenant.findFirst({
         where: { adminEmail: email },
         orderBy: { createdAt: 'desc' },
       });
-      if (existing && !RECLAIMABLE_STATUSES.has(existing.status)) {
-        throw new ConflictException(
-          'This account is already verified. Please sign in instead.',
-        );
-      }
 
+      if (existing && !RECLAIMABLE_STATUSES.has(existing.status)) {
+        if (await this.hasNoAccounts(existing.id)) {
+          // Resume the signup: the update below rewinds it to `pending` and
+          // issues a fresh token, so the normal verify → connect → password
+          // flow can run again from the top.
+          this.logger.log(
+            'Resending for a tenant whose signup never produced an account',
+          );
+          tenant = existing;
+        } else {
+          // A genuinely finished registration. Telling the caller so leaks
+          // nothing new — signup() already answers the same question for the
+          // same address — and is far better than a success message that is a
+          // lie about mail nobody sent.
+          throw new ConflictException(
+            'This account is already verified. Please sign in instead.',
+          );
+        }
+      }
+    }
+
+    if (!tenant) {
       // Genuinely unknown address: stay indistinguishable from success, so the
       // endpoint cannot be used to enumerate who has an account here. No token
       // is rotated and no mail is sent.
@@ -257,6 +301,12 @@ export class TenantsService {
     await this.prisma.tenant.update({
       where: { id: tenant.id },
       data: {
+        // A no-op for a signup still in flight, and the rewind that makes a
+        // stranded one resumable: verify() only accepts a `pending` tenant, so
+        // the fresh token below would be rejected without this. Safe precisely
+        // because hasNoAccounts() proved nobody can be signed in to lose access.
+        status: 'pending',
+        emailVerifiedAt: null,
         emailVerificationToken: token,
         emailVerificationExpiresAt: expiresAt,
       },

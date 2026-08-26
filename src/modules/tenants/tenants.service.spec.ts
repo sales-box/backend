@@ -36,10 +36,14 @@ describe('TenantsService', () => {
   const mockTenantUpdate = jest.fn<Promise<unknown>, [unknown]>();
 
   const mockConnectedAccountFindFirst = jest.fn<Promise<unknown>, [unknown]>();
+  const mockConnectedAccountCount = jest.fn<Promise<number>, [unknown]>();
   const mockAllowlistFindFirst = jest.fn<Promise<unknown>, [unknown]>();
 
   const mockPrisma = {
-    connectedAccount: { findFirst: mockConnectedAccountFindFirst },
+    connectedAccount: {
+      findFirst: mockConnectedAccountFindFirst,
+      count: mockConnectedAccountCount,
+    },
     allowlistEntry: { findFirst: mockAllowlistFindFirst },
     tenant: {
       create: mockTenantCreate,
@@ -80,6 +84,9 @@ describe('TenantsService', () => {
     // Default: the admin email is not already a tenant user anywhere.
     mockConnectedAccountFindFirst.mockResolvedValue(null);
     mockAllowlistFindFirst.mockResolvedValue(null);
+    // Default: existing tenants are finished registrations — somebody can sign
+    // in to them. The unfinished-signup cases override this with 0.
+    mockConnectedAccountCount.mockResolvedValue(1);
   });
 
   describe('signup — one account per email address', () => {
@@ -109,6 +116,38 @@ describe('TenantsService', () => {
         expect(mockSendMail).not.toHaveBeenCalled();
       },
     );
+
+    it('lets an address re-register when its last signup produced no account', async () => {
+      mockTenantFindFirst.mockResolvedValue({
+        id: 'stranded-123',
+        status: 'active',
+        adminEmail: 'admin@test.com',
+      });
+      // `active` here is the halfway state the verification link leaves behind,
+      // not a finished signup: the Google connect never happened, so there is
+      // nobody to sign in as and the spent token cannot be reused. Refusing
+      // this address locks the person out of the product for good.
+      mockConnectedAccountCount.mockResolvedValue(0);
+      mockTenantUpdate.mockResolvedValue({ id: 'stranded-123' });
+      mockSendMail.mockResolvedValue(true);
+
+      const result = await service.signup({
+        companyName: 'Sales Co',
+        adminEmail: 'admin@test.com',
+      });
+
+      expect(result.message).toContain('Signup successful');
+      // Reclaimed in place rather than duplicated.
+      expect(mockTenantCreate).not.toHaveBeenCalled();
+      expect(mockTenantUpdate).toHaveBeenCalledWith({
+        where: { id: 'stranded-123' },
+        data: expect.objectContaining({ status: 'pending' }) as Record<
+          string,
+          unknown
+        >,
+      });
+      expect(mockSendMail).toHaveBeenCalled();
+    });
 
     it('does not leak which company the address belongs to', async () => {
       mockTenantFindFirst.mockResolvedValue({
@@ -358,15 +397,16 @@ describe('TenantsService', () => {
       expect(mockSendMail).not.toHaveBeenCalled();
     });
 
-    it('tells an already-verified address to sign in instead of faking a resend', async () => {
+    it('tells a finished registration to sign in instead of faking a resend', async () => {
       // No pending signup for this address...
       mockTenantFindFirst.mockResolvedValueOnce(null);
-      // ...but the address does own an account that finished verifying.
+      // ...but the address owns a tenant somebody can actually sign in to.
       mockTenantFindFirst.mockResolvedValueOnce({
         id: 'active-123',
         status: 'active',
         adminEmail: 'admin@test.com',
       });
+      mockConnectedAccountCount.mockResolvedValue(1);
 
       // The silent no-op left this caller on "Check your inbox" waiting for a
       // mail that was never sent, under a success message.
@@ -374,6 +414,37 @@ describe('TenantsService', () => {
         service.resendVerification({ email: 'admin@test.com' }),
       ).rejects.toThrow(ConflictException);
       expect(mockSendMail).not.toHaveBeenCalled();
+    });
+
+    it('resumes an active tenant whose signup never produced an account', async () => {
+      mockTenantFindFirst.mockResolvedValueOnce(null);
+      mockTenantFindFirst.mockResolvedValueOnce({
+        id: 'stranded-123',
+        status: 'active',
+        adminEmail: 'admin@test.com',
+      });
+      // Verification flipped it to active, then the Google connect broke: the
+      // token is spent and nobody can sign in. Refusing the address here — as
+      // "already registered" — is a permanent dead end.
+      mockConnectedAccountCount.mockResolvedValue(0);
+      mockTenantUpdate.mockResolvedValue({ id: 'stranded-123' });
+      mockSendMail.mockResolvedValue(true);
+
+      const result = await service.resendVerification({
+        email: 'admin@test.com',
+      });
+
+      expect(result.message).toContain('Verification email resent');
+      expect(mockSendMail).toHaveBeenCalled();
+      // Rewound to pending, or verify() would reject the fresh token.
+      expect(mockTenantUpdate).toHaveBeenCalledWith({
+        where: { id: 'stranded-123' },
+        data: expect.objectContaining({
+          status: 'pending',
+          emailVerifiedAt: null,
+          emailVerificationToken: 'mocked-uuid-token',
+        }) as Record<string, unknown>,
+      });
     });
 
     it('stays silent for an abandoned signup, which is still reclaimable', async () => {
