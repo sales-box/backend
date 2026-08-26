@@ -69,6 +69,86 @@ describe('PlatformTenantsService', () => {
     });
   });
 
+  describe('stats', () => {
+    function makeService(
+      statusRows: Array<{ status: string; _count: { _all: number } }>,
+      tierRows: Array<{ tier: number; _count: { _all: number } }>,
+      total = 0,
+      newThisWeek = 0,
+    ) {
+      const groupBy = jest
+        .fn()
+        .mockImplementation((args: { by: string[] }) =>
+          Promise.resolve(args.by[0] === 'status' ? statusRows : tierRows),
+        );
+      const count = jest
+        .fn()
+        .mockResolvedValueOnce(total)
+        .mockResolvedValueOnce(newThisWeek);
+      const prisma = {
+        tenant: { groupBy, count },
+      } as unknown as PrismaService;
+      return {
+        service: new PlatformTenantsService(prisma, stubAllowlist().allowlist),
+        count,
+      };
+    }
+
+    it('fills every status and tier key with zero when the group has no rows', async () => {
+      const { service } = makeService([], []);
+
+      const res = await service.stats();
+
+      expect(res.byStatus).toEqual({
+        pending: 0,
+        active: 0,
+        suspended: 0,
+        abandoned: 0,
+        offboarded: 0,
+      });
+      expect(res.byTier).toEqual({ 1: 0, 2: 0, 3: 0 });
+    });
+
+    it('maps grouped counts onto the status and tier buckets', async () => {
+      const { service } = makeService(
+        [
+          { status: 'active', _count: { _all: 41 } },
+          { status: 'suspended', _count: { _all: 5 } },
+        ],
+        [
+          { tier: 1, _count: { _all: 30 } },
+          { tier: 3, _count: { _all: 2 } },
+        ],
+        48,
+        6,
+      );
+
+      const res = await service.stats();
+
+      expect(res.total).toBe(48);
+      expect(res.newThisWeek).toBe(6);
+      expect(res.byStatus.active).toBe(41);
+      expect(res.byStatus.suspended).toBe(5);
+      expect(res.byStatus.offboarded).toBe(0);
+      expect(res.byTier).toEqual({ 1: 30, 2: 0, 3: 2 });
+    });
+
+    it('counts new tenants from the last seven days', async () => {
+      const { service, count } = makeService([], [], 0, 0);
+
+      await service.stats();
+
+      // Second count() call is the windowed one. Typing the whole calls array
+      // keeps the assertion off an implicit `any`.
+      const calls = count.mock.calls as Array<
+        [{ where: { createdAt: { gte: Date } } }]
+      >;
+      const days =
+        (Date.now() - calls[1][0].where.createdAt.gte.getTime()) / 86_400_000;
+      expect(days).toBeCloseTo(7, 1);
+    });
+  });
+
   describe('getDetail', () => {
     function makeService(tenant: Record<string, unknown> | null) {
       const prisma = {
@@ -188,10 +268,10 @@ describe('PlatformTenantsService', () => {
   });
 
   describe('changeTier', () => {
-    function makeService(exists: boolean) {
+    function makeService(exists: boolean, status = 'active') {
       const findUnique = jest
         .fn()
-        .mockResolvedValue(exists ? { id: 't1' } : null);
+        .mockResolvedValue(exists ? { id: 't1', status } : null);
       const update = jest
         .fn()
         .mockImplementation(({ data }) =>
@@ -220,6 +300,91 @@ describe('PlatformTenantsService', () => {
       await expect(service.changeTier('x', 2)).rejects.toBeInstanceOf(
         NotFoundException,
       );
+    });
+
+    it('refuses to change the tier of an offboarded tenant', async () => {
+      const { service, update } = makeService(true, 'offboarded');
+      await expect(service.changeTier('t1', 3)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('refuses to change the tier of an abandoned tenant', async () => {
+      const { service } = makeService(true, 'abandoned');
+      await expect(service.changeTier('t1', 3)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+    });
+
+    it('allows a tier change on a pending tenant', async () => {
+      const { service, update } = makeService(true, 'pending');
+      await service.changeTier('t1', 3);
+      expect(update).toHaveBeenCalled();
+    });
+  });
+
+  describe('list filters', () => {
+    function makeService() {
+      const count = jest.fn().mockResolvedValue(0);
+      const findMany = jest.fn().mockResolvedValue([]);
+      const groupBy = jest.fn().mockResolvedValue([]);
+      const prisma = {
+        tenant: { count, findMany },
+        allowlistEntry: { groupBy },
+      } as unknown as PrismaService;
+      return {
+        service: new PlatformTenantsService(prisma, stubAllowlist().allowlist),
+        count,
+        findMany,
+      };
+    }
+
+    /** Typed views of the recorded call args, to stay off an implicit `any`. */
+    type WhereArg = { where: Record<string, unknown> };
+    type FindManyArg = WhereArg & { select: Record<string, boolean> };
+
+    function whereOf(fn: jest.Mock): Record<string, unknown> {
+      return (fn.mock.calls as Array<[WhereArg]>)[0][0].where;
+    }
+
+    it('applies no where clause when no filters are given', async () => {
+      const { service, findMany } = makeService();
+      await service.list(1, 20);
+      expect(whereOf(findMany)).toEqual({});
+    });
+
+    it('filters by status', async () => {
+      const { service, findMany } = makeService();
+      await service.list(1, 20, { status: 'suspended' });
+      expect(whereOf(findMany)).toEqual({ status: 'suspended' });
+    });
+
+    it('searches company name case-insensitively', async () => {
+      const { service, findMany } = makeService();
+      await service.list(1, 20, { search: 'acme' });
+      expect(whereOf(findMany)).toEqual({
+        companyName: { contains: 'acme', mode: 'insensitive' },
+      });
+    });
+
+    it('ignores a whitespace-only search', async () => {
+      const { service, findMany } = makeService();
+      await service.list(1, 20, { search: '   ' });
+      expect(whereOf(findMany)).toEqual({});
+    });
+
+    it('counts with the same where clause so pagination matches the filter', async () => {
+      const { service, count, findMany } = makeService();
+      await service.list(1, 20, { status: 'active', search: 'beta' });
+      expect(whereOf(count)).toEqual(whereOf(findMany));
+    });
+
+    it('selects createdAt for the joined column', async () => {
+      const { service, findMany } = makeService();
+      await service.list(1, 20);
+      const arg = (findMany.mock.calls as Array<[FindManyArg]>)[0][0];
+      expect(arg.select.createdAt).toBe(true);
     });
   });
 });
