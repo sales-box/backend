@@ -146,3 +146,28 @@ backend-*.xml
 
 # LangGraph API
 .langgraph_api
+
+# =========================
+# Personal analysis / defense notes (local only, never committed)
+# =========================
+CONTRIBUTIONS.md
+*-ANALYSIS.md
+*_ANALYSIS.md
+ANALYSIS-*.md
+docs/GAP_ANALYSIS.md
+
+# =========================
+# Planning / agent scratch (local only, never committed)
+# =========================
+# These normally live at the workspace root, OUTSIDE this repo. Listed here
+# defensively so they stay untracked if one is ever copied or created inside it.
+docs/superpowers/
+.superpowers/
+.sdd/
+.claude/
+.codex-collab/
+graphify-out/
+tasks/
+ad-assets/
+TEAM-TASKS.md
+SALESBOX-AD-ONESHOT-PROMPT.md
