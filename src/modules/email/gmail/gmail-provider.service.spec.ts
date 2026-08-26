@@ -28,18 +28,23 @@ describe('GmailProvider', () => {
   let mockThreadsList: jest.Mock;
   let mockThreadsGet: jest.Mock;
   let mockHistoryList: jest.Mock;
+  let mockLabelsList: jest.Mock;
 
   beforeEach(async () => {
     mockMessagesGet = jest.fn().mockResolvedValue({ data: stubRawData });
     mockThreadsList = jest.fn().mockResolvedValue({ data: { threads: [] } });
     mockThreadsGet = jest.fn().mockResolvedValue({ data: {} });
     mockHistoryList = jest.fn().mockResolvedValue({ data: {} });
+    mockLabelsList = jest.fn().mockResolvedValue({
+      data: { labels: [{ id: 'Label_salesbox_123', name: 'salesbox' }] },
+    });
 
     mockCreateClient = jest.fn().mockResolvedValue({
       users: {
         messages: { get: mockMessagesGet },
         threads: { list: mockThreadsList, get: mockThreadsGet },
         history: { list: mockHistoryList },
+        labels: { list: mockLabelsList },
       },
     });
 
@@ -140,6 +145,7 @@ describe('GmailProvider', () => {
       expect(mockCreateClient).toHaveBeenCalledWith('tenant-a', 'account-1');
       expect(mockThreadsList).toHaveBeenCalledWith({
         userId: 'me',
+        labelIds: ['Label_salesbox_123'],
         q: 'client@example.com',
         pageToken: undefined,
         maxResults: 20,
@@ -177,6 +183,7 @@ describe('GmailProvider', () => {
       expect(mockThreadsList).toHaveBeenCalledTimes(2);
       expect(mockThreadsList).toHaveBeenNthCalledWith(2, {
         userId: 'me',
+        labelIds: ['Label_salesbox_123'],
         q: 'client@example.com',
         pageToken: 'page-2-token',
         maxResults: 20,
@@ -235,8 +242,8 @@ describe('GmailProvider', () => {
         expect.objectContaining({
           userId: 'me',
           startHistoryId: '100',
-          historyTypes: ['messageAdded'],
-          labelId: 'INBOX',
+          historyTypes: ['messageAdded', 'labelAdded'],
+          labelId: 'Label_salesbox_123',
         }),
       );
       expect(mockHistoryList).toHaveBeenCalledTimes(2);
@@ -253,6 +260,20 @@ describe('GmailProvider', () => {
 
       expect(result.messageIds).toEqual([]);
       expect(result.newHistoryId).toBe('100');
+    });
+
+    it('returns empty messageIds and does NOT call history.list if salesbox label is missing', async () => {
+      mockLabelsList.mockResolvedValueOnce({ data: { labels: [] } });
+
+      const result = await provider.fetchNewMessageIds(
+        'tenant-a',
+        'se@acme.com',
+        '100',
+      );
+
+      expect(result.messageIds).toEqual([]);
+      expect(result.newHistoryId).toBe('100');
+      expect(mockHistoryList).not.toHaveBeenCalled();
     });
 
     it('propagates Gmail errors untouched (404 handling is the caller`s job)', async () => {

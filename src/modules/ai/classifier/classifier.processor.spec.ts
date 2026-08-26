@@ -34,6 +34,7 @@ const PARSED = {
   textPlain: 'need pricing',
   textHtml: '',
   attachments: [],
+  labelIds: ['Label_salesbox_123'],
 };
 
 function makePrisma(overrides: Record<string, unknown> = {}) {
@@ -64,6 +65,8 @@ function makeGmail(ids: string[] = ['m1'], newHistoryId = '200') {
     fetchNewSentThreadIds: jest
       .fn()
       .mockResolvedValue({ threadIds: [], newHistoryId }),
+    getLabelIdByName: jest.fn().mockResolvedValue('Label_salesbox_123'),
+    getSalesboxLabelIds: jest.fn().mockResolvedValue(['Label_salesbox_123']),
   } as unknown as GmailProvider;
 }
 
@@ -217,6 +220,27 @@ describe('ClassifierProcessor', () => {
 
     expect(classifier.classify).not.toHaveBeenCalled();
     expect(prisma.generalAnalysis.create).not.toHaveBeenCalled();
+    expect(result).toEqual({ classified: 0 });
+  });
+
+  it('skips messages that do not carry the salesbox label', async () => {
+    const prisma = makePrisma();
+    const gmail = makeGmail(['m1']);
+    (gmail.fetchMessage as jest.Mock).mockResolvedValue({
+      ...PARSED,
+      labelIds: ['INBOX'], // missing Label_salesbox_123
+    });
+    const classifier = makeClassifier();
+    const processor = new ClassifierProcessor(
+      prisma,
+      gmail,
+      classifier,
+      makeClients(),
+    );
+
+    const result = await processor.process(makeJob(jobData));
+
+    expect(classifier.classify).not.toHaveBeenCalled();
     expect(result).toEqual({ classified: 0 });
   });
 
@@ -388,6 +412,8 @@ describe('ClassifierProcessor', () => {
       fetchNewSentThreadIds: jest
         .fn()
         .mockResolvedValue({ threadIds: [], newHistoryId: '200' }),
+      getLabelIdByName: jest.fn().mockResolvedValue('Label_salesbox_123'),
+      getSalesboxLabelIds: jest.fn().mockResolvedValue(['Label_salesbox_123']),
     } as unknown as GmailProvider;
     const classifier = makeClassifier();
     const processor = new ClassifierProcessor(
@@ -425,6 +451,8 @@ describe('ClassifierProcessor', () => {
       fetchNewSentThreadIds: jest
         .fn()
         .mockResolvedValue({ threadIds: [], newHistoryId: '200' }),
+      getLabelIdByName: jest.fn().mockResolvedValue('Label_salesbox_123'),
+      getSalesboxLabelIds: jest.fn().mockResolvedValue(['Label_salesbox_123']),
     } as unknown as GmailProvider;
     const classifier = makeClassifier();
     const processor = new ClassifierProcessor(
@@ -457,6 +485,8 @@ describe('ClassifierProcessor', () => {
       fetchNewSentThreadIds: jest
         .fn()
         .mockResolvedValue({ threadIds: [], newHistoryId: '200' }),
+      getLabelIdByName: jest.fn().mockResolvedValue('Label_salesbox_123'),
+      getSalesboxLabelIds: jest.fn().mockResolvedValue(['Label_salesbox_123']),
     } as unknown as GmailProvider;
     const classifier = makeClassifier();
     const processor = new ClassifierProcessor(
@@ -490,6 +520,8 @@ describe('ClassifierProcessor', () => {
       fetchNewSentThreadIds: jest
         .fn()
         .mockResolvedValue({ threadIds: [], newHistoryId: '200' }),
+      getLabelIdByName: jest.fn().mockResolvedValue('Label_salesbox_123'),
+      getSalesboxLabelIds: jest.fn().mockResolvedValue(['Label_salesbox_123']),
     } as unknown as GmailProvider;
     const processor = new ClassifierProcessor(
       prisma,
@@ -568,6 +600,8 @@ describe('ClassifierProcessor', () => {
       fetchNewSentThreadIds: jest
         .fn()
         .mockResolvedValue({ threadIds: ['t_sent'], newHistoryId: '250' }),
+      getLabelIdByName: jest.fn().mockResolvedValue('Label_salesbox_123'),
+      getSalesboxLabelIds: jest.fn().mockResolvedValue(['Label_salesbox_123']),
     } as unknown as GmailProvider;
 
     const classifier = makeClassifier();

@@ -43,6 +43,13 @@ describe('EmailsService', () => {
 
     mockGmailClient = {
       users: {
+        labels: {
+          list: jest.fn().mockResolvedValue({
+            data: {
+              labels: [{ id: 'salesbox-label-id', name: 'salesbox' }],
+            },
+          }),
+        },
         threads: {
           list: jest.fn(),
         },
@@ -233,6 +240,7 @@ describe('EmailsService', () => {
       );
       expect(mockGmailClient.users.threads.list).toHaveBeenCalledWith({
         userId: 'me',
+        labelIds: ['salesbox-label-id'],
         maxResults: 100,
         pageToken: undefined,
       });

@@ -36,8 +36,46 @@ export class GmailProvider implements EmailProvider {
   }
 
   /**
+   * Resolves internal Gmail labelIds matching the 'salesbox' label
+   * (handles name variations such as 'Salesbox', 'SalesBox', 'Sales Box', 'sales-box', 'salesbox/inbound').
+   */
+  async getSalesboxLabelIds(
+    tenantId: string,
+    emailAccount: string,
+  ): Promise<string[]> {
+    try {
+      const gmailClient = await this.clientFactory.createClient(
+        tenantId,
+        emailAccount,
+      );
+      const res = await gmailClient.users.labels.list({ userId: 'me' });
+      const labels = res.data.labels ?? [];
+      const matches = labels.filter((l) => {
+        if (!l.name) return false;
+        const normalized = l.name.toLowerCase().replace(/[\s-_]/g, '');
+        return normalized === 'salesbox' || normalized.startsWith('salesbox/');
+      });
+      return matches.map((m) => m.id!).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Resolves the primary internal Gmail labelId for a given label name.
+   */
+  async getLabelIdByName(
+    tenantId: string,
+    emailAccount: string,
+    _labelName = 'salesbox',
+  ): Promise<string | null> {
+    const ids = await this.getSalesboxLabelIds(tenantId, emailAccount);
+    return ids[0] ?? null;
+  }
+
+  /**
    * Diffs Gmail history since the stored baseline and returns the ids of
-   * messages newly added to INBOX (SENT and drafts excluded via labelId).
+   * messages newly added/labeled with the 'salesbox' label.
    * 404 from Gmail (= baseline older than the ~1 week history window) is
    * deliberately NOT handled here — the classifier processor resets its
    * baseline on that signal.
@@ -51,28 +89,45 @@ export class GmailProvider implements EmailProvider {
       tenantId,
       emailAccount,
     );
+
+    const salesboxLabelIds = await this.getSalesboxLabelIds(
+      tenantId,
+      emailAccount,
+    );
+
+    // CRITICAL: If no salesbox label exists on this account, return empty messageIds.
+    // Calling history.list with labelId = undefined would return ALL inbox messages.
+    if (salesboxLabelIds.length === 0) {
+      return { messageIds: [], newHistoryId: startHistoryId };
+    }
+
     const messageIds = new Set<string>();
     let newHistoryId = startHistoryId;
-    let pageToken: string | undefined = undefined;
 
-    do {
-      const res: { data: gmail_v1.Schema$ListHistoryResponse } =
-        await gmailClient.users.history.list({
-          userId: 'me',
-          startHistoryId,
-          historyTypes: ['messageAdded'],
-          labelId: 'INBOX',
-          pageToken,
-        });
+    for (const labelId of salesboxLabelIds) {
+      let pageToken: string | undefined = undefined;
+      do {
+        const res: { data: gmail_v1.Schema$ListHistoryResponse } =
+          await gmailClient.users.history.list({
+            userId: 'me',
+            startHistoryId,
+            historyTypes: ['messageAdded', 'labelAdded'],
+            labelId,
+            pageToken,
+          });
 
-      for (const entry of res.data.history ?? []) {
-        for (const added of entry.messagesAdded ?? []) {
-          if (added.message?.id) messageIds.add(added.message.id);
+        for (const entry of res.data.history ?? []) {
+          for (const added of entry.messagesAdded ?? []) {
+            if (added.message?.id) messageIds.add(added.message.id);
+          }
+          for (const labeled of entry.labelsAdded ?? []) {
+            if (labeled.message?.id) messageIds.add(labeled.message.id);
+          }
         }
-      }
-      if (res.data.historyId) newHistoryId = res.data.historyId;
-      pageToken = res.data.nextPageToken ?? undefined;
-    } while (pageToken);
+        if (res.data.historyId) newHistoryId = res.data.historyId;
+        pageToken = res.data.nextPageToken ?? undefined;
+      } while (pageToken);
+    }
 
     return { messageIds: [...messageIds], newHistoryId };
   }
@@ -121,6 +176,14 @@ export class GmailProvider implements EmailProvider {
       tenantId,
       emailAccount,
     );
+    const salesboxLabelIds = await this.getSalesboxLabelIds(
+      tenantId,
+      emailAccount,
+    );
+    if (salesboxLabelIds.length === 0) {
+      return [];
+    }
+
     const allThreads: gmail_v1.Schema$Thread[] = [];
     let pageToken: string | undefined = undefined;
 
@@ -129,6 +192,7 @@ export class GmailProvider implements EmailProvider {
         const listRes: { data: gmail_v1.Schema$ListThreadsResponse } =
           await gmailClient.users.threads.list({
             userId: 'me',
+            labelIds: salesboxLabelIds,
             q: query,
             pageToken: pageToken,
             maxResults: 20,

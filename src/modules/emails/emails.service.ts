@@ -262,33 +262,53 @@ export class EmailsService {
     return built.filter((x): x is NonNullable<typeof x> => x !== null);
   }
 
+  private async getSalesboxLabelIds(
+    gmail: Awaited<ReturnType<GmailClientProvider['getClientForAccount']>>,
+  ): Promise<string[]> {
+    try {
+      const res = await gmail.users.labels.list({ userId: 'me' });
+      const labels = res.data.labels ?? [];
+      const matches = labels.filter((l) => {
+        if (!l.name) return false;
+        const normalized = l.name.toLowerCase().replace(/[\s-_]/g, '');
+        return normalized === 'salesbox' || normalized.startsWith('salesbox/');
+      });
+      return matches.map((m) => m.id!).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
   /**
-   * All active thread ids for the account, paginated. threads.list defaults to
-   * 100 per page — without the loop both inbox-stats and categorized silently
-   * ignored anything past the newest 100 threads. Capped at 10 pages (1000
-   * threads) to bound Gmail quota per request.
+   * All active thread ids for the account bearing the 'salesbox' label, paginated.
    */
   private async listActiveThreadIds(
     gmail: Awaited<ReturnType<GmailClientProvider['getClientForAccount']>>,
   ): Promise<string[]> {
-    const ids: string[] = [];
-    let pageToken: string | undefined = undefined;
-    for (let page = 0; page < 10; page++) {
-      // Explicit annotation: `data` feeds `pageToken` which feeds the next
-      // call — without it TS's circular inference degrades the type to any.
-      const res: { data: gmail_v1.Schema$ListThreadsResponse } =
-        await gmail.users.threads.list({
-          userId: 'me',
-          maxResults: 100,
-          pageToken,
-        });
-      for (const t of res.data.threads || []) {
-        if (t.id) ids.push(t.id);
-      }
-      pageToken = res.data.nextPageToken ?? undefined;
-      if (!pageToken) break;
+    const salesboxLabelIds = await this.getSalesboxLabelIds(gmail);
+    if (salesboxLabelIds.length === 0) {
+      return [];
     }
-    return ids;
+
+    const ids = new Set<string>();
+    for (const labelId of salesboxLabelIds) {
+      let pageToken: string | undefined = undefined;
+      for (let page = 0; page < 10; page++) {
+        const res: { data: gmail_v1.Schema$ListThreadsResponse } =
+          await gmail.users.threads.list({
+            userId: 'me',
+            labelIds: [labelId],
+            maxResults: 100,
+            pageToken,
+          });
+        for (const t of res.data.threads || []) {
+          if (t.id) ids.add(t.id);
+        }
+        pageToken = res.data.nextPageToken ?? undefined;
+        if (!pageToken) break;
+      }
+    }
+    return [...ids];
   }
 
   private categoryToFilter(

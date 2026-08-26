@@ -57,12 +57,25 @@ export class GmailWebhookService {
       emailAccount,
     );
 
+    const watchedLabelIds = ['INBOX', 'SENT'];
+    try {
+      const labelsRes = await gmailClient.users.labels.list({ userId: 'me' });
+      const salesboxLabel = labelsRes.data.labels?.find(
+        (l) => l.name?.toLowerCase() === 'salesbox',
+      );
+      if (salesboxLabel?.id && !watchedLabelIds.includes(salesboxLabel.id)) {
+        watchedLabelIds.push(salesboxLabel.id);
+      }
+    } catch {
+      // If label lookup fails, proceed with default watched labels
+    }
+
     try {
       const response = await gmailClient.users.watch({
         userId: 'me',
         requestBody: {
           topicName: this.topicName,
-          labelIds: ['INBOX', 'SENT'],
+          labelIds: watchedLabelIds,
           labelFilterBehavior: 'include',
         },
       });
