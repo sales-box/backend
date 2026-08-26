@@ -237,6 +237,29 @@ export class ClassifierProcessor extends WorkerHost {
       throw error;
     }
 
+    // Verify message has the 'salesbox' label
+    const salesboxLabelIds = await this.gmailProvider.getSalesboxLabelIds(
+      account.tenantId,
+      account.email,
+    );
+    if (salesboxLabelIds.length > 0) {
+      const messageLabelIds = parsed.labelIds ?? [];
+      const hasSalesboxLabel = salesboxLabelIds.some((id) =>
+        messageLabelIds.includes(id),
+      );
+      if (!hasSalesboxLabel) {
+        this.logger.debug(
+          `Message ${messageId} does not have the 'salesbox' label; skipping classification`,
+        );
+        return false;
+      }
+    } else {
+      this.logger.warn(
+        `Account ${account.email} does not have a 'salesbox' label created in Gmail; skipping classification`,
+      );
+      return false;
+    }
+
     // Skip the SE's own outbound messages (replies we sent). Gmail threads them
     // into the conversation, but classifying them inflates the processed count
     // and mislabels our own reply as an inbound "follow-up".

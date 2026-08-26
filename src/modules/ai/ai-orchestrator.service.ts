@@ -161,6 +161,25 @@ export class AiOrchestratorService {
       };
     }
 
+    // Check if email has the 'salesbox' label
+    const salesboxLabelIds = await this.gmailProvider.getSalesboxLabelIds(
+      tenantId,
+      accountEmail,
+    );
+    const messageLabelIds = parsed.labelIds ?? [];
+    const hasSalesboxLabel =
+      salesboxLabelIds.length > 0 &&
+      salesboxLabelIds.some((id) => messageLabelIds.includes(id));
+
+    if (!hasSalesboxLabel) {
+      this.logger.debug(
+        `Message ${messageId} does not have the 'salesbox' label; skipping orchestrator processing`,
+      );
+      return {
+        notSalesbox: true as const,
+      };
+    }
+
     await this.clientsService.captureInboundEmail(tenantId, {
       messageId,
       senderEmail: clientEmail,
@@ -467,6 +486,19 @@ export class AiOrchestratorService {
       messageId,
       accountEmail,
     );
+    const salesboxLabelIds = await this.gmailProvider.getSalesboxLabelIds(
+      tenantId,
+      accountEmail,
+    );
+    const messageLabelIds = parsed.labelIds ?? [];
+    const hasSalesboxLabel =
+      salesboxLabelIds.length > 0 &&
+      salesboxLabelIds.some((id) => messageLabelIds.includes(id));
+
+    if (!hasSalesboxLabel) {
+      return { isPausedForApproval: false, suggestions: [] };
+    }
+
     const emailContent = parsed.textPlain || parsed.textHtml || '';
     const senderEmail = this.extractSenderEmail(parsed.from ?? '');
     const threadId = parsed.threadId || messageId;

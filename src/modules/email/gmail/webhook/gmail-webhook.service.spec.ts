@@ -15,7 +15,14 @@ function build(
   const watch = watchThrows
     ? jest.fn().mockRejectedValue(new Error('watch failed'))
     : jest.fn().mockResolvedValue(watchResult);
-  const createClient = jest.fn().mockResolvedValue({ users: { watch } });
+  const labels = {
+    list: jest.fn().mockResolvedValue({
+      data: { labels: [{ id: 'Label_salesbox', name: 'salesbox' }] },
+    }),
+  };
+  const createClient = jest
+    .fn()
+    .mockResolvedValue({ users: { watch, labels } });
   const factory = { createClient } as unknown as GmailClientFactory;
 
   const upsert = jest.fn().mockResolvedValue({});

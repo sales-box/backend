@@ -15,6 +15,7 @@ export interface ParsedMessage {
   textPlain: string;
   textHtml: string;
   attachments: EmailAttachment[];
+  labelIds?: string[];
 }
 
 export interface EmailThread {

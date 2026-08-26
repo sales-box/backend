@@ -38,6 +38,7 @@ export class GmailParserService {
       textPlain: '',
       textHtml: '',
       attachments: [],
+      labelIds: gmailApiResp.labelIds || [],
     };
 
     return parsedMessage;

@@ -20,7 +20,10 @@ function makeDeps() {
         findFirst: jest.fn().mockResolvedValue({ id: 'acc-uuid-1' }),
       },
     },
-    gmailProvider: { fetchMessage: jest.fn() },
+    gmailProvider: {
+      fetchMessage: jest.fn(),
+      getSalesboxLabelIds: jest.fn().mockResolvedValue(['Label_salesbox_123']),
+    },
     classifierService: { classify: jest.fn() },
     clientsService: {
       captureInboundEmail: jest.fn().mockResolvedValue({}),
@@ -56,6 +59,7 @@ const BASE_PARSED_MESSAGE = {
   textPlain: 'I need a product',
   textHtml: '',
   attachments: [],
+  labelIds: ['Label_salesbox_123'],
 };
 
 const BASE_CLASSIFICATION = {
