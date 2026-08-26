@@ -1,12 +1,8 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
-import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
 import { FastifyAdapter } from '@bull-board/fastify';
 import { BullBoardModule } from '@bull-board/nestjs';
-import { DemoController } from './demo.controller';
-import { DemoProcessor } from './demo.processor';
-import { DEMO_QUEUE } from './queue.constants';
 
 @Module({
   imports: [
@@ -24,15 +20,17 @@ import { DEMO_QUEUE } from './queue.constants';
         };
       },
     }),
-    BullModule.registerQueue({ name: DEMO_QUEUE }),
-    // Bull Board dashboard mounted at /admin/queues (Fastify adapter).
+    // Bull Board dashboard mounted at /admin/queues (Fastify adapter). The
+    // real queues register themselves through BullBoardModule.forFeature in
+    // their own modules: classifier, embeddings and kb-quality.
+    //
+    // Access is gated in main.ts by QUEUE_DASHBOARD_TOKEN — the board exposes
+    // every job payload and a retry button, and it used to answer 200 to any
+    // anonymous caller.
     BullBoardModule.forRoot({
       route: '/admin/queues',
       adapter: FastifyAdapter,
     }),
-    BullBoardModule.forFeature({ name: DEMO_QUEUE, adapter: BullMQAdapter }),
   ],
-  controllers: [DemoController],
-  providers: [DemoProcessor],
 })
 export class QueueModule {}
