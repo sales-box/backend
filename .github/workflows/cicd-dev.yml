@@ -76,6 +76,20 @@ jobs:
       - name: Generate Prisma client
         run: pnpm exec prisma generate
 
+      - name: Fail on Prisma schema drift
+        run: |
+          # A model declared in schema.prisma with no corresponding migration is
+          # invisible until something touches its table and gets P2021 at
+          # runtime. That is exactly how `escalation_items` reached the codebase
+          # untracked. Apply the migration history to the CI database, then diff
+          # the result against the schema file; --exit-code returns 2 on any
+          # difference, failing the job.
+          pnpm exec prisma migrate deploy
+          pnpm exec prisma migrate diff \
+            --from-schema-datasource prisma/schema.prisma \
+            --to-schema-datamodel prisma/schema.prisma \
+            --exit-code
+
       - name: Lint
         run: pnpm exec eslint "src/**/*.ts" "test/**/*.ts"
 
