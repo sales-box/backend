@@ -97,7 +97,7 @@ export class EmailsService {
 
   async getInboxStatsForSe(
     email: string,
-    tenantId?: string,
+    tenantId: string,
   ): Promise<{
     totalEmails: number;
     syncedAt: string;
@@ -107,8 +107,8 @@ export class EmailsService {
     notYetReviewedCount: number;
   }> {
     const gmail = await this.gmailClientProvider.getClientForAccount(
-      email,
       tenantId,
+      email,
     );
     const activeThreadIds = await this.listActiveThreadIds(gmail);
 
@@ -203,7 +203,7 @@ export class EmailsService {
    */
   async getCategorizedEmailsForSe(
     email: string,
-    tenantId: string | undefined,
+    tenantId: string,
     category: string,
   ): Promise<
     Array<{
@@ -219,8 +219,8 @@ export class EmailsService {
     if (!filter) return [];
 
     const gmail = await this.gmailClientProvider.getClientForAccount(
-      email,
       tenantId,
+      email,
     );
     const activeThreadIds = new Set(await this.listActiveThreadIds(gmail));
     if (activeThreadIds.size === 0) return [];
@@ -361,7 +361,7 @@ export class EmailsService {
       reviewedAt: Date | null;
     },
     seEmail: string,
-    tenantId: string | undefined,
+    tenantId: string,
   ): Promise<{
     threadId: string;
     clientName: string;

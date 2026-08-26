@@ -228,8 +228,8 @@ describe('EmailsService', () => {
       const result = await service.getInboxStatsForSe(seEmail, tenantId);
 
       expect(mockGmailClientProvider.getClientForAccount).toHaveBeenCalledWith(
-        seEmail,
         tenantId,
+        seEmail,
       );
       expect(mockGmailClient.users.threads.list).toHaveBeenCalledWith({
         userId: 'me',
@@ -255,7 +255,7 @@ describe('EmailsService', () => {
       expect(result.syncedAt).toBeDefined();
     });
 
-    it('should query with tenant_id IS NULL and aggregate correctly when tenantId is not provided', async () => {
+    it('scopes the aggregate query to the caller tenant', async () => {
       mockGmailClient.users.threads.list.mockResolvedValue({
         data: {
           threads: [{ id: 'thread-1' }],
@@ -272,11 +272,11 @@ describe('EmailsService', () => {
         },
       ]);
 
-      const result = await service.getInboxStatsForSe(seEmail, undefined);
+      const result = await service.getInboxStatsForSe(seEmail, tenantId);
 
       expect(mockGmailClientProvider.getClientForAccount).toHaveBeenCalledWith(
+        tenantId,
         seEmail,
-        undefined,
       );
       expect(mockPrisma.$queryRaw).toHaveBeenCalled();
       expect(result.totalEmails).toBe(1);
@@ -292,11 +292,11 @@ describe('EmailsService', () => {
       });
       mockPrisma.$queryRaw.mockResolvedValue([]);
 
-      const result = await service.getInboxStatsForSe(seEmail);
+      const result = await service.getInboxStatsForSe(seEmail, tenantId);
 
       expect(mockGmailClientProvider.getClientForAccount).toHaveBeenCalledWith(
+        tenantId,
         seEmail,
-        undefined,
       );
       expect(result.totalEmails).toBe(0);
       expect(result.urgentCount).toBe(0);

@@ -53,9 +53,14 @@ export class EmailsController {
     },
   })
   async getInboxStats(@Req() req: AuthenticatedRequest) {
+    // Gmail credentials are resolved by a tenant-scoped lookup; a token with
+    // no tenant cannot read a mailbox.
+    if (!req.user.tenantId) {
+      throw new BadRequestException('Your session carries no company');
+    }
     return this.emailsService.getInboxStatsForSe(
       req.user.email,
-      req.user.tenantId ?? undefined,
+      req.user.tenantId,
     );
   }
 
@@ -92,9 +97,12 @@ export class EmailsController {
     @Req() req: AuthenticatedRequest,
     @Query('category') category: string,
   ) {
+    if (!req.user.tenantId) {
+      throw new BadRequestException('Your session carries no company');
+    }
     return this.emailsService.getCategorizedEmailsForSe(
       req.user.email,
-      req.user.tenantId ?? undefined,
+      req.user.tenantId,
       category,
     );
   }

@@ -215,6 +215,7 @@ describe('AttachmentsService', () => {
       });
 
       const buffer = await service.downloadAttachment(
+        'tenant-a',
         'test@example.com',
         'msg-123',
         'att-456',
@@ -244,6 +245,7 @@ describe('AttachmentsService', () => {
       mockCache.get.mockResolvedValue(cached);
 
       const result = await service.parseAttachmentCached(
+        'tenant-a',
         'test@example.com',
         'msg-1',
         makeAtt({ filename: 'doc.pdf' }),
@@ -261,6 +263,7 @@ describe('AttachmentsService', () => {
       });
 
       const result = await service.parseAttachmentCached(
+        'tenant-a',
         'test@example.com',
         'msg-1',
         makeAtt(),
@@ -272,6 +275,7 @@ describe('AttachmentsService', () => {
 
     it('should not cache skipped results', async () => {
       const result = await service.parseAttachmentCached(
+        'tenant-a',
         'test@example.com',
         'msg-1',
         makeAtt({ size: 15 * 1024 * 1024 }),
@@ -292,6 +296,7 @@ describe('AttachmentsService', () => {
       });
 
       const result = await service.parseAttachmentCached(
+        'tenant-a',
         'test@example.com',
         'msg-1',
         makeAtt(),
@@ -311,6 +316,7 @@ describe('AttachmentsService', () => {
       });
 
       const result = await service.parseAttachmentCached(
+        'tenant-a',
         'test@example.com',
         'msg-1',
         makeAtt(),
@@ -333,6 +339,7 @@ describe('AttachmentsService', () => {
 
     it('should wrap PDF text with source=attachment_text', async () => {
       const result = await service.parseAttachmentCached(
+        'tenant-a',
         'test@example.com',
         'msg-1',
         makeAtt(),
@@ -346,6 +353,7 @@ describe('AttachmentsService', () => {
 
     it('should wrap docx text with source=attachment_text', async () => {
       const result = await service.parseAttachmentCached(
+        'tenant-a',
         'test@example.com',
         'msg-1',
         makeAtt({
@@ -363,6 +371,7 @@ describe('AttachmentsService', () => {
 
     it('should wrap pptx text with source=attachment_text', async () => {
       const result = await service.parseAttachmentCached(
+        'tenant-a',
         'test@example.com',
         'msg-1',
         makeAtt({
@@ -380,6 +389,7 @@ describe('AttachmentsService', () => {
 
     it('should NOT wrap xlsx structured data', async () => {
       const result = await service.parseAttachmentCached(
+        'tenant-a',
         'test@example.com',
         'msg-1',
         makeAtt({
@@ -405,6 +415,7 @@ describe('AttachmentsService', () => {
 
     it('should call vision on images and wrap output with source=vision_extracted', async () => {
       const result = await service.parseAttachmentCached(
+        'tenant-a',
         'test@example.com',
         'msg-1',
         makeAtt({ filename: 'photo.jpg', mimeType: 'image/jpeg' }),
@@ -422,6 +433,7 @@ describe('AttachmentsService', () => {
       mockPdfText = SHORT_PDF_TEXT;
 
       const result = await service.parseAttachmentCached(
+        'tenant-a',
         'test@example.com',
         'msg-1',
         makeAtt(),
@@ -434,6 +446,7 @@ describe('AttachmentsService', () => {
 
     it('should NOT wrap image base64 itself', async () => {
       const result = await service.parseAttachmentCached(
+        'tenant-a',
         'test@example.com',
         'msg-1',
         makeAtt({ filename: 'photo.png', mimeType: 'image/png' }),
@@ -449,6 +462,7 @@ describe('AttachmentsService', () => {
   describe('parseAttachment Gates & Routing', () => {
     it('should skip oversized attachments without calling Gmail API', async () => {
       const result = await service.parseAttachmentCached(
+        'tenant-a',
         'test@example.com',
         'msg-1',
         makeAtt({ size: 15 * 1024 * 1024 }),
@@ -468,6 +482,7 @@ describe('AttachmentsService', () => {
         data: { data: gmailAttachmentData() },
       });
       const result = await service.parseAttachmentCached(
+        'tenant-a',
         'test@example.com',
         'msg-1',
         makeAtt({
@@ -486,6 +501,7 @@ describe('AttachmentsService', () => {
         data: { data: gmailAttachmentData() },
       });
       const result = await service.parseAttachmentCached(
+        'tenant-a',
         'test@example.com',
         'msg-1',
         makeAtt({
@@ -504,6 +520,7 @@ describe('AttachmentsService', () => {
         data: { data: gmailAttachmentData() },
       });
       const result = await service.parseAttachmentCached(
+        'tenant-a',
         'test@example.com',
         'msg-1',
         makeAtt({
@@ -526,6 +543,7 @@ describe('AttachmentsService', () => {
         .mockRejectedValueOnce(new Error('corrupt docx'));
 
       const result = await service.parseAttachmentCached(
+        'tenant-a',
         'test@example.com',
         'msg-1',
         makeAtt({
@@ -541,6 +559,7 @@ describe('AttachmentsService', () => {
 
     it('should skip unknown formats directly', async () => {
       const result = await service.parseAttachmentCached(
+        'tenant-a',
         'test@example.com',
         'msg-1',
         makeAtt({ filename: 'archive.zip', mimeType: 'application/zip' }),
@@ -579,7 +598,11 @@ describe('AttachmentsService', () => {
         data: { data: gmailAttachmentData('valid data') },
       });
 
-      const results = await service.parseAttachments('test@example.com', email);
+      const results = await service.parseAttachments(
+        'tenant-a',
+        'test@example.com',
+        email,
+      );
 
       expect(results).toHaveLength(3);
 

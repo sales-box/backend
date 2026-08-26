@@ -61,6 +61,7 @@ export class ReplyService {
     },
   ): Promise<DraftResult> {
     const parsedAttachments = await this.attachmentsService.parseAttachments(
+      tenantId,
       accountEmail,
       emailRef,
     );

@@ -52,12 +52,15 @@ export class AttachmentsService {
   ) {}
 
   async downloadAttachment(
+    tenantId: string,
     accountEmail: string,
     messageId: string,
     attachmentId: string,
   ): Promise<Buffer> {
-    const gmail =
-      await this.gmailClientProvider.getClientForAccount(accountEmail);
+    const gmail = await this.gmailClientProvider.getClientForAccount(
+      tenantId,
+      accountEmail,
+    );
     const res = await gmail.users.messages.attachments.get({
       userId: 'me',
       messageId,
@@ -128,6 +131,7 @@ export class AttachmentsService {
   }
 
   async parseAttachmentCached(
+    tenantId: string,
     accountEmail: string,
     messageId: string,
     attachment: AttachmentRef,
@@ -141,6 +145,7 @@ export class AttachmentsService {
     }
 
     const parsed = await this.parseAttachmentFresh(
+      tenantId,
       accountEmail,
       messageId,
       attachment,
@@ -154,6 +159,7 @@ export class AttachmentsService {
   }
 
   private async parseAttachmentFresh(
+    tenantId: string,
     accountEmail: string,
     messageId: string,
     attachment: AttachmentRef,
@@ -190,6 +196,7 @@ export class AttachmentsService {
     }
     try {
       const buffer = await this.downloadAttachment(
+        tenantId,
         accountEmail,
         messageId,
         attachment.attachmentId,
@@ -317,6 +324,7 @@ export class AttachmentsService {
   }
 
   async parseAttachments(
+    tenantId: string,
     accountEmail: string,
     email: EmailRef,
   ): Promise<ParsedAttachment[]> {
@@ -326,7 +334,7 @@ export class AttachmentsService {
 
     const results = await Promise.allSettled(
       email.attachments.map((att) =>
-        this.parseAttachmentCached(accountEmail, email.id, att),
+        this.parseAttachmentCached(tenantId, accountEmail, email.id, att),
       ),
     );
 
