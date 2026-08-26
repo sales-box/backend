@@ -315,8 +315,13 @@ export class ClassifierProcessor extends WorkerHost {
             : result.isUrgent && result.intent === 'sensitive'
               ? 'high'
               : 'medium';
-        await this.prisma.escalationItem
-          .upsert({
+        // The classification itself is already stored and must not be rolled
+        // back by a failed escalation write — but the failure has to be
+        // audible. This used to be `.catch(() => {})`, which is how the whole
+        // feature ran for weeks against a database that had no
+        // escalation_items table at all, reporting success every time.
+        try {
+          await this.prisma.escalationItem.upsert({
             where: { generalAnalysisId: created.id },
             create: {
               tenantId: account.tenantId,
@@ -327,8 +332,14 @@ export class ClassifierProcessor extends WorkerHost {
               reason: result.urgencyReason || result.reasoning,
             },
             update: {},
-          })
-          .catch(() => {});
+          });
+        } catch (escalationError) {
+          this.logger.error(
+            `Escalation write FAILED for message ${messageId} (tenant ${account.tenantId}, severity ${severity}): ` +
+              `${escalationError instanceof Error ? escalationError.message : String(escalationError)}. ` +
+              'The classification was stored; the admin escalation feed will not show this email.',
+          );
+        }
       }
     } catch (error) {
       // P2002: a concurrent worker stored it first — the result exists, done.
