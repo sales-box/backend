@@ -17,17 +17,19 @@ export class GmailClientProvider {
     private readonly crypto: CryptoService,
   ) {}
 
+  /**
+   * `tenantId` is required. This method decrypts a mailbox's OAuth tokens, and
+   * its callers take the address from request bodies, so an email-only lookup
+   * would hand any caller any tenant's credentials. Same rule as
+   * AuthService.getUserCredentials — do not add a fallback.
+   */
   async getClientForAccount(
+    tenantId: string,
     email: string,
-    tenantId?: string,
   ): Promise<gmail_v1.Gmail> {
-    const account = tenantId
-      ? await this.prisma.connectedAccount.findUnique({
-          where: { tenantId_email: { tenantId, email } },
-        })
-      : await this.prisma.connectedAccount.findFirst({
-          where: { email },
-        });
+    const account = await this.prisma.connectedAccount.findUnique({
+      where: { tenantId_email: { tenantId, email } },
+    });
 
     if (!account || account.status !== 'connected') {
       throw new NotFoundException(

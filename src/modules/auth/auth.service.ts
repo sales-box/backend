@@ -300,37 +300,28 @@ export class AuthService {
   /**
    * Returns the decrypted OAuth credentials for a connected account.
    *
-   * @param email    The account email address.
-   * @param tenantId When provided the lookup is scoped to the [tenantId, email]
-   *                 composite key, which is safe and correct for all SE / admin
-   *                 paths that have a tenant in context.
+   * `tenantId` is REQUIRED and the lookup is always scoped to the
+   * [tenantId, email] composite key. There is deliberately NO email-only
+   * fallback: this method decrypts a mailbox's OAuth tokens, and its callers
+   * routinely take the email address from a request body. The previous
+   * optional-tenantId form let any authenticated user read any other tenant's
+   * mailbox (the former "DEP-1 phase 2" gap).
    *
-   * ⚠️  CALL-SITE NOTE for GmailClientFactory.createClient:
-   *    That call site currently only has the emailAccount string and no tenantId
-   *    available. It passes `undefined` here, so the lookup falls back to a
-   *    plain email scan. This is a known gap — threading tenantId through the
-   *    gmail-client-factory → gmail-provider → webhook-service chain requires a
-   *    larger refactor and should be tracked as a follow-up task (DEP-1 phase 2).
-   *    Do NOT silently widen this gap further without a product decision.
+   * If you reach a call site without a tenantId, resolve the tenant THERE.
+   * Do not reintroduce a fallback here.
    */
   public async getUserCredentials(
     rawEmail: string,
-    tenantId?: string,
+    tenantId: string,
   ): Promise<{
     access_token: string;
     refresh_token?: string;
     expiry_date?: number;
   }> {
     const email = rawEmail.toLowerCase().trim();
-    const account = tenantId
-      ? await this.prisma.connectedAccount.findUnique({
-          where: { tenantId_email: { tenantId, email } },
-        })
-      : // Admin-first-connect / gmail-factory path: tenantId not yet available.
-        // Falls back to email-only scan. See call-site note above.
-        await this.prisma.connectedAccount.findFirst({
-          where: { email },
-        });
+    const account = await this.prisma.connectedAccount.findUnique({
+      where: { tenantId_email: { tenantId, email } },
+    });
 
     if (!account) {
       throw new NotFoundException('No connected account found for user');

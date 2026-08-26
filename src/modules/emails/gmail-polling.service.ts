@@ -37,13 +37,13 @@ export class GmailPollingService
   async pollAllAccounts(): Promise<void> {
     try {
       const accounts = await this.prisma.connectedAccount.findMany({
-        where: { status: 'connected' },
-        select: { email: true },
+        where: { status: 'connected', tenantId: { not: null } },
+        select: { email: true, tenantId: true },
       });
 
       for (const account of accounts) {
         try {
-          await this.pollAccount(account.email);
+          await this.pollAccount(account.tenantId!, account.email);
         } catch (error) {
           this.logger.error(
             `Polling failed for ${account.email}: ${error instanceof Error ? error.message : String(error)}`,
@@ -57,8 +57,11 @@ export class GmailPollingService
     }
   }
 
-  private async pollAccount(email: string): Promise<void> {
-    const gmail = await this.gmailClientProvider.getClientForAccount(email);
+  private async pollAccount(tenantId: string, email: string): Promise<void> {
+    const gmail = await this.gmailClientProvider.getClientForAccount(
+      tenantId,
+      email,
+    );
 
     const response = await gmail.users.messages.list({
       userId: 'me',

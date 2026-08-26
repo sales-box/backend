@@ -7,16 +7,18 @@ export class EmailService {
   constructor(private readonly emailProvider: EmailProvider) {}
 
   async fetchMessage(
+    tenantId: string,
     messageId: string,
     emailAccount: string,
   ): Promise<ParsedMessage> {
-    return this.emailProvider.fetchMessage(messageId, emailAccount);
+    return this.emailProvider.fetchMessage(tenantId, messageId, emailAccount);
   }
 
   async fetchThreads(
+    tenantId: string,
     emailAccount: string,
     query?: string,
   ): Promise<EmailThread[]> {
-    return this.emailProvider.fetchThreads(emailAccount, query);
+    return this.emailProvider.fetchThreads(tenantId, emailAccount, query);
   }
 }

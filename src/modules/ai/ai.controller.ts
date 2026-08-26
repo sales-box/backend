@@ -67,6 +67,7 @@ export class AiController {
     );
 
     const result = await this.orchestrator.resumeGraph(
+      req.user.tenantId!,
       body.graphThreadId,
       body.content,
     );

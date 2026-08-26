@@ -83,6 +83,15 @@ export class ClassifierProcessor extends WorkerHost {
       );
       return { skipped: 'no_account', classified: 0 };
     }
+    // Gmail credentials are resolved by a tenant-scoped lookup, so an account
+    // not yet linked to a tenant cannot be polled at all.
+    if (!account.tenantId) {
+      this.logger.warn(
+        `Notification for an account with no tenant (${account.email}); skipping`,
+      );
+      return { skipped: 'no_tenant', classified: 0 };
+    }
+    const tenantId = account.tenantId;
 
     const subscription = await this.prisma.webhookSubscription.findUnique({
       where: { connectedAccountId: account.id },
@@ -104,6 +113,7 @@ export class ClassifierProcessor extends WorkerHost {
     try {
       ({ messageIds, newHistoryId } =
         await this.gmailProvider.fetchNewMessageIds(
+          tenantId,
           emailAddress,
           subscription.lastHistoryId,
         ));
@@ -123,7 +133,14 @@ export class ClassifierProcessor extends WorkerHost {
     let failed = 0;
     for (const messageId of messageIds) {
       try {
-        if (await this.classifyOne(messageId, account)) classified += 1;
+        if (
+          await this.classifyOne(messageId, {
+            id: account.id,
+            email: account.email,
+            tenantId,
+          })
+        )
+          classified += 1;
       } catch (error) {
         // Quota exhausted: every further call this minute would 429 too, so
         // stop NOW instead of burning one failed call per remaining message.
@@ -154,6 +171,7 @@ export class ClassifierProcessor extends WorkerHost {
     let sentNewHistoryId = newHistoryId;
     try {
       const sentResult = await this.gmailProvider.fetchNewSentThreadIds(
+        tenantId,
         emailAddress,
         subscription.lastHistoryId,
       );
@@ -191,7 +209,9 @@ export class ClassifierProcessor extends WorkerHost {
 
   private async classifyOne(
     messageId: string,
-    account: { id: string; email: string; tenantId: string | null },
+    // `tenantId` is non-null here: `process()` returns early for an account
+    // without one, because credentials cannot be resolved without a tenant.
+    account: { id: string; email: string; tenantId: string },
   ): Promise<boolean> {
     // Exactly-once rule (design doc §1): the stored row is the cache.
     const existing = await this.prisma.generalAnalysis.findUnique({
@@ -201,7 +221,11 @@ export class ClassifierProcessor extends WorkerHost {
 
     let parsed: ParsedMessage;
     try {
-      parsed = await this.gmailProvider.fetchMessage(messageId, account.email);
+      parsed = await this.gmailProvider.fetchMessage(
+        account.tenantId,
+        messageId,
+        account.email,
+      );
     } catch (error) {
       // Message gone (deleted after the history record) is permanent — skip it,
       // don't let it fail the batch and freeze the baseline. Anything else

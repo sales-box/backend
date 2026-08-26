@@ -6,6 +6,10 @@ import { PrismaService } from '@/database/prisma.service';
 import { AttachmentsService } from '@/modules/attachments/attachments.service';
 import { flattenParsedAttachments } from '@/modules/ai/graphs/reply/nodes/extractor/attachment-flattener';
 import { AttachmentRef } from '@/modules/attachments/attachments.service';
+import {
+  assertOwnsGraphThread,
+  buildGraphThreadId,
+} from '@/modules/ai/graphs/reply/graph-thread-id';
 import { Command, BaseCheckpointSaver, BaseStore } from '@langchain/langgraph';
 import {
   CHECKPOINTER_TOKEN,
@@ -57,12 +61,13 @@ export class ReplyService {
     },
   ): Promise<DraftResult> {
     const parsedAttachments = await this.attachmentsService.parseAttachments(
+      tenantId,
       accountEmail,
       emailRef,
     );
     const attachmentsText = flattenParsedAttachments(parsedAttachments);
 
-    const graphThreadId = `${threadId}:${messageId}`;
+    const graphThreadId = buildGraphThreadId(tenantId, threadId, messageId);
     const config = {
       configurable: {
         thread_id: graphThreadId,
@@ -93,9 +98,13 @@ export class ReplyService {
   }
 
   async resumeWithFeedback(
+    tenantId: string,
     graphThreadId: string,
     editedContent: string,
   ): Promise<ReplyGraphStateType> {
+    // The key arrives from the request body; prove it belongs to this tenant
+    // before handing it to the checkpointer.
+    assertOwnsGraphThread(tenantId, graphThreadId);
     const config = {
       configurable: {
         thread_id: graphThreadId,

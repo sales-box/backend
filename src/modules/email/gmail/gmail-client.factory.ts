@@ -10,9 +10,20 @@ export class GmailClientFactory {
     private readonly configService: ConfigService,
   ) {}
 
-  async createClient(emailAccount: string): Promise<gmail_v1.Gmail> {
-    const userCredentials =
-      await this.authService.getUserCredentials(emailAccount);
+  /**
+   * `tenantId` is required and comes first: a Gmail client grants access to a
+   * mailbox's OAuth credentials, and callers routinely take the email address
+   * from a request body. Putting the tenant first makes a forgotten argument a
+   * type error rather than a silently swapped string.
+   */
+  async createClient(
+    tenantId: string,
+    emailAccount: string,
+  ): Promise<gmail_v1.Gmail> {
+    const userCredentials = await this.authService.getUserCredentials(
+      emailAccount,
+      tenantId,
+    );
 
     const auth = new google.auth.OAuth2({
       clientId: this.configService.get<string>('GOOGLE_CLIENT_ID'),

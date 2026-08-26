@@ -72,13 +72,13 @@ describe('GmailProvider', () => {
 
   describe('fetchMessage', () => {
     it('creates a client for the given account', async () => {
-      await provider.fetchMessage('msg-1', 'account-42');
+      await provider.fetchMessage('tenant-a', 'msg-1', 'account-42');
 
-      expect(mockCreateClient).toHaveBeenCalledWith('account-42');
+      expect(mockCreateClient).toHaveBeenCalledWith('tenant-a', 'account-42');
     });
 
     it('fetches the message in full format', async () => {
-      await provider.fetchMessage('msg-1', 'account-1');
+      await provider.fetchMessage('tenant-a', 'msg-1', 'account-1');
 
       expect(mockMessagesGet).toHaveBeenCalledWith({
         userId: 'me',
@@ -88,13 +88,17 @@ describe('GmailProvider', () => {
     });
 
     it('passes the raw API data to the parser', async () => {
-      await provider.fetchMessage('msg-1', 'account-1');
+      await provider.fetchMessage('tenant-a', 'msg-1', 'account-1');
 
       expect(mockParseMessage).toHaveBeenCalledWith(stubRawData);
     });
 
     it('returns the result from the parser', async () => {
-      const result = await provider.fetchMessage('msg-1', 'account-1');
+      const result = await provider.fetchMessage(
+        'tenant-a',
+        'msg-1',
+        'account-1',
+      );
 
       expect(result).toEqual(stubMessage);
     });
@@ -102,17 +106,17 @@ describe('GmailProvider', () => {
     it('propagates errors from the client factory', async () => {
       mockCreateClient.mockRejectedValue(new Error('Auth failure'));
 
-      await expect(provider.fetchMessage('msg-1', 'account-1')).rejects.toThrow(
-        'Auth failure',
-      );
+      await expect(
+        provider.fetchMessage('tenant-a', 'msg-1', 'account-1'),
+      ).rejects.toThrow('Auth failure');
     });
 
     it('propagates errors from the Gmail API', async () => {
       mockMessagesGet.mockRejectedValue(new Error('API error'));
 
-      await expect(provider.fetchMessage('msg-1', 'account-1')).rejects.toThrow(
-        'API error',
-      );
+      await expect(
+        provider.fetchMessage('tenant-a', 'msg-1', 'account-1'),
+      ).rejects.toThrow('API error');
     });
   });
 
@@ -127,9 +131,13 @@ describe('GmailProvider', () => {
         data: { id: 'thread-1', messages: [] },
       });
 
-      await provider.fetchThreads('account-1', 'client@example.com');
+      await provider.fetchThreads(
+        'tenant-a',
+        'account-1',
+        'client@example.com',
+      );
 
-      expect(mockCreateClient).toHaveBeenCalledWith('account-1');
+      expect(mockCreateClient).toHaveBeenCalledWith('tenant-a', 'account-1');
       expect(mockThreadsList).toHaveBeenCalledWith({
         userId: 'me',
         q: 'client@example.com',
@@ -160,7 +168,11 @@ describe('GmailProvider', () => {
         return Promise.resolve({ data: { id } });
       });
 
-      await provider.fetchThreads('account-1', 'client@example.com');
+      await provider.fetchThreads(
+        'tenant-a',
+        'account-1',
+        'client@example.com',
+      );
 
       expect(mockThreadsList).toHaveBeenCalledTimes(2);
       expect(mockThreadsList).toHaveBeenNthCalledWith(2, {
@@ -176,6 +188,7 @@ describe('GmailProvider', () => {
       mockThreadsList.mockRejectedValue(new Error('List failed'));
 
       const result = await provider.fetchThreads(
+        'tenant-a',
         'account-1',
         'client@example.com',
       );
@@ -209,11 +222,15 @@ describe('GmailProvider', () => {
           },
         });
 
-      const result = await provider.fetchNewMessageIds('se@acme.com', '100');
+      const result = await provider.fetchNewMessageIds(
+        'tenant-a',
+        'se@acme.com',
+        '100',
+      );
 
       expect(result.messageIds).toEqual(['m1', 'm2', 'm3']);
       expect(result.newHistoryId).toBe('160');
-      expect(mockCreateClient).toHaveBeenCalledWith('se@acme.com');
+      expect(mockCreateClient).toHaveBeenCalledWith('tenant-a', 'se@acme.com');
       expect(mockHistoryList).toHaveBeenCalledWith(
         expect.objectContaining({
           userId: 'me',
@@ -228,7 +245,11 @@ describe('GmailProvider', () => {
     it('returns empty ids and the start baseline when history is empty', async () => {
       mockHistoryList.mockResolvedValueOnce({ data: {} });
 
-      const result = await provider.fetchNewMessageIds('se@acme.com', '100');
+      const result = await provider.fetchNewMessageIds(
+        'tenant-a',
+        'se@acme.com',
+        '100',
+      );
 
       expect(result.messageIds).toEqual([]);
       expect(result.newHistoryId).toBe('100');
@@ -240,7 +261,7 @@ describe('GmailProvider', () => {
       );
 
       await expect(
-        provider.fetchNewMessageIds('se@acme.com', '1'),
+        provider.fetchNewMessageIds('tenant-a', 'se@acme.com', '1'),
       ).rejects.toMatchObject({ code: 404 });
     });
   });
@@ -273,7 +294,7 @@ describe('GmailProvider', () => {
         };
       });
 
-      const result = await provider.fetchThreads('account-1');
+      const result = await provider.fetchThreads('tenant-a', 'account-1');
 
       expect(result).toHaveLength(2);
       expect(result[0].id).toBe('thread-new');

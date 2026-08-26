@@ -66,15 +66,34 @@ export class BackfillThreadIdService {
         orderBy: { id: 'asc' },
         take: this.BATCH_SIZE,
         ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-        select: { id: true, messageId: true, accountEmail: true },
-      })) as Array<{ id: string; messageId: string; accountEmail: string }>;
+        select: {
+          id: true,
+          messageId: true,
+          accountEmail: true,
+          tenantId: true,
+        },
+      })) as Array<{
+        id: string;
+        messageId: string;
+        accountEmail: string;
+        tenantId: string | null;
+      }>;
 
       if (batch.length === 0) break;
       cursor = batch[batch.length - 1].id;
 
       for (const row of batch) {
+        // Credentials are resolved per tenant; a legacy row with no tenant
+        // cannot be backfilled and is left for manual triage.
+        if (!row.tenantId) {
+          this.logger.warn(
+            `Skipping GeneralAnalysis ${row.id}: row has no tenantId.`,
+          );
+          continue;
+        }
         try {
           const parsed = await this.gmailProvider.fetchMessage(
+            row.tenantId,
             row.messageId,
             row.accountEmail,
           );

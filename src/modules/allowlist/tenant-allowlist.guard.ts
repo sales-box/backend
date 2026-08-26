@@ -46,6 +46,15 @@ export class TenantAllowlistGuard implements CanActivate {
       throw new UnauthorizedException('Invalid token');
     }
 
+    // A TENANT allowlist guard requires a tenant. The previous form spread the
+    // tenant predicate away when the claim was absent, which turned the lookup
+    // into a platform-wide search by email — so a token with no tenantId (a
+    // platform-operator token) could be validated against any connected
+    // account sharing its address.
+    if (!payload.tenantId) {
+      throw new UnauthorizedException('Token carries no tenant');
+    }
+
     // Scope the lookup by BOTH tenantId and email (from the verified JWT) so a
     // revoked account at tenant A cannot be validated against a ConnectedAccount
     // row that was later re-assigned to tenant B with the same email address.
@@ -53,7 +62,7 @@ export class TenantAllowlistGuard implements CanActivate {
       where: {
         email: payload.email,
         status: 'connected',
-        ...(payload.tenantId ? { tenantId: payload.tenantId } : {}),
+        tenantId: payload.tenantId,
       },
     });
     if (!account) {

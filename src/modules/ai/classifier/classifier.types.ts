@@ -48,5 +48,5 @@ export interface ClassifyEmailJobData {
 
 export interface ClassifyJobResult {
   classified: number;
-  skipped?: 'no_account' | 'no_baseline' | 'history_expired';
+  skipped?: 'no_account' | 'no_tenant' | 'no_baseline' | 'history_expired';
 }

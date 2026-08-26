@@ -6,16 +6,20 @@ import { GmailWebhookService } from './gmail-webhook.service';
 
 type Handler = (p: { id: string; email: string }) => Promise<void>;
 
-function build(watchResult: unknown, watchThrows = false, isAdmin = false) {
+function build(
+  watchResult: unknown,
+  watchThrows = false,
+  isAdmin = false,
+  tenantId: string | null = 'tenant-a',
+) {
   const watch = watchThrows
     ? jest.fn().mockRejectedValue(new Error('watch failed'))
     : jest.fn().mockResolvedValue(watchResult);
-  const factory = {
-    createClient: jest.fn().mockResolvedValue({ users: { watch } }),
-  } as unknown as GmailClientFactory;
+  const createClient = jest.fn().mockResolvedValue({ users: { watch } });
+  const factory = { createClient } as unknown as GmailClientFactory;
 
   const upsert = jest.fn().mockResolvedValue({});
-  const findUnique = jest.fn().mockResolvedValue({ isAdmin });
+  const findUnique = jest.fn().mockResolvedValue({ isAdmin, tenantId });
   const prisma = {
     webhookSubscription: { upsert },
     connectedAccount: { findUnique },
@@ -29,10 +33,42 @@ function build(watchResult: unknown, watchThrows = false, isAdmin = false) {
   const trigger = (
     service as unknown as { handleGoogleAccountConnected: Handler }
   ).handleGoogleAccountConnected;
-  return { service, trigger: trigger.bind(service), upsert, watch, findUnique };
+  return {
+    service,
+    trigger: trigger.bind(service),
+    upsert,
+    watch,
+    findUnique,
+    createClient,
+  };
 }
 
 describe('GmailWebhookService', () => {
+  it('builds the Gmail client scoped to the account tenant', async () => {
+    const { trigger, createClient } = build({
+      data: { expiration: '1893456000000', historyId: 12345 },
+    });
+
+    await trigger({ id: 'acct-1', email: 'se@acme.com' });
+
+    const calls = createClient.mock.calls as Array<[string, string]>;
+    expect(calls[0]).toEqual(['tenant-a', 'se@acme.com']);
+  });
+
+  it('skips the watch entirely when the account has no tenant yet', async () => {
+    const { trigger, createClient, watch } = build(
+      { data: { expiration: '1893456000000', historyId: 12345 } },
+      false,
+      false,
+      null,
+    );
+
+    await trigger({ id: 'acct-orphan', email: 'pending@acme.com' });
+
+    expect(createClient).not.toHaveBeenCalled();
+    expect(watch).not.toHaveBeenCalled();
+  });
+
   it('skips watch subscription for admin accounts (isAdmin: true)', async () => {
     const { trigger, upsert, watch } = build(
       { data: { expiration: '1893456000000', historyId: 12345 } },

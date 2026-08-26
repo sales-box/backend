@@ -108,7 +108,11 @@ describe('ClassifierProcessor', () => {
 
     const result = await processor.process(makeJob(jobData));
 
-    expect(gmail.fetchNewMessageIds).toHaveBeenCalledWith('se@acme.com', '100');
+    expect(gmail.fetchNewMessageIds).toHaveBeenCalledWith(
+      'tenant-1',
+      'se@acme.com',
+      '100',
+    );
     // Subject is prepended to the body before classification.
     expect(classifier.classify).toHaveBeenCalledWith(
       'Subject: s\n\nneed pricing',
@@ -577,6 +581,7 @@ describe('ClassifierProcessor', () => {
     await processor.process(makeJob(jobData));
 
     expect(gmail.fetchNewSentThreadIds).toHaveBeenCalledWith(
+      'tenant-1',
       'se@acme.com',
       '100',
     );
