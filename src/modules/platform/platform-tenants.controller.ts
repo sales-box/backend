@@ -1,10 +1,7 @@
 import {
   Body,
   Controller,
-  Delete,
   Get,
-  HttpCode,
-  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -66,12 +63,5 @@ export class PlatformTenantsController {
     @Body() dto: ChangeTierDto,
   ) {
     return this.service.changeTier(id, dto.tier);
-  }
-
-  /** Permanently destroy an offboarded tenant and all of its data. */
-  @Delete(':id')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  purge(@Param('id', ParseUUIDPipe) id: string) {
-    return this.service.purge(id);
   }
 }

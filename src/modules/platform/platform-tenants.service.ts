@@ -19,9 +19,6 @@ export interface PlatformStats {
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** The only states a tenant may be permanently destroyed from. */
-const DELETABLE_STATUSES: TenantStatus[] = ['offboarded', 'abandoned'];
-
 @Injectable()
 export class PlatformTenantsService {
   constructor(
@@ -183,52 +180,6 @@ export class PlatformTenantsService {
       data: { tier },
       select: { id: true, tier: true },
     });
-  }
-
-  /**
-   * Permanently destroy a tenant and every row scoped to it. Irreversible.
-   *
-   * Gated on a terminal status: offboarding is the reversible-ish first act
-   * that revokes access, this is the deliberate second one. An operator cannot
-   * reach it from `active` or `suspended`.
-   *
-   * Every table is named explicitly rather than relying on `onDelete: Cascade`
-   * because `interaction`, `crmConnection`, and `generalAnalysis` carry a
-   * `tenantId` with no foreign key — a cascade would leave their rows behind,
-   * still holding the customer's email content. The spec reads schema.prisma
-   * and fails if this list ever falls behind.
-   */
-  async purge(id: string): Promise<void> {
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { id },
-      select: { status: true },
-    });
-    if (!tenant) {
-      throw new NotFoundException('Tenant not found');
-    }
-    if (!DELETABLE_STATUSES.includes(tenant.status)) {
-      throw new ConflictException(
-        `Only an offboarded tenant can be deleted — this one is '${tenant.status}'. Offboard it first.`,
-      );
-    }
-
-    const where = { tenantId: id };
-    await this.prisma.$transaction([
-      // Dependants first, tenant last.
-      this.prisma.interaction.deleteMany({ where }),
-      this.prisma.escalationItem.deleteMany({ where }),
-      this.prisma.generalAnalysis.deleteMany({ where }),
-      this.prisma.knowledgeGap.deleteMany({ where }),
-      this.prisma.document.deleteMany({ where }),
-      this.prisma.crmConnection.deleteMany({ where }),
-      this.prisma.crmAgentConnection.deleteMany({ where }),
-      this.prisma.driveConnection.deleteMany({ where }),
-      this.prisma.allowedDomain.deleteMany({ where }),
-      this.prisma.allowlistEntry.deleteMany({ where }),
-      this.prisma.connectedAccount.deleteMany({ where }),
-      this.prisma.client.deleteMany({ where }),
-      this.prisma.tenant.delete({ where: { id } }),
-    ]);
   }
 
   private assertTransition(
