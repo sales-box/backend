@@ -98,11 +98,10 @@ export class AdminAuthService {
    * step: the password lands on the SAME ConnectedAccount row the Google
    * OAuth flow created for that email — never a duplicate account.
    *
-   * Guarded by: account must exist (Google-connected first), must not already
-   * have a password, tenant must be active, and the tenant must not already
-   * have a different admin (first-admin-per-tenant rule).
-   * TODO(tenant-verification): bind this to the tenant email-verification
-   * token once the allowlist grant step (Role 2) lands in the verify flow.
+   * Guarded by: the caller must be the address the company signed up with,
+   * the account must exist (Google-connected first), must not already have a
+   * password, the tenant must be active, and the tenant must not already have
+   * a different admin (first-admin-per-tenant rule).
    */
   async setAdminPassword(
     email: string,
