@@ -30,12 +30,85 @@ export class EmailNotifyService {
   }
 
   /**
-   * Emails a newly-granted SE the Gmail-extension install link. Failures are
-   * logged, not thrown — a flaky mail server must never roll back the grant.
+   * Tells a Sales Engineer their access has been turned off.
+   *
+   * Deliberately plain and non-accusatory. We do not know WHY the admin revoked
+   * access — offboarding, a role change, a mistake — so the copy states the fact
+   * and points at the person who can undo it. Guessing at a reason, or wording
+   * it like a warning, would be wrong about as often as it was right.
+   *
+   * @param raise - see sendSeInvite. The queue processor passes true so BullMQ
+   *   can retry; direct callers keep the swallow-and-log behaviour, because a
+   *   mail failure must never make the revocation itself look like it failed.
+   */
+  async sendSeRevoked(
+    email: string,
+    companyName = 'Sales Copilot',
+    raise = false,
+  ): Promise<void> {
+    const seName = email.split('@')[0];
+
+    try {
+      await this.getTransporter().sendMail({
+        from: this.config.get<string>('SMTP_USER'),
+        to: email,
+        subject: `Your Inbox Sales Copilot access has ended`,
+        text: `Hi ${seName},
+
+Your access to the Inbox Sales Copilot for ${companyName} has been turned off by an administrator.
+
+What this means:
+- The Copilot panel will no longer load in your Gmail.
+- You will not be able to sign in to the extension.
+- Nothing has been deleted from your own mailbox. Your email is untouched.
+
+You can remove the extension from Chrome if you no longer need it:
+Open chrome://extensions, find Inbox Sales Copilot, and click Remove.
+
+If you think this was a mistake, please contact your administrator at ${companyName} — they can restore your access.
+
+Best regards,
+The ${companyName} Team`,
+        html: `
+<p>Hi ${seName},</p>
+<p>Your access to the Inbox Sales Copilot for <strong>${companyName}</strong> has been turned off by an administrator.</p>
+
+<p><strong>What this means</strong></p>
+<ul>
+  <li>The Copilot panel will no longer load in your Gmail.</li>
+  <li>You will not be able to sign in to the extension.</li>
+  <li>Nothing has been deleted from your own mailbox. Your email is untouched.</li>
+</ul>
+
+<p>You can remove the extension from Chrome if you no longer need it: open <code>chrome://extensions</code>, find <strong>Inbox Sales Copilot</strong>, and click <strong>Remove</strong>.</p>
+
+<p>If you think this was a mistake, please contact your administrator at ${companyName} — they can restore your access.</p>
+
+<p>Best regards,<br>The ${companyName} Team</p>
+        `,
+      });
+      this.logger.log(`SE revocation notice sent to ${email}`);
+    } catch (err) {
+      this.logger.error(
+        `Failed to send revocation notice to ${email}: ${String(err)}`,
+      );
+      if (raise) throw err;
+    }
+  }
+
+  /**
+   * Emails a newly-granted SE the Gmail-extension install link.
+   *
+   * @param raise - When false (the default) a send failure is logged and
+   *   swallowed, because a flaky mail server must never roll back the grant.
+   *   The SE-invite queue processor passes true so BullMQ sees the failure and
+   *   retries; there the grant is already committed, so throwing is safe and a
+   *   swallowed error would silently drop the invite forever.
    */
   async sendSeInvite(
     email: string,
     companyName = 'Sales Copilot',
+    raise = false,
   ): Promise<void> {
     const installUrl =
       this.config.get<string>('EXTENSION_INSTALL_URL') ??
@@ -113,6 +186,7 @@ The ${companyName} Team`,
       this.logger.log(`SE invite email sent to ${email}`);
     } catch (err) {
       this.logger.error(`Failed to send SE invite to ${email}: ${String(err)}`);
+      if (raise) throw err;
     }
   }
 }
