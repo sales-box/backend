@@ -159,11 +159,25 @@ export class KnowledgeBaseController {
     },
   })
   @ApiOkResponse({ type: UploadResponseDto })
+  /**
+   * A platform-operator token carries no tenantId. Passing `undefined` into a
+   * Prisma `where` silently becomes `tenant_id IS NULL`, so an unchecked
+   * handler reads and deletes the legacy null-tenant corpus instead of
+   * failing. Refuse instead.
+   */
+  private requireTenant(req: AuthenticatedRequest): string {
+    const { tenantId } = req.user;
+    if (!tenantId) {
+      throw new BadRequestException('Your session carries no company');
+    }
+    return tenantId;
+  }
+
   async upload(@Req() req: AuthenticatedRequest): Promise<UploadResponseDto> {
     const { filename, mimetype, buffer } = await readUploadedFile(req);
     return this.knowledgeBaseService.ingest(
       { filename, mimetype, buffer },
-      { tenantId: req.user.tenantId, uploadedBy: req.user.email },
+      { tenantId: this.requireTenant(req), uploadedBy: req.user.email },
     );
   }
 
@@ -178,7 +192,7 @@ export class KnowledgeBaseController {
   ) {
     return this.knowledgeBaseService.listDocuments(
       { page: query.page, limit: query.limit },
-      req.user.tenantId,
+      this.requireTenant(req),
     );
   }
 
@@ -215,6 +229,6 @@ export class KnowledgeBaseController {
     @Param('id', ParseUUIDPipe) id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<void> {
-    await this.knowledgeBaseService.deleteDocument(id, req.user.tenantId);
+    await this.knowledgeBaseService.deleteDocument(id, this.requireTenant(req));
   }
 }
