@@ -73,6 +73,16 @@ export class AdminAuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
+    // ConnectedAccount.lastLoginAt is what the Team page and /analytics/team
+    // render as "last active". Only the Google OAuth path stamped it
+    // (auth.service.ts), so an admin who signs in with email + password looked
+    // permanently inactive to their own dashboard. A failed login must not
+    // move it, so this sits after the password check.
+    await this.prisma.connectedAccount.update({
+      where: { id: account.id },
+      data: { lastLoginAt: new Date() },
+    });
+
     const payload: AdminJwtPayload = {
       sub: account.id,
       tenantId: account.tenantId,
