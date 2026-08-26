@@ -17,10 +17,14 @@ export class GmailProvider implements EmailProvider {
   ) {}
 
   async fetchMessage(
+    tenantId: string,
     messageId: string,
     emailAccount: string,
   ): Promise<ParsedMessage> {
-    const gmailClient = await this.clientFactory.createClient(emailAccount);
+    const gmailClient = await this.clientFactory.createClient(
+      tenantId,
+      emailAccount,
+    );
 
     const message = await gmailClient.users.messages.get({
       userId: 'me',
@@ -39,10 +43,14 @@ export class GmailProvider implements EmailProvider {
    * baseline on that signal.
    */
   async fetchNewMessageIds(
+    tenantId: string,
     emailAccount: string,
     startHistoryId: string,
   ): Promise<NewMessagesResult> {
-    const gmailClient = await this.clientFactory.createClient(emailAccount);
+    const gmailClient = await this.clientFactory.createClient(
+      tenantId,
+      emailAccount,
+    );
     const messageIds = new Set<string>();
     let newHistoryId = startHistoryId;
     let pageToken: string | undefined = undefined;
@@ -70,10 +78,14 @@ export class GmailProvider implements EmailProvider {
   }
 
   async fetchNewSentThreadIds(
+    tenantId: string,
     emailAccount: string,
     startHistoryId: string,
   ): Promise<NewSentThreadsResult> {
-    const gmailClient = await this.clientFactory.createClient(emailAccount);
+    const gmailClient = await this.clientFactory.createClient(
+      tenantId,
+      emailAccount,
+    );
     const threadIds = new Set<string>();
     let newHistoryId = startHistoryId;
     let pageToken: string | undefined = undefined;
@@ -101,10 +113,14 @@ export class GmailProvider implements EmailProvider {
   }
 
   async fetchThreads(
+    tenantId: string,
     emailAccount: string,
     query?: string,
   ): Promise<EmailThread[]> {
-    const gmailClient = await this.clientFactory.createClient(emailAccount);
+    const gmailClient = await this.clientFactory.createClient(
+      tenantId,
+      emailAccount,
+    );
     const allThreads: gmail_v1.Schema$Thread[] = [];
     let pageToken: string | undefined = undefined;
 

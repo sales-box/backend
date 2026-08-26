@@ -43,37 +43,49 @@ describe('EmailService', () => {
   it('delegates fetchMessage to the provider with correct arguments', async () => {
     mockGetMessage.mockResolvedValue(stubMessage);
 
-    const result = await service.fetchMessage('msg-1', 'account-1');
+    const result = await service.fetchMessage('tenant-a', 'msg-1', 'account-1');
 
     expect(mockGetMessage).toHaveBeenCalledTimes(1);
-    expect(mockGetMessage).toHaveBeenCalledWith('msg-1', 'account-1');
+    expect(mockGetMessage).toHaveBeenCalledWith(
+      'tenant-a',
+      'msg-1',
+      'account-1',
+    );
     expect(result).toEqual(stubMessage);
   });
 
   it('propagates errors thrown by the provider', async () => {
     mockGetMessage.mockRejectedValue(new Error('Provider failure'));
 
-    await expect(service.fetchMessage('msg-1', 'account-1')).rejects.toThrow(
-      'Provider failure',
-    );
+    await expect(
+      service.fetchMessage('tenant-a', 'msg-1', 'account-1'),
+    ).rejects.toThrow('Provider failure');
   });
 
   it('delegates fetchThreads to the provider with correct arguments', async () => {
     const mockThreads = [{ id: 'thread-1', snippet: 'snip', messages: [] }];
     mockGetThreads.mockResolvedValue(mockThreads);
 
-    const result = await service.fetchThreads('account-1', 'query-1');
+    const result = await service.fetchThreads(
+      'tenant-a',
+      'account-1',
+      'query-1',
+    );
 
     expect(mockGetThreads).toHaveBeenCalledTimes(1);
-    expect(mockGetThreads).toHaveBeenCalledWith('account-1', 'query-1');
+    expect(mockGetThreads).toHaveBeenCalledWith(
+      'tenant-a',
+      'account-1',
+      'query-1',
+    );
     expect(result).toEqual(mockThreads);
   });
 
   it('propagates errors thrown by fetchThreads provider', async () => {
     mockGetThreads.mockRejectedValue(new Error('Threads failure'));
 
-    await expect(service.fetchThreads('account-1', 'query-1')).rejects.toThrow(
-      'Threads failure',
-    );
+    await expect(
+      service.fetchThreads('tenant-a', 'account-1', 'query-1'),
+    ).rejects.toThrow('Threads failure');
   });
 });

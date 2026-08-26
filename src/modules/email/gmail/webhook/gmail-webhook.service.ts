@@ -24,7 +24,7 @@ export class GmailWebhookService {
   }): Promise<void> {
     const account = await this.prisma.connectedAccount.findUnique({
       where: { id: payload.id },
-      select: { isAdmin: true },
+      select: { isAdmin: true, tenantId: true },
     });
     if (account?.isAdmin) {
       this.logger.log(
@@ -32,18 +32,30 @@ export class GmailWebhookService {
       );
       return;
     }
+    // A Gmail client is built from a tenant-scoped credential lookup, so an
+    // account not yet linked to a tenant cannot get one. Admin-first-connect
+    // links the tenant later; the watch is established on that later pass.
+    if (!account?.tenantId) {
+      this.logger.warn(
+        `Skipping Gmail Pub/Sub watch for ${payload.email}: account has no tenant yet.`,
+      );
+      return;
+    }
     this.logger.log(
       `Detected new Google account connection for ${payload.email}. Initializing Pub/Sub...`,
     );
-    await this.subscribeToTopic(payload.id, payload.email);
+    await this.subscribeToTopic(account.tenantId, payload.id, payload.email);
   }
 
   private async subscribeToTopic(
+    tenantId: string,
     id: string,
     emailAccount: string,
   ): Promise<void> {
-    const gmailClient =
-      await this.gmailClientFactory.createClient(emailAccount);
+    const gmailClient = await this.gmailClientFactory.createClient(
+      tenantId,
+      emailAccount,
+    );
 
     try {
       const response = await gmailClient.users.watch({
@@ -122,8 +134,15 @@ export class GmailWebhookService {
           .catch(() => {});
         continue;
       }
+      if (!sub.connectedAccount.tenantId) {
+        this.logger.warn(
+          `Skipping renewal for ${sub.connectedAccount.email}: account has no tenant.`,
+        );
+        continue;
+      }
       try {
         await this.subscribeToTopic(
+          sub.connectedAccount.tenantId,
           sub.connectedAccountId,
           sub.connectedAccount.email,
         );

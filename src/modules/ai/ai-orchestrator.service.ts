@@ -118,6 +118,7 @@ export class AiOrchestratorService {
 
     // 1. Fetch the raw email once — everything downstream reads from this.
     const parsed = await this.gmailProvider.fetchMessage(
+      tenantId,
       messageId,
       accountEmail,
     );
@@ -446,6 +447,7 @@ export class AiOrchestratorService {
     accountEmail = accountEmail.trim().toLowerCase();
 
     const parsed = await this.gmailProvider.fetchMessage(
+      tenantId,
       messageId,
       accountEmail,
     );
