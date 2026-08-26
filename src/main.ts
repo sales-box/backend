@@ -1,4 +1,5 @@
 import { ValidationPipe } from '@nestjs/common';
+import { timingSafeEqual } from 'node:crypto';
 import { NestFactory } from '@nestjs/core';
 import {
   FastifyAdapter,
@@ -81,6 +82,38 @@ async function bootstrap() {
   await app.register(fastifyMultipart, {
     limits: { fileSize: 25 * 1024 * 1024, files: 1 },
   });
+
+  // Bull Board (/admin/queues) shows every queue, every job payload, and offers
+  // retry and remove controls. It shipped with no authentication at all, so an
+  // anonymous caller got the whole operations console. It now needs an explicit
+  // shared secret, and is switched off entirely when that secret is unset —
+  // closed by default rather than open by default.
+  const queueDashboardToken = process.env.QUEUE_DASHBOARD_TOKEN;
+  app
+    .getHttpAdapter()
+    .getInstance()
+    .addHook('onRequest', (request, reply, done) => {
+      const url = request.url ?? '';
+      if (!url.startsWith('/admin/queues')) {
+        done();
+        return;
+      }
+      if (!queueDashboardToken) {
+        void reply.code(404).send({ message: 'Not Found', statusCode: 404 });
+        return;
+      }
+      const header = request.headers['x-queue-dashboard-token'];
+      const supplied = Array.isArray(header) ? header[0] : header;
+      const expected = Buffer.from(queueDashboardToken);
+      const actual = Buffer.from(supplied ?? '');
+      const ok =
+        actual.length === expected.length && timingSafeEqual(actual, expected);
+      if (!ok) {
+        void reply.code(401).send({ message: 'Unauthorized', statusCode: 401 });
+        return;
+      }
+      done();
+    });
 
   // CORS for the admin dashboard SPA and Gmail add-on, with cookie credentials.
   // Methods must be explicit — the default omits DELETE/PATCH/PUT, which
