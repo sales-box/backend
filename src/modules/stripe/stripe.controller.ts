@@ -5,9 +5,9 @@ import {
   Req,
   HttpCode,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import * as fastify from 'fastify';
-
 import Stripe from 'stripe';
 import { StripeService } from './stripe.service';
 import { PaymentService } from '../payments/payment.service';
@@ -17,24 +17,32 @@ import {
   ApiHeader,
   ApiOkResponse,
 } from '@nestjs/swagger';
+import { SkipThrottle } from '@nestjs/throttler';
+import { PrismaService } from '@/database/prisma.service';
 
 interface RequestWithRawBody extends fastify.FastifyRequest {
   rawBody?: Buffer;
 }
 
 @ApiTags('stripe')
+@SkipThrottle()
 @Controller('stripe')
 export class StripeController {
+  private readonly logger = new Logger(StripeController.name);
+
   constructor(
     private readonly stripeService: StripeService,
     private readonly paymentsService: PaymentService,
+    private readonly prisma: PrismaService,
   ) {}
 
   @Post('webhook')
   @ApiOperation({
     summary: 'Stripe webhook receiver (called by Stripe, not interactively)',
     description:
-      'Signature-verified against STRIPE_WEBHOOK_SECRET. Handles payment_intent.succeeded, payment_intent.payment_failed and charge.refunded.',
+      'Signature-verified against STRIPE_WEBHOOK_SECRET. Handles subscription ' +
+      'lifecycle events: checkout.session.completed, invoice.paid, ' +
+      'invoice.payment_failed, customer.subscription.deleted, charge.refunded.',
   })
   @ApiHeader({
     name: 'stripe-signature',
@@ -67,41 +75,47 @@ export class StripeController {
       throw new BadRequestException(`Webhook Error: ${message}`);
     }
 
+    // Idempotency: skip events already processed.
+    const existing = await this.prisma.processedStripeEvent.findUnique({
+      where: { eventId: event.id },
+    });
+    if (existing) {
+      this.logger.log(`Skipping already-processed event: ${event.id}`);
+      return { received: true };
+    }
+
     switch (event.type) {
-      case 'payment_intent.succeeded':
-        await this.handlePaymentSucceeded(event);
+      case 'checkout.session.completed':
+        await this.paymentsService.handleCheckoutCompleted(event.data.object);
         break;
 
-      case 'payment_intent.payment_failed':
-        await this.handlePaymentFailed(event);
+      case 'invoice.paid':
+        await this.paymentsService.handleInvoicePaid(event.data.object);
+        break;
+
+      case 'invoice.payment_failed':
+        await this.paymentsService.handleInvoicePaymentFailed(
+          event.data.object,
+        );
+        break;
+
+      case 'customer.subscription.deleted':
+        await this.paymentsService.handleSubscriptionDeleted(event.data.object);
         break;
 
       case 'charge.refunded':
-        this.handleRefund(event);
+        await this.paymentsService.handleChargeRefunded(event.data.object);
         break;
 
       default:
-        console.log(`Unhandled event: ${event.type}`);
+        this.logger.log(`Unhandled Stripe event: ${event.type}`);
     }
 
-    return {
-      received: true,
-    };
-  }
+    // Record this event so retries are idempotent.
+    await this.prisma.processedStripeEvent.create({
+      data: { eventId: event.id, eventType: event.type },
+    });
 
-  private async handlePaymentSucceeded(event: Stripe.Event) {
-    const paymentIntent = event.data.object as Stripe.PaymentIntent;
-
-    await this.paymentsService.paymentSucceeded(paymentIntent);
-  }
-
-  private async handlePaymentFailed(event: Stripe.Event) {
-    const paymentIntent = event.data.object as Stripe.PaymentIntent;
-
-    await this.paymentsService.paymentFailed(paymentIntent);
-  }
-
-  private handleRefund(event: Stripe.Event) {
-    console.log(`Refund received for event: ${event.id}`);
+    return { received: true };
   }
 }

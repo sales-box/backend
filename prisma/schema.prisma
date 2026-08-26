@@ -310,11 +310,45 @@ enum TenantStatus {
   @@map("tenant_status")
 }
 
+/// Billing state, kept deliberately separate from `TenantStatus`.
+///
+/// `status` answers "does this account exist and is it un-suspended" — it turns
+/// `active` when the admin clicks the email verification link. `subscriptionStatus`
+/// answers "has this company paid", and only a signature-verified Stripe webhook
+/// may set it to `active`. There is no free tier: every state below except
+/// `active` denies access to the product.
+enum SubscriptionStatus {
+  /// Signed up and verified, never paid. Can log in and reach checkout, nothing else.
+  none
+  /// Paid and in good standing. The only state that unlocks the product.
+  active
+  /// Was active, then a charge failed. Access is denied until they pay again,
+  /// but the row remembers they were a customer (see `subscribedAt`).
+  past_due
+  /// Refunded, charged back, or subscription deleted. Access revoked.
+  canceled
+
+  @@map("subscription_status")
+}
+
 model Tenant {
   id                         String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   companyName                String       @map("company_name")
   status                     TenantStatus @default(pending)
+  /// Which paid plan they are on. Meaningless on its own — read it only once
+  /// `subscriptionStatus` is `active`, because an unpaid tenant also carries a
+  /// tier number. The guards deny unpaid tenants before any tier lookup runs.
   tier                       Int          @default(1)
+  /// Has this company actually paid. Written only by the Stripe webhook.
+  /// Defaults to `none`: signing up buys nothing.
+  subscriptionStatus         SubscriptionStatus @default(none) @map("subscription_status")
+  /// When the current subscription first went active. Kept across `past_due`
+  /// and `canceled` so support can tell a lapsed customer from someone who
+  /// never paid at all.
+  subscribedAt               DateTime?    @map("subscribed_at")
+  /// Stripe customer id, once we have one. Lets support reconcile a tenant
+  /// against Stripe without guessing from the email.
+  stripeCustomerId           String?      @map("stripe_customer_id")
   /// The address signup was started from, stored lowercased. Without it the
   /// server had no way to tell which pending tenant a "resend my link" request
   /// belonged to, so it guessed — and mailed the newest pending tenant's token
@@ -338,7 +372,18 @@ model Tenant {
   escalationItems   EscalationItem[]
 
   @@index([status, adminEmail])
+  @@index([subscriptionStatus])
   @@map("tenants")
+}
+
+/// Stripe webhook idempotency: one row per processed event id.
+/// Prevents re-processing when Stripe retries a delivery.
+model ProcessedStripeEvent {
+  eventId     String   @id @map("event_id")
+  eventType   String   @map("event_type")
+  processedAt DateTime @default(now()) @map("processed_at")
+
+  @@map("processed_stripe_events")
 }
 
 model AllowlistEntry {

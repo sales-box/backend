@@ -350,6 +350,7 @@ export class TenantsService {
         companyName: true,
         tier: true,
         status: true,
+        subscriptionStatus: true,
       },
     });
 

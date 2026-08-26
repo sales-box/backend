@@ -1,7 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { BadRequestException } from '@nestjs/common';
 import { StripeController } from './stripe.controller';
 import { StripeService } from './stripe.service';
 import { PaymentService } from '../payments/payment.service';
+import { PrismaService } from '@/database/prisma.service';
 import * as fastify from 'fastify';
 
 describe('StripeController', () => {
@@ -10,16 +12,28 @@ describe('StripeController', () => {
   const mockConstructEvent = jest.fn();
   const mockStripeService = {
     stripe: {
-      webhooks: {
-        constructEvent: mockConstructEvent,
-      },
+      webhooks: { constructEvent: mockConstructEvent },
     },
   };
 
   const mockPaymentService = {
-    paymentSucceeded: jest.fn(),
-    paymentFailed: jest.fn(),
+    handleCheckoutCompleted: jest.fn(),
+    handleInvoicePaid: jest.fn(),
+    handleInvoicePaymentFailed: jest.fn(),
+    handleSubscriptionDeleted: jest.fn(),
+    handleChargeRefunded: jest.fn(),
   };
+
+  const mockPrisma = {
+    processedStripeEvent: {
+      findUnique: jest.fn().mockResolvedValue(null),
+      create: jest.fn().mockResolvedValue({}),
+    },
+  };
+
+  const mockRequest = {
+    rawBody: Buffer.from('mock-raw-body'),
+  } as unknown as fastify.FastifyRequest & { rawBody: Buffer };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -27,82 +41,114 @@ describe('StripeController', () => {
       providers: [
         { provide: StripeService, useValue: mockStripeService },
         { provide: PaymentService, useValue: mockPaymentService },
+        { provide: PrismaService, useValue: mockPrisma },
       ],
     }).compile();
 
     controller = module.get<StripeController>(StripeController);
     jest.clearAllMocks();
+    mockPrisma.processedStripeEvent.findUnique.mockResolvedValue(null);
+    mockPrisma.processedStripeEvent.create.mockResolvedValue({});
   });
 
-  describe('webhook', () => {
-    const mockRequest = {
-      rawBody: Buffer.from('mock-raw-body'),
-    } as unknown as fastify.FastifyRequest & { rawBody: Buffer };
-
-    it('should verify signature and dispatch payment_intent.succeeded', async () => {
-      const mockEvent = {
-        type: 'payment_intent.succeeded',
-        data: {
-          object: { id: 'pi_123', amount: 5000 },
-        },
-      };
-
-      mockConstructEvent.mockReturnValue(mockEvent);
-
-      const result = await controller.webhook(mockRequest, 'sig-123');
-
-      expect(mockConstructEvent).toHaveBeenCalledWith(
-        mockRequest.rawBody,
-        'sig-123',
-        process.env.STRIPE_WEBHOOK_SECRET,
-      );
-      expect(mockPaymentService.paymentSucceeded).toHaveBeenCalledWith(
-        mockEvent.data.object,
-      );
-      expect(result).toEqual({ received: true });
+  it('dispatches checkout.session.completed', async () => {
+    const session = { id: 'cs_1' };
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_1',
+      type: 'checkout.session.completed',
+      data: { object: session },
     });
 
-    it('should verify signature and dispatch payment_intent.payment_failed', async () => {
-      const mockEvent = {
-        type: 'payment_intent.payment_failed',
-        data: {
-          object: { id: 'pi_123', amount: 5000 },
-        },
-      };
+    const result = await controller.webhook(mockRequest, 'sig-ok');
 
-      mockConstructEvent.mockReturnValue(mockEvent);
+    expect(mockPaymentService.handleCheckoutCompleted).toHaveBeenCalledWith(
+      session,
+    );
+    expect(mockPrisma.processedStripeEvent.create).toHaveBeenCalledWith({
+      data: { eventId: 'evt_1', eventType: 'checkout.session.completed' },
+    });
+    expect(result).toEqual({ received: true });
+  });
 
-      const result = await controller.webhook(mockRequest, 'sig-123');
-
-      expect(mockPaymentService.paymentFailed).toHaveBeenCalledWith(
-        mockEvent.data.object,
-      );
-      expect(result).toEqual({ received: true });
+  it('dispatches invoice.paid', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_2',
+      type: 'invoice.paid',
+      data: { object: { id: 'inv_1' } },
     });
 
-    it('should log unhandled event type and return received: true', async () => {
-      const logSpy = jest.spyOn(console, 'log').mockImplementation();
-      const mockEvent = {
-        type: 'some.other.event',
-      };
+    await controller.webhook(mockRequest, 'sig-ok');
+    expect(mockPaymentService.handleInvoicePaid).toHaveBeenCalled();
+  });
 
-      mockConstructEvent.mockReturnValue(mockEvent);
-
-      const result = await controller.webhook(mockRequest, 'sig-123');
-
-      expect(logSpy).toHaveBeenCalledWith('Unhandled event: some.other.event');
-      expect(result).toEqual({ received: true });
-      logSpy.mockRestore();
+  it('dispatches invoice.payment_failed', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_3',
+      type: 'invoice.payment_failed',
+      data: { object: { id: 'inv_2' } },
     });
 
-    it('should throw an error if constructEvent throws', async () => {
-      mockConstructEvent.mockImplementation(() => {
-        throw new Error('Signature mismatch');
-      });
+    await controller.webhook(mockRequest, 'sig-ok');
+    expect(mockPaymentService.handleInvoicePaymentFailed).toHaveBeenCalled();
+  });
 
-      await expect(controller.webhook(mockRequest, 'sig-bad')).rejects.toThrow(
-        'Webhook Error: Signature mismatch',
-      );
+  it('dispatches customer.subscription.deleted', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_4',
+      type: 'customer.subscription.deleted',
+      data: { object: { id: 'sub_1' } },
     });
+
+    await controller.webhook(mockRequest, 'sig-ok');
+    expect(mockPaymentService.handleSubscriptionDeleted).toHaveBeenCalled();
+  });
+
+  it('dispatches charge.refunded', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_5',
+      type: 'charge.refunded',
+      data: { object: { id: 'ch_1' } },
+    });
+
+    await controller.webhook(mockRequest, 'sig-ok');
+    expect(mockPaymentService.handleChargeRefunded).toHaveBeenCalled();
+  });
+
+  it('skips already-processed events (idempotency)', async () => {
+    mockPrisma.processedStripeEvent.findUnique.mockResolvedValue({
+      eventId: 'evt_dup',
+    });
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_dup',
+      type: 'checkout.session.completed',
+      data: { object: {} },
+    });
+
+    const result = await controller.webhook(mockRequest, 'sig-ok');
+
+    expect(result).toEqual({ received: true });
+    expect(mockPaymentService.handleCheckoutCompleted).not.toHaveBeenCalled();
+    expect(mockPrisma.processedStripeEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('returns received: true for unhandled event types', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_x',
+      type: 'some.other.event',
+      data: { object: {} },
+    });
+
+    const result = await controller.webhook(mockRequest, 'sig-ok');
+    expect(result).toEqual({ received: true });
+  });
+
+  it('throws BadRequestException on signature verification failure', async () => {
+    mockConstructEvent.mockImplementation(() => {
+      throw new Error('Signature mismatch');
+    });
+
+    await expect(controller.webhook(mockRequest, 'sig-bad')).rejects.toThrow(
+      BadRequestException,
+    );
   });
 });
