@@ -2,22 +2,25 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { PaymentService } from './payment.service';
 import { StripeService } from '../stripe/stripe.service';
 import { PrismaService } from '@/database/prisma.service';
-import { Logger } from '@nestjs/common';
 import Stripe from 'stripe';
 
 describe('PaymentService', () => {
   let service: PaymentService;
-  let logger: Logger;
 
   const mockStripeService = {
-    createPaymentIntent: jest.fn(),
-    getPayment: jest.fn(),
+    createCheckoutSession: jest.fn(),
+    getCheckoutSession: jest.fn(),
   };
 
   const mockTenantFindUnique = jest.fn();
+  const mockTenantFindFirst = jest.fn();
+  const mockTenantUpdate = jest.fn();
+
   const mockPrismaService = {
     tenant: {
       findUnique: mockTenantFindUnique,
+      findFirst: mockTenantFindFirst,
+      update: mockTenantUpdate,
     },
   };
 
@@ -31,120 +34,175 @@ describe('PaymentService', () => {
     }).compile();
 
     service = module.get<PaymentService>(PaymentService);
-    logger = (service as unknown as { logger: Logger }).logger;
     jest.clearAllMocks();
   });
 
-  describe('createPaymentIntent', () => {
-    it('should delegate to stripeService.createPaymentIntent', async () => {
-      mockStripeService.createPaymentIntent.mockResolvedValue({ id: 'pi_123' });
+  describe('createCheckoutSession', () => {
+    it('should delegate to stripeService', async () => {
+      mockStripeService.createCheckoutSession.mockResolvedValue({
+        sessionId: 'cs_123',
+        url: 'https://checkout.stripe.com/...',
+      });
 
-      // Tier only — the price is looked up server-side.
-      const result = await service.createPaymentIntent('tenant-abc', 2);
+      const result = await service.createCheckoutSession('t-1', 2, 'a@b.com');
 
-      expect(mockStripeService.createPaymentIntent).toHaveBeenCalledWith(
-        'tenant-abc',
+      expect(mockStripeService.createCheckoutSession).toHaveBeenCalledWith(
+        't-1',
         2,
+        'a@b.com',
       );
-      expect(result).toEqual({ id: 'pi_123' });
+      expect(result.sessionId).toBe('cs_123');
     });
   });
 
-  describe('getPayment', () => {
-    it('should delegate to stripeService.getPayment', async () => {
-      mockStripeService.getPayment.mockResolvedValue({
-        id: 'pi_123',
-        amount: 5000,
-      });
-
-      const result = await service.getPayment('tenant-abc', 'pi_123');
-
-      expect(mockStripeService.getPayment).toHaveBeenCalledWith(
-        'tenant-abc',
-        'pi_123',
-      );
-      expect(result).toEqual({ id: 'pi_123', amount: 5000 });
-    });
-  });
-
-  describe('paymentSucceeded', () => {
-    const mockPaymentIntent = {
-      id: 'pi_123',
-      amount: 5000,
-      metadata: { tenantId: 'tenant-abc' },
-    } as unknown as Stripe.PaymentIntent;
-
-    it('should log warning and exit early if tenantId is missing in metadata', async () => {
-      const loggerWarnSpy = jest.spyOn(logger, 'warn').mockImplementation();
-      const piWithoutMetadata = { ...mockPaymentIntent, metadata: {} };
-
-      await service.paymentSucceeded(piWithoutMetadata);
-
-      expect(loggerWarnSpy).toHaveBeenCalledWith(
-        'Payment succeeded without tenant ID in metadata. ID: pi_123',
-      );
-      expect(mockTenantFindUnique).not.toHaveBeenCalled();
-      loggerWarnSpy.mockRestore();
-    });
-
-    it('should log error if tenant does not exist in the database', async () => {
-      const loggerErrorSpy = jest.spyOn(logger, 'error').mockImplementation();
-      mockTenantFindUnique.mockResolvedValue(null);
-
-      await service.paymentSucceeded(mockPaymentIntent);
-
-      expect(mockTenantFindUnique).toHaveBeenCalledWith({
-        where: { id: 'tenant-abc' },
-      });
-      expect(loggerErrorSpy).toHaveBeenCalledWith(
-        'Payment succeeded for non-existent tenant: tenant-abc. ID: pi_123',
-      );
-      loggerErrorSpy.mockRestore();
-    });
-
-    it('should log success if tenant exists in the database', async () => {
-      const loggerLogSpy = jest.spyOn(logger, 'log').mockImplementation();
+  describe('handleCheckoutCompleted', () => {
+    it('activates subscription and sets tier', async () => {
       mockTenantFindUnique.mockResolvedValue({
-        id: 'tenant-abc',
-        companyName: 'Acme Corp',
+        id: 't-1',
+        subscribedAt: null,
       });
+      mockTenantUpdate.mockResolvedValue({});
 
-      await service.paymentSucceeded(mockPaymentIntent);
+      await service.handleCheckoutCompleted({
+        id: 'cs_1',
+        metadata: { tenantId: 't-1', tier: '2' },
+        customer: 'cus_abc',
+      } as unknown as Stripe.Checkout.Session);
 
-      expect(loggerLogSpy).toHaveBeenCalledWith(
-        'Payment succeeded for tenant Acme Corp (tenant-abc). Amount: 50 USD. PaymentIntent ID: pi_123',
+      expect(mockTenantUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 't-1' },
+        }),
       );
-      loggerLogSpy.mockRestore();
+      const updateCall = mockTenantUpdate.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(updateCall[0].data).toMatchObject({
+        subscriptionStatus: 'active',
+        tier: 2,
+        stripeCustomerId: 'cus_abc',
+      });
+    });
+
+    it('skips if tenantId is missing from metadata', async () => {
+      await service.handleCheckoutCompleted({
+        id: 'cs_2',
+        metadata: {},
+      } as unknown as Stripe.Checkout.Session);
+
+      expect(mockTenantFindUnique).not.toHaveBeenCalled();
     });
   });
 
-  describe('paymentFailed', () => {
-    const mockPaymentIntent = {
-      id: 'pi_123',
-      metadata: { tenantId: 'tenant-abc' },
-    } as unknown as Stripe.PaymentIntent;
+  describe('handleInvoicePaid', () => {
+    it('restores a past_due tenant to active', async () => {
+      mockTenantFindFirst.mockResolvedValue({ id: 't-1' });
+      mockTenantFindUnique.mockResolvedValue({
+        subscriptionStatus: 'past_due',
+      });
+      mockTenantUpdate.mockResolvedValue({});
 
-    it('should log warning if tenantId is missing in metadata', async () => {
-      const loggerWarnSpy = jest.spyOn(logger, 'warn').mockImplementation();
-      const piWithoutMetadata = { ...mockPaymentIntent, metadata: {} };
+      await service.handleInvoicePaid({
+        id: 'inv_1',
+        customer: 'cus_abc',
+      } as unknown as Stripe.Invoice);
 
-      await service.paymentFailed(piWithoutMetadata);
-
-      expect(loggerWarnSpy).toHaveBeenCalledWith(
-        'Payment failed without tenant ID in metadata. ID: pi_123',
-      );
-      loggerWarnSpy.mockRestore();
+      expect(mockTenantUpdate).toHaveBeenCalledWith({
+        where: { id: 't-1' },
+        data: { subscriptionStatus: 'active' },
+      });
     });
 
-    it('should log failure error with tenant ID', async () => {
-      const loggerErrorSpy = jest.spyOn(logger, 'error').mockImplementation();
+    it('skips write for an already-active tenant', async () => {
+      mockTenantFindFirst.mockResolvedValue({ id: 't-1' });
+      mockTenantFindUnique.mockResolvedValue({
+        subscriptionStatus: 'active',
+      });
 
-      await service.paymentFailed(mockPaymentIntent);
+      await service.handleInvoicePaid({
+        id: 'inv_2',
+        customer: 'cus_abc',
+      } as unknown as Stripe.Invoice);
 
-      expect(loggerErrorSpy).toHaveBeenCalledWith(
-        'Payment failed for tenant: tenant-abc. ID: pi_123',
-      );
-      loggerErrorSpy.mockRestore();
+      expect(mockTenantUpdate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleInvoicePaymentFailed', () => {
+    it('sets active tenant to past_due', async () => {
+      mockTenantFindFirst.mockResolvedValue({ id: 't-1' });
+      mockTenantFindUnique.mockResolvedValue({
+        subscriptionStatus: 'active',
+      });
+      mockTenantUpdate.mockResolvedValue({});
+
+      await service.handleInvoicePaymentFailed({
+        id: 'inv_3',
+        customer: 'cus_abc',
+      } as unknown as Stripe.Invoice);
+
+      expect(mockTenantUpdate).toHaveBeenCalledWith({
+        where: { id: 't-1' },
+        data: { subscriptionStatus: 'past_due' },
+      });
+    });
+
+    it('does not promote a canceled tenant to past_due', async () => {
+      mockTenantFindFirst.mockResolvedValue({ id: 't-1' });
+      mockTenantFindUnique.mockResolvedValue({
+        subscriptionStatus: 'canceled',
+      });
+
+      await service.handleInvoicePaymentFailed({
+        id: 'inv_4',
+        customer: 'cus_abc',
+      } as unknown as Stripe.Invoice);
+
+      expect(mockTenantUpdate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleSubscriptionDeleted', () => {
+    it('cancels the subscription', async () => {
+      mockTenantUpdate.mockResolvedValue({});
+
+      await service.handleSubscriptionDeleted({
+        id: 'sub_1',
+        metadata: { tenantId: 't-1' },
+      } as unknown as Stripe.Subscription);
+
+      expect(mockTenantUpdate).toHaveBeenCalledWith({
+        where: { id: 't-1' },
+        data: { subscriptionStatus: 'canceled' },
+      });
+    });
+  });
+
+  describe('handleChargeRefunded', () => {
+    it('cancels on full refund', async () => {
+      mockTenantFindFirst.mockResolvedValue({ id: 't-1' });
+      mockTenantUpdate.mockResolvedValue({});
+
+      await service.handleChargeRefunded({
+        id: 'ch_1',
+        refunded: true,
+        customer: 'cus_abc',
+      } as unknown as Stripe.Charge);
+
+      expect(mockTenantUpdate).toHaveBeenCalledWith({
+        where: { id: 't-1' },
+        data: { subscriptionStatus: 'canceled' },
+      });
+    });
+
+    it('does nothing on partial refund', async () => {
+      await service.handleChargeRefunded({
+        id: 'ch_2',
+        refunded: false,
+        customer: 'cus_abc',
+      } as unknown as Stripe.Charge);
+
+      expect(mockTenantUpdate).not.toHaveBeenCalled();
     });
   });
 });

@@ -8,13 +8,11 @@ describe('PaymentController', () => {
   let controller: PaymentController;
 
   const mockPaymentService = {
-    createPaymentIntent: jest.fn(),
-    getPayment: jest.fn(),
+    createCheckoutSession: jest.fn(),
+    getCheckoutSession: jest.fn(),
   };
 
   const tenantId = 'tenant-abc';
-
-  /** Minimal AuthenticatedRequest stub that satisfies the controller methods. */
   const mockReq = {
     user: { tenantId, isAdmin: true, email: 'admin@example.com', sub: 'acc-1' },
   } as unknown as import('../auth/jwt-auth.guard').AuthenticatedRequest;
@@ -24,7 +22,6 @@ describe('PaymentController', () => {
       controllers: [PaymentController],
       providers: [{ provide: PaymentService, useValue: mockPaymentService }],
     })
-      // Guard logic is tested separately; skip here to keep unit tests fast.
       .overrideGuard(JwtAuthGuard)
       .useValue({ canActivate: () => true })
       .overrideGuard(AdminTenantGuard)
@@ -35,38 +32,39 @@ describe('PaymentController', () => {
     jest.clearAllMocks();
   });
 
-  describe('createPaymentIntent', () => {
-    it('should call paymentService.createPaymentIntent with tenantId from JWT', async () => {
-      mockPaymentService.createPaymentIntent.mockResolvedValue({
-        id: 'pi_123',
+  describe('createCheckoutSession', () => {
+    it('delegates to service with tenantId and email from JWT', async () => {
+      mockPaymentService.createCheckoutSession.mockResolvedValue({
+        sessionId: 'cs_123',
+        url: 'https://checkout.stripe.com/...',
       });
 
-      const result = await controller.createPaymentIntent(mockReq, { tier: 2 });
+      const result = await controller.createCheckoutSession(mockReq, {
+        tier: 2,
+      });
 
-      // The tenant comes from the verified JWT and the price from the server;
-      // the body carries nothing but the plan.
-      expect(mockPaymentService.createPaymentIntent).toHaveBeenCalledWith(
+      expect(mockPaymentService.createCheckoutSession).toHaveBeenCalledWith(
         tenantId,
         2,
+        'admin@example.com',
       );
-      expect(result).toEqual({ id: 'pi_123' });
+      expect(result.sessionId).toBe('cs_123');
     });
   });
 
-  describe('getPayment', () => {
-    it('should call paymentService.getPayment with tenantId from JWT', async () => {
-      mockPaymentService.getPayment.mockResolvedValue({
-        id: 'pi_123',
-        amount: 5000,
+  describe('getSession', () => {
+    it('delegates to service with tenantId from JWT', async () => {
+      mockPaymentService.getCheckoutSession.mockResolvedValue({
+        id: 'cs_123',
       });
 
-      const result = await controller.getPayment(mockReq, 'pi_123');
+      const result = await controller.getSession(mockReq, 'cs_123');
 
-      expect(mockPaymentService.getPayment).toHaveBeenCalledWith(
+      expect(mockPaymentService.getCheckoutSession).toHaveBeenCalledWith(
+        'cs_123',
         tenantId,
-        'pi_123',
       );
-      expect(result).toEqual({ id: 'pi_123', amount: 5000 });
+      expect(result.id).toBe('cs_123');
     });
   });
 });

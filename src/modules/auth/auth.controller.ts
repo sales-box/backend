@@ -28,6 +28,7 @@ import { JwtAuthGuard } from './jwt-auth.guard';
 import type { AuthenticatedRequest } from './jwt-auth.guard';
 import type { AdminJwtPayload } from './admin-auth.service';
 import { TenantAllowlistGuard } from '../allowlist/tenant-allowlist.guard';
+import { NoSubscriptionRequired } from '../../common/guards/assert-subscription-active';
 
 /** Cookie carrying the OAuth CSRF state between /auth/google and the callback. */
 const OAUTH_STATE_COOKIE = 'oauth_state';
@@ -128,6 +129,7 @@ export class AuthController {
   }
 
   @Get('me')
+  @NoSubscriptionRequired()
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOkResponse({

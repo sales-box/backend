@@ -25,6 +25,7 @@ import {
 import { UpdateTenantDto } from './dto/update-tenant.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AdminTenantGuard } from '../../common/guards/admin-tenant.guard';
+import { NoSubscriptionRequired } from '../../common/guards/assert-subscription-active';
 
 @ApiTags('tenants')
 @Controller('tenants')
@@ -73,6 +74,10 @@ export class TenantsController {
   // read that company's name, plan tier and account status anonymously. Every
   // caller in the dashboard (Overview, Team, Plans, Analytics, Settings) is
   // already inside an authenticated route, so gating it breaks nothing.
+  // Exempt from the paywall: this is the route the dashboard reads to discover
+  // that it should SHOW the paywall. Gating it would leave an unpaid tenant
+  // with a 403 and no way to learn why.
+  @NoSubscriptionRequired()
   @UseGuards(JwtAuthGuard, AdminTenantGuard)
   @ApiOperation({ summary: 'Get a tenant by id' })
   @ApiParam({ name: 'tenantId', description: 'Tenant id' })
@@ -83,6 +88,10 @@ export class TenantsController {
 
   @Patch(':tenantId')
   @ApiBearerAuth()
+  // Exempt: renaming your own company is account admin, not product usage, and
+  // an unpaid tenant correcting a typo made during signup should not be told to
+  // buy a plan first.
+  @NoSubscriptionRequired()
   @UseGuards(JwtAuthGuard, AdminTenantGuard)
   @ApiOperation({ summary: 'Update tenant details' })
   @ApiResponse({

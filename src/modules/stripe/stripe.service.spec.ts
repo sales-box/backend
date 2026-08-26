@@ -1,100 +1,161 @@
-import { BadRequestException } from '@nestjs/common';
-import { Test, TestingModule } from '@nestjs/testing';
-import { StripeService } from './stripe.service';
+// Env vars must be set before any import that triggers plans.ts evaluation
+process.env.STRIPE_PRICE_STARTER = 'price_starter';
+process.env.STRIPE_PRICE_GROWTH = 'price_growth';
 
-const mockCreate = jest.fn();
-const mockRetrieve = jest.fn();
+import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { StripeService } from './stripe.service';
+import { PrismaService } from '@/database/prisma.service';
+
+const mockSessionCreate = jest.fn();
+const mockSessionRetrieve = jest.fn();
+const mockCustomerCreate = jest.fn();
 
 jest.mock('stripe', () => {
-  return jest.fn().mockImplementation(() => {
-    return {
-      paymentIntents: {
-        create: mockCreate,
-        retrieve: mockRetrieve,
+  return jest.fn().mockImplementation(() => ({
+    checkout: {
+      sessions: {
+        create: mockSessionCreate,
+        retrieve: mockSessionRetrieve,
       },
-    };
-  });
+    },
+    customers: {
+      create: mockCustomerCreate,
+    },
+  }));
 });
 
 describe('StripeService', () => {
   let service: StripeService;
+  const mockTenantFindUnique = jest.fn();
+  const mockTenantUpdate = jest.fn();
 
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [StripeService],
-    }).compile();
+  const mockConfig = {
+    getOrThrow: jest.fn().mockReturnValue('http://localhost:5173/callback'),
+  } as unknown as ConfigService;
 
-    service = module.get<StripeService>(StripeService);
+  const mockPrisma = {
+    tenant: {
+      findUnique: mockTenantFindUnique,
+      update: mockTenantUpdate,
+    },
+  } as unknown as PrismaService;
+
+  beforeEach(() => {
+    service = new StripeService(mockConfig, mockPrisma);
     jest.clearAllMocks();
   });
 
-  describe('createPaymentIntent', () => {
-    it('prices the plan from the server-side table, not from the caller', async () => {
-      mockCreate.mockResolvedValue({
-        id: 'pi_test_123',
-        client_secret: 'secret_123',
+  describe('getOrCreateCustomer', () => {
+    it('returns existing stripeCustomerId when present', async () => {
+      mockTenantFindUnique.mockResolvedValue({
+        stripeCustomerId: 'cus_existing',
+        companyName: 'Acme',
       });
 
-      // The caller names a tier and nothing else. This used to take an
-      // `amount` argument straight from the request body, and the webhook
-      // writes tenant.tier from the same metadata — so the buyer set the price.
-      const result = await service.createPaymentIntent('tenant-abc', 1);
+      const id = await service.getOrCreateCustomer('t-1', 'a@b.com');
 
-      expect(mockCreate).toHaveBeenCalledWith({
-        amount: 4900, // Starter, from PLAN_PRICES
-        currency: 'usd',
-        metadata: { tenantId: 'tenant-abc', tier: '1' },
-      });
-      expect(result).toEqual({
-        id: 'pi_test_123',
-        client_secret: 'secret_123',
-      });
+      expect(id).toBe('cus_existing');
+      expect(mockCustomerCreate).not.toHaveBeenCalled();
     });
 
-    it('charges the tier that was asked for, not a cheaper one', async () => {
-      mockCreate.mockResolvedValue({ id: 'pi_growth' });
+    it('creates a Stripe Customer and persists the id when none exists', async () => {
+      mockTenantFindUnique.mockResolvedValue({
+        stripeCustomerId: null,
+        companyName: 'Acme',
+      });
+      mockCustomerCreate.mockResolvedValue({ id: 'cus_new' });
+      mockTenantUpdate.mockResolvedValue({});
 
-      await service.createPaymentIntent('tenant-abc', 2);
+      const id = await service.getOrCreateCustomer('t-1', 'a@b.com');
 
-      expect(mockCreate).toHaveBeenCalledWith(
-        expect.objectContaining({ amount: 14900 }),
+      expect(id).toBe('cus_new');
+      expect(mockCustomerCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          email: 'a@b.com',
+          name: 'Acme',
+          metadata: { tenantId: 't-1' },
+        }),
       );
-    });
-
-    it('refuses a tier that has no self-serve price', async () => {
-      // Enterprise is quoted per customer. Inventing a number here is how the
-      // old checkout ended up sending amount 0.
-      await expect(
-        service.createPaymentIntent('tenant-abc', 3),
-      ).rejects.toThrow(BadRequestException);
-      expect(mockCreate).not.toHaveBeenCalled();
+      expect(mockTenantUpdate).toHaveBeenCalledWith({
+        where: { id: 't-1' },
+        data: { stripeCustomerId: 'cus_new' },
+      });
     });
   });
 
-  describe('getPayment', () => {
-    it('should return the payment intent if the tenantId matches', async () => {
-      const mockPI = {
-        id: 'pi_test_123',
-        metadata: { tenantId: 'tenant-abc' },
-      };
-      mockRetrieve.mockResolvedValue(mockPI);
+  describe('createCheckoutSession', () => {
+    it('creates a subscription checkout session for a valid tier', async () => {
+      mockTenantFindUnique.mockResolvedValue({
+        stripeCustomerId: 'cus_existing',
+        companyName: 'Acme',
+      });
+      mockSessionCreate.mockResolvedValue({
+        id: 'cs_123',
+        url: 'https://checkout.stripe.com/cs_123',
+      });
 
-      const result = await service.getPayment('tenant-abc', 'pi_test_123');
+      const result = await service.createCheckoutSession(
+        'tenant-abc',
+        1,
+        'a@b.com',
+      );
 
-      expect(mockRetrieve).toHaveBeenCalledWith('pi_test_123');
-      expect(result).toEqual(mockPI);
+      expect(mockSessionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: 'subscription',
+          customer: 'cus_existing',
+          line_items: [{ price: 'price_starter', quantity: 1 }],
+        }),
+      );
+      expect(result).toEqual({
+        sessionId: 'cs_123',
+        url: 'https://checkout.stripe.com/cs_123',
+      });
     });
 
-    it('should throw an error if the tenantId does not match metadata', async () => {
-      const mockPI = {
-        id: 'pi_test_123',
-        metadata: { tenantId: 'tenant-different' },
-      };
-      mockRetrieve.mockResolvedValue(mockPI);
-
+    it('refuses a tier with no configured plan', async () => {
       await expect(
-        service.getPayment('tenant-abc', 'pi_test_123'),
-      ).rejects.toThrow('Payment intent not found or tenant mismatch');
+        service.createCheckoutSession('t', 3, 'a@b.com'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('strips path suffix from FRONTEND_DASHBOARD_URL for redirect URLs', async () => {
+      mockTenantFindUnique.mockResolvedValue({
+        stripeCustomerId: 'cus_x',
+        companyName: 'X',
+      });
+      mockSessionCreate.mockResolvedValue({ id: 'cs_1', url: 'https://...' });
+
+      await service.createCheckoutSession('t-1', 1, 'x@y.com');
+
+      const args = mockSessionCreate.mock.calls[0] as [
+        { success_url: string; cancel_url: string },
+      ];
+      expect(args[0].success_url).toMatch(/^http:\/\/localhost:5173\//);
+      expect(args[0].success_url).not.toContain('/callback');
+      expect(args[0].cancel_url).toMatch(/^http:\/\/localhost:5173\//);
+    });
+  });
+
+  describe('getCheckoutSession', () => {
+    it('returns the session when tenantId matches', async () => {
+      const session = { id: 'cs_1', metadata: { tenantId: 't-1' } };
+      mockSessionRetrieve.mockResolvedValue(session);
+
+      const result = await service.getCheckoutSession('cs_1', 't-1');
+      expect(result).toEqual(session);
+    });
+
+    it('throws NotFoundException if tenantId does not match', async () => {
+      mockSessionRetrieve.mockResolvedValue({
+        id: 'cs_1',
+        metadata: { tenantId: 'other' },
+      });
+
+      await expect(service.getCheckoutSession('cs_1', 't-1')).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 });
