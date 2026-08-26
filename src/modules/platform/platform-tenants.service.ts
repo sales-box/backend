@@ -3,7 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { TenantStatus } from '@prisma/client';
+import { Prisma, TenantStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { AllowlistService } from '../allowlist/allowlist.service';
 import type { TenantStatusAction } from './dto/change-status.dto';
@@ -39,10 +39,10 @@ export class PlatformTenantsService {
     const search = filters.search?.trim();
     // Built once and reused for both queries — a count taken without the same
     // filter would produce page numbers that do not match the rows on screen.
-    const where = {
+    const where: Prisma.TenantWhereInput = {
       ...(filters.status ? { status: filters.status } : {}),
       ...(search
-        ? { companyName: { contains: search, mode: 'insensitive' as const } }
+        ? { companyName: { contains: search, mode: 'insensitive' } }
         : {}),
     };
 
