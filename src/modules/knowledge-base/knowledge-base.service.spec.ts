@@ -57,6 +57,7 @@ jest.mock('jszip', () => ({
 describe('KnowledgeBaseService', () => {
   let service: KnowledgeBaseService;
   let tx: {
+    $executeRaw: jest.Mock;
     document: { deleteMany: jest.Mock; create: jest.Mock };
     documentChunk: { createMany: jest.Mock };
   };
@@ -71,6 +72,10 @@ describe('KnowledgeBaseService', () => {
 
   beforeEach(() => {
     tx = {
+      // persist() takes a transaction-scoped advisory lock before the
+      // delete-then-create, so two uploads of the same file in the same tenant
+      // cannot interleave.
+      $executeRaw: jest.fn().mockResolvedValue(1),
       document: {
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
         create: jest.fn().mockResolvedValue({ id: 'doc-1' }),
@@ -144,6 +149,26 @@ describe('KnowledgeBaseService', () => {
     expect(tx.document.deleteMany).toHaveBeenCalledWith({
       where: { filename: 'pricing.txt', tenantId: null },
     });
+  });
+
+  it('serialises same-file uploads with an advisory lock before deleting', async () => {
+    // uq_documents_file is (tenant_id, filename, product_name) and Postgres
+    // treats NULLs as distinct, so it cannot stop two concurrent uploads of a
+    // product-less file from both inserting. The lock has to be taken, and it
+    // has to be taken BEFORE the delete, or the check-then-act still races.
+    await service.ingest(
+      {
+        filename: 'pricing.txt',
+        mimetype: 'text/plain',
+        buffer: Buffer.from('hello world', 'utf-8'),
+      },
+      { tenantId: 'tenant-a', uploadedBy: 'admin@acme.test' },
+    );
+
+    expect(tx.$executeRaw).toHaveBeenCalled();
+    const lockOrder = tx.$executeRaw.mock.invocationCallOrder[0];
+    const deleteOrder = tx.document.deleteMany.mock.invocationCallOrder[0];
+    expect(lockOrder).toBeLessThan(deleteOrder);
   });
 
   describe('assessDocumentQuality (quality gate, S3-V20)', () => {
