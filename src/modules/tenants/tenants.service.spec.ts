@@ -7,6 +7,7 @@ import { Prisma } from '@prisma/client';
 import {
   NotFoundException,
   BadRequestException,
+  ConflictException,
   GoneException,
 } from '@nestjs/common';
 
@@ -33,7 +34,12 @@ describe('TenantsService', () => {
   const mockTenantFindFirst = jest.fn<Promise<unknown>, [unknown]>();
   const mockTenantUpdate = jest.fn<Promise<unknown>, [unknown]>();
 
+  const mockConnectedAccountFindFirst = jest.fn<Promise<unknown>, [unknown]>();
+  const mockAllowlistFindFirst = jest.fn<Promise<unknown>, [unknown]>();
+
   const mockPrisma = {
+    connectedAccount: { findFirst: mockConnectedAccountFindFirst },
+    allowlistEntry: { findFirst: mockAllowlistFindFirst },
     tenant: {
       create: mockTenantCreate,
       findUnique: mockTenantFindUnique,
@@ -70,6 +76,9 @@ describe('TenantsService', () => {
 
     service = module.get<TenantsService>(TenantsService);
     jest.clearAllMocks();
+    // Default: the admin email is not already a tenant user anywhere.
+    mockConnectedAccountFindFirst.mockResolvedValue(null);
+    mockAllowlistFindFirst.mockResolvedValue(null);
   });
 
   describe('signup', () => {
@@ -123,6 +132,54 @@ describe('TenantsService', () => {
       });
       expect(mockTenantCreate).not.toHaveBeenCalled();
       expect(result.message).toContain('Signup successful');
+    });
+  });
+
+  describe('signup identity separation', () => {
+    const dto = {
+      companyName: 'Evil Corp',
+      adminEmail: 'se@acme.com',
+      adminName: 'SE',
+    };
+
+    it('refuses an email that already belongs to a tenant user', async () => {
+      mockConnectedAccountFindFirst.mockResolvedValue({
+        id: 'acc1',
+        tenantId: 'acme',
+      });
+
+      await expect(service.signup(dto)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(mockTenantCreate).not.toHaveBeenCalled();
+      expect(mockTenantUpdate).not.toHaveBeenCalled();
+    });
+
+    it('refuses an email that is on another tenant allowlist', async () => {
+      mockAllowlistFindFirst.mockResolvedValue({ id: 'ae1', tenantId: 'acme' });
+
+      await expect(service.signup(dto)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(mockTenantCreate).not.toHaveBeenCalled();
+    });
+
+    it('checks the email case-insensitively', async () => {
+      await service
+        .signup({ ...dto, adminEmail: '  SE@Acme.COM  ' })
+        .catch(() => undefined);
+
+      const calls = mockConnectedAccountFindFirst.mock.calls as Array<
+        [{ where: { email: string } }]
+      >;
+      expect(calls[0][0].where.email).toBe('se@acme.com');
+    });
+
+    it('creates no tenant row when the email is refused', async () => {
+      mockConnectedAccountFindFirst.mockResolvedValue({ id: 'acc1' });
+      await service.signup(dto).catch(() => undefined);
+      // The orphaned-active-tenant problem starts with this row existing.
+      expect(mockTenantCreate).not.toHaveBeenCalled();
     });
   });
 

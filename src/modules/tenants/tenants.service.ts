@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
   GoneException,
   Logger,
 } from '@nestjs/common';
@@ -33,7 +34,43 @@ export class TenantsService {
     });
   }
 
+  /**
+   * Refuses an admin email that already belongs to a tenant user.
+   *
+   * Separation of duties, the same rule `platform-admin.seeder.ts` applies to
+   * operators. Without it an SE at company A can register company B with their
+   * own address: signup and email verification both succeed (neither looks at
+   * who owns the address), leaving a verified, ACTIVE, admin-less tenant that
+   * no cleanup job touches — the abandonment cron only sweeps `pending` rows.
+   * The person is then stopped at set-password with "Connect the Google
+   * account first", which they cannot act on. Fail here instead, where the
+   * reason can still be explained.
+   */
+  private async assertEmailIsNotATenantUser(email: string): Promise<void> {
+    const [tenantUser, invited] = await Promise.all([
+      this.prisma.connectedAccount.findFirst({
+        where: { email },
+        select: { id: true },
+      }),
+      this.prisma.allowlistEntry.findFirst({
+        where: { email, status: { in: ['granted', 'verified'] } },
+        select: { id: true },
+      }),
+    ]);
+
+    if (tenantUser || invited) {
+      throw new ConflictException(
+        'That email is already used by a member of another company. ' +
+          'Register with a different address, or ask that company to remove ' +
+          'your access first.',
+      );
+    }
+  }
+
   async signup(dto: SignupTenantDto) {
+    const adminEmail = dto.adminEmail.trim().toLowerCase();
+    await this.assertEmailIsNotATenantUser(adminEmail);
+
     const token = uuidv4();
     const expiresAt = new Date();
     expiresAt.setHours(expiresAt.getHours() + 24);
@@ -69,7 +106,7 @@ export class TenantsService {
     ).origin;
     const verifyUrl = new URL('/verify', frontendOrigin);
     verifyUrl.searchParams.set('token', token);
-    verifyUrl.searchParams.set('email', dto.adminEmail);
+    verifyUrl.searchParams.set('email', adminEmail);
     const verificationLink = verifyUrl.toString();
 
     try {
@@ -79,14 +116,14 @@ export class TenantsService {
         // silently, so no verification email ever reached the admin). Same
         // convention as the working SE invite email (email-notify.service).
         from: this.config.getOrThrow<string>('SMTP_USER'),
-        to: dto.adminEmail,
+        to: adminEmail,
         subject: 'Verify your company account',
         // Plain-text fallback alongside the HTML part (some providers/filters
         // drop HTML-only mail — mirrors the SE invite fix).
         text: `Welcome to Sales Copilot!\n\nVerify your company account by opening this link:\n${verificationLink}\n\nThis link expires in 24 hours.`,
         html: `<p>Welcome to Sales Copilot!</p><p>Please verify your account by clicking: <a href="${verificationLink}">Verify Account</a></p>`,
       });
-      this.logger.log(`Activation email sent to ${dto.adminEmail}`);
+      this.logger.log(`Activation email sent to ${adminEmail}`);
     } catch (error: any) {
       this.logger.error(
         'Failed to send activation email. Ensure SMTP is configured.',
