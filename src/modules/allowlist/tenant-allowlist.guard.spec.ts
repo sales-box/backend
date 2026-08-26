@@ -28,12 +28,43 @@ describe('TenantAllowlistGuard', () => {
     findFirst = jest.fn();
     const prisma = {
       connectedAccount: { findFirst },
+      // assertTenantActive runs whenever the matched account has a tenant.
+      tenant: { findUnique: jest.fn().mockResolvedValue({ status: 'active' }) },
     } as unknown as PrismaService;
     guard = new TenantAllowlistGuard(prisma, jwt);
   });
 
   const tokenFor = (email: string) =>
     jwt.sign({ sub: 'a1', tenantId: 't1', isAdmin: false, email });
+
+  it('rejects a token that carries no tenant instead of scanning every tenant', async () => {
+    // A platform-operator token has no tenantId. The lookup used to spread the
+    // tenant predicate away in that case, turning this into a platform-wide
+    // search by email — so an operator whose address matched any connected
+    // account would pass a TENANT allowlist guard.
+    const noTenant = jwt.sign({
+      sub: 'op1',
+      isAdmin: false,
+      email: 'ops@salesbox.com',
+    });
+    await expect(
+      guard.canActivate(ctx(`Bearer ${noTenant}`)),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(findFirst).not.toHaveBeenCalled();
+  });
+
+  it('always scopes the account lookup by tenant', async () => {
+    findFirst.mockResolvedValue({
+      id: 'a1',
+      status: 'connected',
+      tenantId: 't1',
+    });
+    await guard.canActivate(ctx(`Bearer ${tokenFor('se@acme.com')}`));
+    const calls = findFirst.mock.calls as Array<
+      [{ where: { tenantId?: string } }]
+    >;
+    expect(calls[0][0].where.tenantId).toBe('t1');
+  });
 
   it('allows a valid token whose account is still connected', async () => {
     findFirst.mockResolvedValue({ id: 'a1', status: 'connected' });
