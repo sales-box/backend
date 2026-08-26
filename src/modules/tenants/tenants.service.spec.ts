@@ -6,6 +6,7 @@ import { AllowlistService } from '../allowlist/allowlist.service';
 import { Prisma } from '@prisma/client';
 import {
   NotFoundException,
+  ConflictException,
   ServiceUnavailableException,
   BadRequestException,
   GoneException,
@@ -71,6 +72,111 @@ describe('TenantsService', () => {
 
     service = module.get<TenantsService>(TenantsService);
     jest.clearAllMocks();
+  });
+
+  describe('signup — one account per email address', () => {
+    // Before this rule, signing up again with a different company name simply
+    // created a SECOND tenant on the same address. One person could end up
+    // owning several half-finished companies, and "resend my link" became
+    // ambiguous: it picks the newest pending tenant, so the older one could
+    // never be verified at all.
+
+    it.each(['active', 'suspended', 'offboarded'])(
+      'refuses a second signup when the address already has a %s account',
+      async (status) => {
+        mockTenantFindFirst.mockResolvedValue({
+          id: 'tenant-live',
+          status,
+          adminEmail: 'admin@test.com',
+        });
+
+        await expect(
+          service.signup({
+            companyName: 'Another Co',
+            adminEmail: 'admin@test.com',
+          }),
+        ).rejects.toThrow(ConflictException);
+
+        expect(mockTenantCreate).not.toHaveBeenCalled();
+        expect(mockSendMail).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not leak which company the address belongs to', async () => {
+      mockTenantFindFirst.mockResolvedValue({
+        id: 'tenant-live',
+        status: 'active',
+        companyName: 'Secret Holdings',
+        adminEmail: 'admin@test.com',
+      });
+
+      await expect(
+        service.signup({
+          companyName: 'Another Co',
+          adminEmail: 'admin@test.com',
+        }),
+      ).rejects.toThrow(ConflictException);
+
+      // The refusal must not tell an anonymous caller which company owns the
+      // address.
+      const thrown = await service
+        .signup({ companyName: 'Another Co', adminEmail: 'admin@test.com' })
+        .catch((e: unknown) => e);
+      expect((thrown as Error).message).not.toContain('Secret Holdings');
+    });
+
+    it('reclaims an in-flight pending signup instead of duplicating it', async () => {
+      mockTenantFindFirst.mockResolvedValue({
+        id: 'tenant-pending',
+        status: 'pending',
+        adminEmail: 'admin@test.com',
+      });
+      mockTenantUpdate.mockResolvedValue({ id: 'tenant-pending' });
+      mockSendMail.mockResolvedValue(true);
+
+      await service.signup({
+        companyName: 'Corrected Name Ltd',
+        adminEmail: 'Admin@Test.com',
+      });
+
+      expect(mockTenantCreate).not.toHaveBeenCalled();
+      expect(mockTenantUpdate).toHaveBeenCalledWith({
+        where: { id: 'tenant-pending' },
+        data: expect.objectContaining({
+          // the corrected company name wins, and the address is normalised
+          companyName: 'Corrected Name Ltd',
+          adminEmail: 'admin@test.com',
+          status: 'pending',
+        }) as Record<string, unknown>,
+      });
+    });
+
+    it('revives an abandoned signup rather than locking the person out', async () => {
+      // `abandoned` is only a pending signup the 7-day cleanup aged out. It is
+      // not a real account, so refusing it would mean somebody who was slow the
+      // first time could never register that address again.
+      mockTenantFindFirst.mockResolvedValue({
+        id: 'tenant-abandoned',
+        status: 'abandoned',
+        adminEmail: 'admin@test.com',
+      });
+      mockTenantUpdate.mockResolvedValue({ id: 'tenant-abandoned' });
+      mockSendMail.mockResolvedValue(true);
+
+      const result = await service.signup({
+        companyName: 'Second Attempt Ltd',
+        adminEmail: 'admin@test.com',
+      });
+
+      expect(mockTenantUpdate).toHaveBeenCalledWith({
+        where: { id: 'tenant-abandoned' },
+        data: expect.objectContaining({ status: 'pending' }) as Record<
+          string,
+          unknown
+        >,
+      });
+      expect(result.message).toContain('Signup successful');
+    });
   });
 
   describe('signup', () => {

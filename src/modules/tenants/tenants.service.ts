@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
   GoneException,
   Logger,
   ServiceUnavailableException,
@@ -13,6 +14,21 @@ import { v4 as uuidv4 } from 'uuid';
 import * as nodemailer from 'nodemailer';
 import { Prisma } from '@prisma/client';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
+
+/**
+ * Statuses a fresh signup is allowed to take over instead of creating a second
+ * tenant for the same address.
+ *
+ * `pending`   — a signup still in flight; the person is retrying.
+ * `abandoned` — a pending signup the daily cleanup aged out after 7 days
+ *               (tenant-cleanup.service.ts). It is not a real account, so
+ *               refusing it would lock somebody out permanently for having
+ *               been slow.
+ *
+ * Everything else (`active`, `suspended`, `offboarded`) means a real account
+ * exists and signup must stop.
+ */
+const RECLAIMABLE_STATUSES = new Set<string>(['pending', 'abandoned']);
 
 @Injectable()
 export class TenantsService {
@@ -43,22 +59,56 @@ export class TenantsService {
     // tenant and the person who started it.
     const adminEmail = dto.adminEmail.trim().toLowerCase();
 
-    // Reclaiming an in-flight signup is scoped to the same company AND the same
-    // address. Matching on company name alone let anyone who guessed a company
-    // name take over its pending registration by "signing up" again.
-    const existingPending = await this.prisma.tenant.findFirst({
-      where: {
-        companyName: dto.companyName,
-        status: 'pending',
-        OR: [{ adminEmail }, { adminEmail: null }],
-      },
+    // One signup per address.
+    //
+    // Signing up twice used to create a SECOND tenant every time the company
+    // name differed, so a single address could end up owning several companies.
+    // That is bad on its own, and it also makes "resend my link" ambiguous:
+    // with two pending tenants on one address the resend picks the newest and
+    // the older one can never be verified at all.
+    const existingForEmail = await this.prisma.tenant.findFirst({
+      where: { adminEmail },
+      orderBy: { createdAt: 'desc' },
     });
 
-    if (existingPending) {
+    if (
+      existingForEmail &&
+      !RECLAIMABLE_STATUSES.has(existingForEmail.status)
+    ) {
+      // A real account already exists for this address. Say so plainly rather
+      // than quietly starting a second registration the person can never
+      // finish. The company name is deliberately NOT included: an anonymous
+      // caller must not be able to read which company an address belongs to.
+      this.logger.log('Signup refused: address already has a live account');
+      throw new ConflictException(
+        'This email is already registered. Please sign in instead.',
+      );
+    }
+
+    // Reclaim rather than duplicate. `pending` is a signup still in flight;
+    // `abandoned` is only a pending signup that passed the 7-day cleanup
+    // (tenant-cleanup.service.ts), so refusing those would lock someone out of
+    // the product for good just because they were slow the first time.
+    const reclaimable =
+      existingForEmail ??
+      (await this.prisma.tenant.findFirst({
+        where: {
+          companyName: dto.companyName,
+          status: 'pending',
+          adminEmail: null,
+        },
+      }));
+
+    if (reclaimable) {
       await this.prisma.tenant.update({
-        where: { id: existingPending.id },
+        where: { id: reclaimable.id },
         data: {
+          // The person may have corrected the company name on the second
+          // attempt, so take the newer one.
+          companyName: dto.companyName,
           adminEmail,
+          // An abandoned signup comes back to life as a normal pending one.
+          status: 'pending',
           emailVerificationToken: token,
           emailVerificationExpiresAt: expiresAt,
         },
