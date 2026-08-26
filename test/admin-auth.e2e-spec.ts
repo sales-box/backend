@@ -83,6 +83,10 @@ describe('Admin Auth (e2e)', () => {
       isAdmin: true,
       passwordHash,
     });
+    tenantFindUnique.mockResolvedValue({
+      status: 'active',
+      subscriptionStatus: 'active',
+    });
 
     const login = await request(app.getHttpServer())
       .post('/auth/admin/login')
