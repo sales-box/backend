@@ -6,6 +6,7 @@ import { AllowlistService } from '../allowlist/allowlist.service';
 import { Prisma } from '@prisma/client';
 import {
   NotFoundException,
+  ServiceUnavailableException,
   BadRequestException,
   GoneException,
 } from '@nestjs/common';
@@ -155,16 +156,79 @@ describe('TenantsService', () => {
       );
     });
 
-    it('should throw NotFoundException if no pending tenant is found', async () => {
+    it('resolves the tenant by the signup address, not by recency', async () => {
+      mockTenantFindFirst.mockResolvedValue({
+        id: 'pending-123',
+        status: 'pending',
+        adminEmail: 'admin@test.com',
+      });
+      mockTenantUpdate.mockResolvedValue({ id: 'pending-123' });
+      mockSendMail.mockResolvedValue(true);
+
+      await service.resendVerification({ email: '  Admin@Test.com ' });
+
+      // The old implementation fell back to `orderBy: { createdAt: 'desc' }`
+      // over every pending tenant when companyName was absent, and mailed that
+      // stranger's token to the caller.
+      expect(mockTenantFindFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: 'pending',
+            adminEmail: 'admin@test.com',
+          }) as Record<string, unknown>,
+        }),
+      );
+    });
+
+    it('says nothing and sends nothing when the address has no pending signup', async () => {
       mockTenantFindFirst.mockResolvedValue(null);
 
+      const result = await service.resendVerification({
+        email: 'nobody@test.com',
+      });
+
+      // Answering differently for a known and an unknown address would turn
+      // this endpoint into an account-enumeration oracle, so the response is
+      // deliberately identical — but nothing is rotated and nothing is mailed.
+      expect(result.message).toContain('Verification email resent');
+      expect(mockTenantUpdate).not.toHaveBeenCalled();
+      expect(mockSendMail).not.toHaveBeenCalled();
+    });
+
+    it('reports a send failure instead of claiming success', async () => {
+      mockTenantFindFirst.mockResolvedValue({
+        id: 'pending-123',
+        status: 'pending',
+        adminEmail: 'admin@test.com',
+      });
+      mockTenantUpdate.mockResolvedValue({ id: 'pending-123' });
+      mockSendMail.mockRejectedValue(new Error('smtp unreachable'));
+
+      // This used to log the failure and return "resent successfully", so a
+      // broken SMTP host looked exactly like a delivered email.
       await expect(
         service.resendVerification({ email: 'admin@test.com' }),
-      ).rejects.toThrow(NotFoundException);
+      ).rejects.toThrow(ServiceUnavailableException);
     });
   });
 
   describe('verify', () => {
+    it('refuses a valid token presented with a different address', async () => {
+      mockTenantFindUnique.mockResolvedValue({
+        id: 'pending-123',
+        status: 'pending',
+        adminEmail: 'owner@test.com',
+        emailVerificationExpiresAt: null,
+      });
+
+      // The address used to be logged and then ignored, so any token that
+      // reached any inbox activated the company for whoever presented it.
+      await expect(
+        service.verify('good-token', 'stranger@test.com'),
+      ).rejects.toThrow(NotFoundException);
+      expect(mockTenantUpdate).not.toHaveBeenCalled();
+    });
+
     it('should throw NotFoundException if token is invalid', async () => {
       mockTenantFindUnique.mockResolvedValue(null);
       await expect(

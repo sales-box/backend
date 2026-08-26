@@ -106,6 +106,24 @@ export class AdminAuthService {
       throw new BadRequestException('Tenant is not active');
     }
 
+    // This endpoint is unauthenticated by design — it is how a brand-new admin
+    // sets their first password — so the only thing standing between it and a
+    // stranger claiming an adminless tenant is that the caller must be the
+    // address the company signed up with. Without this check, anyone who had
+    // completed a Google connect could name any adminless tenant id and become
+    // its admin.
+    //
+    // Tenants created before admin_email existed have none recorded and keep
+    // the previous behaviour, so nobody already mid-onboarding is locked out.
+    if (tenant.adminEmail && tenant.adminEmail !== email.trim().toLowerCase()) {
+      this.logger.warn(
+        `set-password refused: ${email} is not the signup address for tenant ${tenantId}`,
+      );
+      throw new BadRequestException(
+        'This address did not register the company',
+      );
+    }
+
     // Primary: tenant-scoped lookup prevents cross-tenant privilege escalation.
     let account = await this.prisma.connectedAccount.findFirst({
       where: { tenantId, email },
