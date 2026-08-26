@@ -148,17 +148,6 @@ export class KnowledgeBaseController {
     return this.knowledgeBaseService.previewQuality(filename, buffer);
   }
 
-  @Throttle({ default: { limit: 60, ttl: 60000 } }) // 60 uploads/min per IP — bulk-friendly for the 200-doc KB, still abuse-limited
-  @Post('upload')
-  @ApiConsumes('multipart/form-data')
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: { file: { type: 'string', format: 'binary' } },
-      required: ['file'],
-    },
-  })
-  @ApiOkResponse({ type: UploadResponseDto })
   /**
    * A platform-operator token carries no tenantId. Passing `undefined` into a
    * Prisma `where` silently becomes `tenant_id IS NULL`, so an unchecked
@@ -173,6 +162,17 @@ export class KnowledgeBaseController {
     return tenantId;
   }
 
+  @Throttle({ default: { limit: 60, ttl: 60000 } }) // 60 uploads/min per IP — bulk-friendly for the 200-doc KB, still abuse-limited
+  @Post('upload')
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: { file: { type: 'string', format: 'binary' } },
+      required: ['file'],
+    },
+  })
+  @ApiOkResponse({ type: UploadResponseDto })
   async upload(@Req() req: AuthenticatedRequest): Promise<UploadResponseDto> {
     const { filename, mimetype, buffer } = await readUploadedFile(req);
     return this.knowledgeBaseService.ingest(
