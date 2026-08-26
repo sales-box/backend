@@ -1,11 +1,13 @@
 import {
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, TenantStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { AllowlistService } from '../allowlist/allowlist.service';
+import { CryptoService } from '../auth/crypto.service';
 import type { TenantStatusAction } from './dto/change-status.dto';
 
 const ACTIVE_SEAT_STATUSES = ['granted', 'verified'];
@@ -24,9 +26,12 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class PlatformTenantsService {
+  private readonly logger = new Logger(PlatformTenantsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly allowlist: AllowlistService,
+    private readonly crypto: CryptoService,
   ) {}
 
   /** Every tenant on the platform (operator view), paginated. Metadata only. */
@@ -196,6 +201,111 @@ export class PlatformTenantsService {
       data: { tier },
       select: { id: true, tier: true },
     });
+  }
+
+  /**
+   * Permanently destroy a tenant and every row scoped to it. Irreversible.
+   *
+   * Gated on a terminal status: offboarding revokes access and is the
+   * deliberate first act; this is the second. An operator cannot reach it from
+   * `active` or `suspended`.
+   *
+   * Every table is named explicitly rather than relying on `onDelete`. Six of
+   * the tenant foreign keys are ON DELETE SET NULL, so a table left out of this
+   * list is NOT protected by the database — its rows would silently survive
+   * with `tenant_id = NULL` while this endpoint returned 204. Three tables
+   * (interaction, crm_connections, general_analysis) carry a tenantId with no
+   * foreign key at all. The spec reads schema.prisma and fails if this list
+   * ever falls behind.
+   */
+  async purge(id: string): Promise<void> {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id },
+      select: { status: true },
+    });
+    if (!tenant) {
+      throw new NotFoundException('Tenant not found');
+    }
+    if (!TERMINAL_STATUSES.includes(tenant.status)) {
+      throw new ConflictException(
+        `Only an offboarded tenant can be deleted — this one is '${tenant.status}'. Offboard it first.`,
+      );
+    }
+
+    // Read the mailboxes BEFORE deleting: processed_gmail_messages has no
+    // tenantId (only accountEmail), and the Google grants can only be revoked
+    // while we still hold the refresh tokens.
+    const accounts = await this.prisma.connectedAccount.findMany({
+      where: { tenantId: id },
+      select: { email: true, refreshToken: true },
+    });
+    const emails = accounts.map((a) => a.email);
+
+    await this.revokeGoogleGrants(accounts, id);
+
+    const where = { tenantId: id };
+    await this.prisma.$transaction([
+      // Dependants first, tenant last.
+      this.prisma.interaction.deleteMany({ where }),
+      this.prisma.escalationItem.deleteMany({ where }),
+      this.prisma.generalAnalysis.deleteMany({ where }),
+      this.prisma.knowledgeGap.deleteMany({ where }),
+      this.prisma.document.deleteMany({ where }),
+      this.prisma.crmConnection.deleteMany({ where }),
+      this.prisma.crmAgentConnection.deleteMany({ where }),
+      this.prisma.driveConnection.deleteMany({ where }),
+      this.prisma.allowedDomain.deleteMany({ where }),
+      this.prisma.allowlistEntry.deleteMany({ where }),
+      // Keyed by accountEmail, not tenantId — it would otherwise outlive the
+      // tenant as a permanent ledger of its users' addresses and message ids.
+      this.prisma.processedGmailMessage.deleteMany({
+        where: { accountEmail: { in: emails } },
+      }),
+      this.prisma.connectedAccount.deleteMany({ where }),
+      this.prisma.client.deleteMany({ where }),
+      this.prisma.tenant.delete({ where: { id } }),
+    ]);
+
+    this.logger.warn(
+      `Tenant ${id} permanently deleted (${emails.length} mailbox(es))`,
+    );
+  }
+
+  /**
+   * Best-effort revocation of each mailbox's Google grant.
+   *
+   * Deleting our copy of a refresh token does not invalidate it — the grant
+   * stays live in the customer's Google account, and once the row is gone we no
+   * longer know which grant to revoke. Failures are logged and do not abort the
+   * purge: a tenant that cannot be deleted because Google is briefly
+   * unreachable would be worse than a grant that needs manual cleanup.
+   */
+  private async revokeGoogleGrants(
+    accounts: Array<{ email: string; refreshToken: string | null }>,
+    tenantId: string,
+  ): Promise<void> {
+    for (const account of accounts) {
+      if (!account.refreshToken) continue;
+      try {
+        const token = this.crypto.decrypt(account.refreshToken);
+        const res = await fetch('https://oauth2.googleapis.com/revoke', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ token }).toString(),
+        });
+        if (!res.ok) {
+          this.logger.error(
+            `Google revoke returned ${res.status} for a mailbox of tenant ${tenantId}; the grant may still be live`,
+          );
+        }
+      } catch (error) {
+        this.logger.error(
+          `Google revoke failed for a mailbox of tenant ${tenantId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
   }
 
   private assertTransition(
