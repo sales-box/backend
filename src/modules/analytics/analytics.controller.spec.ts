@@ -96,7 +96,11 @@ describe('AnalyticsController', () => {
       );
 
       const result = await controller.getAlerts(5, reqFor('tenant-a'));
-      expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(5, 'tenant-a');
+      expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(
+        5,
+        'tenant-a',
+        undefined,
+      );
       expect(result).toEqual(mockAlerts);
     });
 
@@ -108,12 +112,17 @@ describe('AnalyticsController', () => {
       expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(
         undefined,
         'tenant-a',
+        undefined,
       );
     });
 
     it('takes tenantId from the token, not the request', async () => {
       await controller.getAlerts(3, reqFor('tenant-b'));
-      expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(3, 'tenant-b');
+      expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(
+        3,
+        'tenant-b',
+        undefined,
+      );
     });
   });
 

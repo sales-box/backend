@@ -10,6 +10,10 @@ import { AnalyticsService } from './analytics.service';
 import { PrismaService } from '../../database/prisma.service';
 
 describe('AnalyticsService', () => {
+  /** First-call, first-arg of a mock, narrowed to the shape the test expects. */
+  const callArg = <T>(mock: jest.Mock): T =>
+    (mock.mock.calls as unknown as T[][])[0][0];
+
   let service: AnalyticsService;
   let prisma: PrismaService;
 
@@ -317,10 +321,24 @@ describe('AnalyticsService', () => {
             resolved: false,
             occurrences: { gte: 3 },
           },
-          orderBy: { occurrences: 'desc' },
+          orderBy: [
+            { resolved: 'asc' },
+            { occurrences: 'desc' },
+            { updatedAt: 'desc' },
+            { id: 'asc' },
+          ],
         }),
       );
-      expect(result).toEqual([{ ...mockGaps[0], evidence: [] }]);
+      // evidenceTotal mirrors occurrences: the count resets on resolve and
+      // rises once per newly-linked interaction, so it is the honest "of N" for
+      // an evidence list that is capped at 5.
+      expect(result).toEqual([
+        {
+          ...mockGaps[0],
+          evidenceTotal: mockGaps[0].occurrences,
+          evidence: [],
+        },
+      ]);
     });
 
     it('scopes alerts to the tenant when one is given', async () => {
@@ -335,9 +353,119 @@ describe('AnalyticsService', () => {
             occurrences: { gte: 3 },
             tenantId: 'tenant-a',
           },
-          orderBy: { occurrences: 'desc' },
+          orderBy: [
+            { resolved: 'asc' },
+            { occurrences: 'desc' },
+            { updatedAt: 'desc' },
+            { id: 'asc' },
+          ],
         }),
       );
+    });
+
+    it('does not apply the occurrence threshold to resolved gaps', async () => {
+      // Resolving resets occurrences to 0. If the threshold applied to them
+      // too, every resolved row would be filtered straight back out and the
+      // progress bar this flag exists to feed would still read "0 of N".
+      (prisma.knowledgeGap.findMany as jest.Mock).mockResolvedValue([]);
+
+      await service.getKnowledgeGapAlerts(1, 'tenant-a', true);
+
+      const arg = callArg<{ where: { OR?: unknown[] } }>(
+        prisma.knowledgeGap.findMany as jest.Mock,
+      );
+      expect(arg.where.OR).toEqual([
+        { resolved: false, occurrences: { gte: 1 } },
+        { resolved: true },
+      ]);
+    });
+
+    it('keeps filtering resolved rows out when not asked for them', async () => {
+      (prisma.knowledgeGap.findMany as jest.Mock).mockResolvedValue([]);
+
+      await service.getKnowledgeGapAlerts(1, 'tenant-a');
+
+      const arg = callArg<{ where: Record<string, unknown> }>(
+        prisma.knowledgeGap.findMany as jest.Mock,
+      );
+      expect(arg.where.resolved).toBe(false);
+      expect(arg.where.OR).toBeUndefined();
+    });
+  });
+
+  describe('knowledge gap list — episode scoping', () => {
+    it('hides evidence collected before the gap was last resolved', async () => {
+      // A gap resolved last month restarts at zero occurrences. Showing the old
+      // examples beside that zero read as data loss.
+      const resolvedAt = new Date('2026-08-01T00:00:00Z');
+      const older = {
+        createdAt: new Date('2026-07-20T00:00:00Z'),
+        interaction: {
+          subject: 'old',
+          aiSummary: 'old',
+          classification: null,
+          date: new Date('2026-07-20T00:00:00Z'),
+          client: { name: null, email: 'a@x.test', company: null },
+        },
+      };
+      const newer = {
+        createdAt: new Date('2026-08-15T00:00:00Z'),
+        interaction: {
+          subject: 'new',
+          aiSummary: 'new',
+          classification: null,
+          date: new Date('2026-08-15T00:00:00Z'),
+          client: { name: null, email: 'b@x.test', company: null },
+        },
+      };
+      (prisma.knowledgeGap.findMany as jest.Mock).mockResolvedValue([
+        {
+          id: 'g1',
+          topic: 'pricing',
+          occurrences: 1,
+          resolved: false,
+          resolvedAt,
+          tenantId: 'tenant-a',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          reports: [newer, older],
+        },
+      ]);
+
+      const [gap] = await service.getKnowledgeGapAlerts(1, 'tenant-a');
+
+      expect(gap.evidence).toHaveLength(1);
+      expect(gap.evidence[0].subject).toBe('new');
+      expect(gap.evidenceTotal).toBe(1);
+    });
+
+    it('keeps every example for a gap that has never been resolved', async () => {
+      const report = {
+        createdAt: new Date('2026-07-20T00:00:00Z'),
+        interaction: {
+          subject: 'old',
+          aiSummary: 'old',
+          classification: null,
+          date: new Date('2026-07-20T00:00:00Z'),
+          client: { name: null, email: 'a@x.test', company: null },
+        },
+      };
+      (prisma.knowledgeGap.findMany as jest.Mock).mockResolvedValue([
+        {
+          id: 'g1',
+          topic: 'pricing',
+          occurrences: 1,
+          resolved: false,
+          resolvedAt: null,
+          tenantId: 'tenant-a',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          reports: [report],
+        },
+      ]);
+
+      const [gap] = await service.getKnowledgeGapAlerts(1, 'tenant-a');
+      expect(gap.evidence).toHaveLength(1);
     });
   });
 
@@ -568,10 +696,16 @@ describe('AnalyticsService', () => {
       (prisma.knowledgeGap.update as jest.Mock).mockResolvedValue(mockUpdated);
 
       const result = await service.resolveGap('1');
-      expect(prisma.knowledgeGap.update).toHaveBeenCalledWith({
-        where: { id: '1' },
-        data: { resolved: true },
-      });
+      const arg = callArg<{
+        where: { id: string };
+        data: { resolved: boolean; occurrences: number; resolvedAt: Date };
+      }>(prisma.knowledgeGap.update as jest.Mock);
+      expect(arg.where).toEqual({ id: '1' });
+      expect(arg.data.resolved).toBe(true);
+      // The count restarts with the topic, so a re-opened gap reports what has
+      // happened since it was documented, not a lifetime total.
+      expect(arg.data.occurrences).toBe(0);
+      expect(arg.data.resolvedAt).toBeInstanceOf(Date);
       expect(result).toEqual(mockUpdated);
     });
 
@@ -583,16 +717,19 @@ describe('AnalyticsService', () => {
 
       const result = await service.resolveGap('gap-1', 'tenant-a');
 
+      // Scoped exactly like the read path. Accepting `{ tenantId: null }` let a
+      // tenant admin resolve — and read back — a legacy NULL-tenant gap that
+      // their own list is not allowed to show them.
       expect(prisma.knowledgeGap.findFirst).toHaveBeenCalledWith({
-        where: {
-          id: 'gap-1',
-          OR: [{ tenantId: 'tenant-a' }, { tenantId: null }],
-        },
+        where: { id: 'gap-1', tenantId: 'tenant-a' },
       });
-      expect(prisma.knowledgeGap.update).toHaveBeenCalledWith({
-        where: { id: 'gap-1' },
-        data: { resolved: true },
-      });
+      const upd = callArg<{
+        where: { id: string };
+        data: { resolved: boolean; occurrences: number };
+      }>(prisma.knowledgeGap.update as jest.Mock);
+      expect(upd.where).toEqual({ id: 'gap-1' });
+      expect(upd.data.resolved).toBe(true);
+      expect(upd.data.occurrences).toBe(0);
       expect(result).toEqual(mockUpdated);
     });
 

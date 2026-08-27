@@ -271,6 +271,11 @@ model KnowledgeGap {
   topic       String
   occurrences Int                  @default(1)
   resolved    Boolean              @default(false)
+  /// When an admin last marked this topic documented. `occurrences` restarts at
+  /// zero at that moment, so the count always means "asked about since we wrote
+  /// the docs" rather than a lifetime total, and the evidence list is filtered
+  /// to the same window. NULL for a gap that has never been resolved.
+  resolvedAt  DateTime?            @map("resolved_at")
   tenantId    String?              @map("tenant_id") @db.Uuid
   tenant      Tenant?              @relation(fields: [tenantId], references: [id])
   createdAt   DateTime             @default(now())
