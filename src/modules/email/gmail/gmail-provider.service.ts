@@ -80,6 +80,69 @@ export class GmailProvider implements EmailProvider {
    * deliberately NOT handled here — the classifier processor resets its
    * baseline on that signal.
    */
+  /**
+   * Message ids already sitting under the salesbox label, newest first.
+   *
+   * `fetchNewMessageIds` walks the history feed, which only ever moves FORWARD
+   * from the watch baseline — so mail that arrived before a company connected
+   * its mailbox is invisible to it, permanently. That is the backlog this
+   * exists to reach.
+   *
+   * Ids only. The caller fetches each message itself, so a large mailbox does
+   * not pull thousands of bodies into memory to decide it is over the cap.
+   * Both bounds are enforced: `newerThanDays` server-side via Gmail's query
+   * language, `maxMessages` by stopping the page walk.
+   */
+  async listLabelledMessageIds(
+    tenantId: string,
+    emailAccount: string,
+    opts: { maxMessages: number; newerThanDays: number },
+  ): Promise<string[]> {
+    const gmailClient = await this.clientFactory.createClient(
+      tenantId,
+      emailAccount,
+    );
+
+    const salesboxLabelIds = await this.getSalesboxLabelIds(
+      tenantId,
+      emailAccount,
+    );
+    // Same guard as fetchNewMessageIds: with no label id, Gmail would happily
+    // list the ENTIRE mailbox rather than the salesbox subset.
+    if (salesboxLabelIds.length === 0) {
+      return [];
+    }
+
+    const ids: string[] = [];
+    const seen = new Set<string>();
+
+    // Several label ids can match ("salesbox", "salesbox/inbound"), and a
+    // message can carry more than one, hence the dedupe.
+    for (const labelId of salesboxLabelIds) {
+      let pageToken: string | undefined = undefined;
+      do {
+        const res: { data: gmail_v1.Schema$ListMessagesResponse } =
+          await gmailClient.users.messages.list({
+            userId: 'me',
+            labelIds: [labelId],
+            q: `newer_than:${opts.newerThanDays}d`,
+            maxResults: Math.min(500, opts.maxMessages - ids.length),
+            pageToken,
+          });
+
+        for (const m of res.data.messages ?? []) {
+          if (!m.id || seen.has(m.id)) continue;
+          seen.add(m.id);
+          ids.push(m.id);
+          if (ids.length >= opts.maxMessages) return ids;
+        }
+        pageToken = res.data.nextPageToken ?? undefined;
+      } while (pageToken);
+    }
+
+    return ids;
+  }
+
   async fetchNewMessageIds(
     tenantId: string,
     emailAccount: string,

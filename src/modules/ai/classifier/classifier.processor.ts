@@ -6,11 +6,18 @@ import { PrismaService } from '../../../database/prisma.service';
 import { ParsedMessage } from '../../email/email.types';
 import { GmailProvider } from '../../email/gmail/gmail-provider.service';
 import {
+  BACKFILL_INBOX_JOB,
+  BACKFILL_MAX_MESSAGES,
+  BACKFILL_NEWER_THAN_DAYS,
   CLASSIFIER_PROMPT_VERSION,
   CLASSIFIER_QUEUE,
 } from './classifier.constants';
 import { ClassifierService } from './classifier.service';
-import { ClassifyEmailJobData, ClassifyJobResult } from './classifier.types';
+import {
+  BackfillInboxJobData,
+  ClassifyEmailJobData,
+  ClassifyJobResult,
+} from './classifier.types';
 import { prepareEmailText } from './email-text.util';
 import { ClientsService } from '../../clients/clients.service';
 
@@ -71,8 +78,104 @@ export class ClassifierProcessor extends WorkerHost {
     super();
   }
 
-  async process(job: Job<ClassifyEmailJobData>): Promise<ClassifyJobResult> {
-    const { emailAddress, historyId } = job.data;
+  /**
+   * Two job shapes share this worker, and deliberately so: both end in
+   * `classifyOne`, whose stored-row check is what makes the live path and the
+   * backlog pass safe to overlap. Splitting them into separate processors would
+   * have put that guarantee behind a second queue's concurrency settings.
+   */
+  async process(
+    job: Job<ClassifyEmailJobData | BackfillInboxJobData>,
+  ): Promise<ClassifyJobResult> {
+    if (job.name === BACKFILL_INBOX_JOB) {
+      return this.processBacklog(job.data);
+    }
+    return this.processLiveNotification(job.data as ClassifyEmailJobData);
+  }
+
+  /**
+   * One pass over the mail a mailbox already held when it was connected.
+   *
+   * Unlike the live path this touches NO history baseline. The two run against
+   * the same mailbox at the same time — a backfill triggered on connect races
+   * the first real notification — and moving `lastHistoryId` from here could
+   * drag the live cursor backwards or forwards over messages the other side
+   * had not finished with.
+   */
+  private async processBacklog(
+    data: BackfillInboxJobData,
+  ): Promise<ClassifyJobResult> {
+    const { emailAddress } = data;
+
+    const account = await this.prisma.connectedAccount.findFirst({
+      where: { email: emailAddress, status: 'connected' },
+    });
+    if (!account) return { skipped: 'no_account', classified: 0 };
+    if (!account.tenantId) return { skipped: 'no_tenant', classified: 0 };
+
+    const messageIds = await this.gmailProvider.listLabelledMessageIds(
+      account.tenantId,
+      account.email,
+      {
+        maxMessages: BACKFILL_MAX_MESSAGES,
+        newerThanDays: BACKFILL_NEWER_THAN_DAYS,
+      },
+    );
+
+    this.logger.log(
+      `Backfill for ${emailAddress}: ${messageIds.length} message(s) in the last ` +
+        `${BACKFILL_NEWER_THAN_DAYS} days (cap ${BACKFILL_MAX_MESSAGES})`,
+    );
+
+    let classified = 0;
+    let failed = 0;
+    for (const messageId of messageIds) {
+      try {
+        if (
+          await this.classifyOne(messageId, {
+            id: account.id,
+            email: account.email,
+            tenantId: account.tenantId,
+          })
+        ) {
+          classified++;
+        }
+      } catch (error) {
+        // A backfill is unattended and best-effort: one unreadable message must
+        // not cost the customer the other 499. Rate limiting is the exception —
+        // continuing past a 429 just burns the rest of the quota against a wall.
+        if (isRateLimitError(error)) {
+          this.logger.warn(
+            `Backfill for ${emailAddress} stopped early on a rate limit after ` +
+              `${classified} message(s); the remainder stays unclassified until ` +
+              `it is re-run.`,
+          );
+          break;
+        }
+        failed++;
+        this.logger.error(
+          `Backfill failed on ${messageId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    if (failed > 0) {
+      this.logger.warn(
+        `Backfill for ${emailAddress}: ${failed}/${messageIds.length} message(s) failed`,
+      );
+    }
+    this.logger.log(
+      `Backfill for ${emailAddress} complete: ${classified} newly classified`,
+    );
+    return { classified };
+  }
+
+  private async processLiveNotification(
+    data: ClassifyEmailJobData,
+  ): Promise<ClassifyJobResult> {
+    const { emailAddress, historyId } = data;
 
     const account = await this.prisma.connectedAccount.findFirst({
       where: { email: emailAddress, status: 'connected' },

@@ -46,6 +46,15 @@ export interface ClassifyEmailJobData {
   historyId: string;
 }
 
+/**
+ * Backlog pass over a newly connected mailbox. Carries no historyId on
+ * purpose: this path does not read or advance the watch baseline, it lists the
+ * label directly. See BACKFILL_INBOX_JOB.
+ */
+export interface BackfillInboxJobData {
+  emailAddress: string;
+}
+
 export interface ClassifyJobResult {
   classified: number;
   skipped?: 'no_account' | 'no_tenant' | 'no_baseline' | 'history_expired';
