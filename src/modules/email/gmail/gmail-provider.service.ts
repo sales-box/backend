@@ -74,13 +74,6 @@ export class GmailProvider implements EmailProvider {
   }
 
   /**
-   * Diffs Gmail history since the stored baseline and returns the ids of
-   * messages newly added/labeled with the 'salesbox' label.
-   * 404 from Gmail (= baseline older than the ~1 week history window) is
-   * deliberately NOT handled here — the classifier processor resets its
-   * baseline on that signal.
-   */
-  /**
    * Message ids already sitting under the salesbox label, newest first.
    *
    * `fetchNewMessageIds` walks the history feed, which only ever moves FORWARD
@@ -98,6 +91,11 @@ export class GmailProvider implements EmailProvider {
     emailAccount: string,
     opts: { maxMessages: number; newerThanDays: number },
   ): Promise<string[]> {
+    // A cap of zero or less is "list nothing", and it has to be answered here:
+    // it would otherwise reach Gmail as maxResults <= 0 on the first page,
+    // which the API does not treat as "none".
+    if (opts.maxMessages <= 0) return [];
+
     const gmailClient = await this.clientFactory.createClient(
       tenantId,
       emailAccount,
@@ -143,6 +141,13 @@ export class GmailProvider implements EmailProvider {
     return ids;
   }
 
+  /**
+   * Diffs Gmail history since the stored baseline and returns the ids of
+   * messages newly added/labeled with the 'salesbox' label.
+   * 404 from Gmail (= baseline older than the ~1 week history window) is
+   * deliberately NOT handled here — the classifier processor resets its
+   * baseline on that signal.
+   */
   async fetchNewMessageIds(
     tenantId: string,
     emailAccount: string,

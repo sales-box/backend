@@ -29,9 +29,11 @@ describe('GmailProvider', () => {
   let mockThreadsGet: jest.Mock;
   let mockHistoryList: jest.Mock;
   let mockLabelsList: jest.Mock;
+  let mockMessagesList: jest.Mock;
 
   beforeEach(async () => {
     mockMessagesGet = jest.fn().mockResolvedValue({ data: stubRawData });
+    mockMessagesList = jest.fn().mockResolvedValue({ data: { messages: [] } });
     mockThreadsList = jest.fn().mockResolvedValue({ data: { threads: [] } });
     mockThreadsGet = jest.fn().mockResolvedValue({ data: {} });
     mockHistoryList = jest.fn().mockResolvedValue({ data: {} });
@@ -41,7 +43,7 @@ describe('GmailProvider', () => {
 
     mockCreateClient = jest.fn().mockResolvedValue({
       users: {
-        messages: { get: mockMessagesGet },
+        messages: { get: mockMessagesGet, list: mockMessagesList },
         threads: { list: mockThreadsList, get: mockThreadsGet },
         history: { list: mockHistoryList },
         labels: { list: mockLabelsList },
@@ -284,6 +286,79 @@ describe('GmailProvider', () => {
       await expect(
         provider.fetchNewMessageIds('tenant-a', 'se@acme.com', '1'),
       ).rejects.toMatchObject({ code: 404 });
+    });
+  });
+
+  describe('listLabelledMessageIds', () => {
+    const bounds = { maxMessages: 500, newerThanDays: 90 };
+
+    it('lists the label under both bounds and returns the ids', async () => {
+      mockMessagesList.mockResolvedValue({
+        data: { messages: [{ id: 'm1' }, { id: 'm2' }] },
+      });
+
+      const ids = await provider.listLabelledMessageIds(
+        'tenant-a',
+        'se@acme.com',
+        bounds,
+      );
+
+      expect(ids).toEqual(['m1', 'm2']);
+      expect(mockMessagesList).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'me',
+          labelIds: ['Label_salesbox_123'],
+          q: 'newer_than:90d',
+          maxResults: 500,
+        }),
+      );
+    });
+
+    it('stops at the cap rather than walking the whole mailbox', async () => {
+      mockMessagesList.mockResolvedValue({
+        data: {
+          messages: [{ id: 'm1' }, { id: 'm2' }, { id: 'm3' }],
+          nextPageToken: 'p2',
+        },
+      });
+
+      const ids = await provider.listLabelledMessageIds(
+        'tenant-a',
+        'se@acme.com',
+        { maxMessages: 2, newerThanDays: 90 },
+      );
+
+      expect(ids).toEqual(['m1', 'm2']);
+      expect(mockMessagesList).toHaveBeenCalledTimes(1);
+    });
+
+    // A misconfigured cap used to reach Gmail as maxResults <= 0, which the API
+    // does not read as "none".
+    it('lists nothing, and calls nothing, for a non-positive cap', async () => {
+      const ids = await provider.listLabelledMessageIds(
+        'tenant-a',
+        'se@acme.com',
+        { maxMessages: 0, newerThanDays: 90 },
+      );
+
+      expect(ids).toEqual([]);
+      expect(mockCreateClient).not.toHaveBeenCalled();
+      expect(mockMessagesList).not.toHaveBeenCalled();
+    });
+
+    // Same guard as fetchNewMessageIds: with no label id Gmail would list the
+    // ENTIRE mailbox instead of the salesbox subset.
+    it('returns nothing when the account has no salesbox label', async () => {
+      mockLabelsList.mockResolvedValue({ data: { labels: [] } });
+
+      const ids = await provider.listLabelledMessageIds(
+        'tenant-a',
+        'se@acme.com',
+        bounds,
+      );
+
+      expect(ids).toEqual([]);
+      expect(mockMessagesList).not.toHaveBeenCalled();
     });
   });
 
