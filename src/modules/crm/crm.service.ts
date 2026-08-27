@@ -36,11 +36,19 @@ export class CrmService {
       return { connected: false, status: 'disconnected' };
     }
 
+    // The panel used to read this off the connect mutation's response, so a
+    // reload showed 0 synced contacts for a workspace with hundreds. Count the
+    // rows that actually carry a CRM id instead.
+    const importedCount = await this.prisma.client.count({
+      where: { tenantId, crmId: { not: null } },
+    });
+
     return {
       connected: true,
       provider: connection.provider,
       status: connection.status,
       lastSync: connection.updatedAt,
+      importedCount,
     };
   }
 
