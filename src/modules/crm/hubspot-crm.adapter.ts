@@ -2,9 +2,19 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Client } from '@hubspot/api-client';
 import { FilterOperatorEnum } from '@hubspot/api-client/lib/codegen/crm/contacts';
-import type { ICrmAdapter } from './crm.interface';
+import type { CrmContact, ICrmAdapter } from './crm.interface';
+import { statusFromLifecycleStage } from './hubspot-lifecycle';
 
-const CONTACT_PROPERTIES = ['email', 'firstname', 'lastname', 'company'];
+// lifecyclestage is what separates a cold lead from a paying customer. Without
+// it every imported contact arrived identical, so the local status column was
+// dead on arrival.
+const CONTACT_PROPERTIES = [
+  'email',
+  'firstname',
+  'lastname',
+  'company',
+  'lifecyclestage',
+];
 
 @Injectable()
 export class HubSpotAdapter implements ICrmAdapter {
@@ -57,45 +67,34 @@ export class HubSpotAdapter implements ICrmAdapter {
     }
   }
 
-  async fetchContacts(): Promise<
-    Array<{
-      email: string;
-      name?: string;
-      company?: string;
-      crmId: string;
-    }>
-  > {
+  async fetchContacts(): Promise<CrmContact[]> {
     try {
       const response = await this.client.crm.contacts.basicApi.getPage(
         100,
         undefined,
         CONTACT_PROPERTIES,
       );
-      return response.results
-        .map((contact) => {
-          const email = contact.properties.email;
-          const firstname = contact.properties.firstname || '';
-          const lastname = contact.properties.lastname || '';
-          const company = contact.properties.company || undefined;
-          const name =
-            [firstname, lastname].filter(Boolean).join(' ') || undefined;
-          return {
+      // flatMap rather than map+filter: dropping the contact inside the
+      // callback narrows email to string, so the row is built once and needs
+      // no cast to satisfy CrmContact.
+      return response.results.flatMap<CrmContact>((contact) => {
+        const email = contact.properties.email;
+        if (!email) return [];
+        const firstname = contact.properties.firstname || '';
+        const lastname = contact.properties.lastname || '';
+        const company = contact.properties.company || undefined;
+        const name =
+          [firstname, lastname].filter(Boolean).join(' ') || undefined;
+        return [
+          {
             email,
             name,
             company,
             crmId: contact.id,
-          };
-        })
-        .filter(
-          (
-            c,
-          ): c is {
-            email: string;
-            name: string | undefined;
-            company: string | undefined;
-            crmId: string;
-          } => !!c.email,
-        );
+            status: statusFromLifecycleStage(contact.properties.lifecyclestage),
+          },
+        ];
+      });
     } catch (error) {
       this.logger.error(
         `fetchContacts failed: ${

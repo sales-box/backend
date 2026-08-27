@@ -10,6 +10,7 @@ import {
   ClientRecord,
   ClientContext,
 } from './clients.interface';
+import { type ClientStatus, DEFAULT_CLIENT_STATUS } from './client-status';
 import { CreateInteractionDto } from './clients.dto';
 import { Prisma } from '@prisma/client';
 import { PaginationOptions } from '@/database/pagination/pagination.types';
@@ -89,12 +90,19 @@ export class ClientsService {
     };
   }
 
+  /**
+   * `status` is the CRM's view of where this client sits. It is optional and
+   * only ever written when supplied: a CRM that has no opinion, or one using a
+   * lifecycle stage we do not recognise, must not knock a client back down to
+   * `new_inquiry` on every reconnect.
+   */
   async getOrCreateClient(
     tenantId: string,
     email: string,
     name?: string,
     company?: string,
     crmId?: string,
+    status?: ClientStatus,
   ): Promise<ClientRecord> {
     const normalizedEmail = this.normalizeEmail(email);
     const resolved = await this.resolveClientIdentity(
@@ -106,6 +114,9 @@ export class ClientsService {
       const updateData: Prisma.ClientUpdateInput = {};
       if (crmId) {
         updateData.crmId = crmId;
+      }
+      if (status) {
+        updateData.status = status;
       }
       return this.prisma.client.update({
         where: { id: resolved.existingClientId },
@@ -132,12 +143,15 @@ export class ClientsService {
         name: name || null,
         company: inferredCompany || null,
         crmId: crmId || null,
-        status: 'new_inquiry',
+        // A client with no interactions or history yet is new. Only a real
+        // signal — a CRM lifecycle stage here — moves them off that.
+        status: status ?? DEFAULT_CLIENT_STATUS,
       },
       update: {
         ...(name ? { name } : {}),
         ...(company ? { company } : {}),
         ...(crmId ? { crmId } : {}),
+        ...(status ? { status } : {}),
       },
     });
   }
@@ -198,7 +212,7 @@ export class ClientsService {
                 email: normalizedEmail,
                 name: input.senderName?.trim() || null,
                 company,
-                status: 'new_inquiry',
+                status: DEFAULT_CLIENT_STATUS,
               },
               update: input.senderName?.trim()
                 ? { name: input.senderName.trim() }

@@ -14,7 +14,7 @@ import { verifyZohoMcpServer } from './zoho-mcp.verify';
 import { ConnectCrmDto } from './dto/connect-crm.dto';
 import { ConnectZohoMcpDto } from './dto/connect-zoho-mcp.dto';
 import { CrmProvider } from './crm.constants';
-import type { ICrmAdapter } from './crm.interface';
+import type { CrmContact, ICrmAdapter } from './crm.interface';
 
 @Injectable()
 export class CrmService {
@@ -147,12 +147,7 @@ export class CrmService {
 
     await this.assertNoOtherAgentCrm(tenantId, body.provider);
 
-    let contacts: Array<{
-      email: string;
-      name?: string;
-      company?: string;
-      crmId: string;
-    }>;
+    let contacts: CrmContact[];
     try {
       contacts = await adapter.fetchContacts();
     } catch (error) {
@@ -199,6 +194,7 @@ export class CrmService {
           contact.name,
           contact.company,
           contact.crmId,
+          contact.status,
         );
         importedCount++;
       } catch (err) {

@@ -18,4 +18,9 @@ describe('MockCrmAdapter', () => {
     expect(res).toHaveLength(2);
     expect(res[0].email).toBe('crm-user-1@acme.com');
   });
+
+  it('carries a status so the import path is exercised without a live CRM', async () => {
+    const res = await adapter.fetchContacts();
+    expect(res.map((c) => c.status)).toEqual(['customer', 'qualified']);
+  });
 });
