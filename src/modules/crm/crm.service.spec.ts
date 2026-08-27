@@ -36,6 +36,7 @@ describe('CrmService', () => {
     crmConnection: {
       findUnique: jest.Mock;
       upsert: jest.Mock;
+      update: jest.Mock;
       delete: jest.Mock;
     };
     client: {
@@ -61,6 +62,7 @@ describe('CrmService', () => {
       crmConnection: {
         findUnique: jest.fn(),
         upsert: jest.fn(),
+        update: jest.fn().mockResolvedValue({ updatedAt: new Date() }),
         delete: jest.fn(),
       },
       client: {
@@ -407,6 +409,51 @@ describe('CrmService', () => {
       expect(prisma.crmAgentConnection.deleteMany).toHaveBeenCalledWith({
         where: { tenantId, provider: CrmProvider.Zoho },
       });
+    });
+  });
+
+  // Importing only at connect time left disconnect-and-reconnect as the only
+  // way to pick up a CRM change, and that unlinks every client on the way.
+  describe('syncCrm', () => {
+    it('re-imports with the stored credential, for either provider', async () => {
+      prisma.crmConnection.findUnique.mockResolvedValue({
+        provider: CrmProvider.Zoho,
+        status: 'connected',
+        apiKey: 'encrypted',
+      });
+      prisma.crmConnection.update.mockResolvedValue({ updatedAt: new Date() });
+
+      const res = await service.syncCrm(tenantId);
+
+      expect(crypto.decrypt).toHaveBeenCalledWith('encrypted');
+      expect(clientsService.getOrCreateClient).toHaveBeenCalledTimes(2);
+      expect(res).toMatchObject({
+        importedCount: 2,
+        provider: CrmProvider.Zoho,
+      });
+    });
+
+    it('refuses when no CRM is connected', async () => {
+      prisma.crmConnection.findUnique.mockResolvedValue(null);
+
+      await expect(service.syncCrm(tenantId)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(clientsService.getOrCreateClient).not.toHaveBeenCalled();
+    });
+
+    // A sync that cannot read must not report success, and must not touch the
+    // clients it failed to read.
+    it('refuses when the CRM cannot be read', async () => {
+      prisma.crmConnection.findUnique.mockResolvedValue({
+        provider: CrmProvider.Zoho,
+        status: 'connected',
+        apiKey: 'encrypted',
+      });
+      mockZohoFetch.mockRejectedValue(new Error('expired URL'));
+
+      await expect(service.syncCrm(tenantId)).rejects.toThrow(/Sync failed/);
+      expect(prisma.crmConnection.update).not.toHaveBeenCalled();
     });
   });
 });

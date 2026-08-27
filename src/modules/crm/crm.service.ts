@@ -186,17 +186,94 @@ export class CrmService {
     }
   }
 
-  async connectCrm(tenantId: string, body: ConnectCrmDto) {
-    let adapter: ICrmAdapter;
-    if (body.provider === CrmProvider.HubSpot) {
-      adapter = new HubSpotAdapter(body.apiKey);
-    } else if (body.provider === CrmProvider.Mock) {
-      adapter = new MockCrmAdapter();
-    } else {
+  /**
+   * The one place that knows how to turn a stored credential into a reader.
+   *
+   * Shared by connect and sync so the two cannot drift: a provider added to
+   * one and not the other is exactly how Zoho ended up connectable but never
+   * importable.
+   */
+  private adapterFor(provider: CrmProvider, credential: string): ICrmAdapter {
+    switch (provider) {
+      case CrmProvider.HubSpot:
+        return new HubSpotAdapter(credential);
+      case CrmProvider.Zoho:
+        return new ZohoMcpAdapter(credential);
+      case CrmProvider.Mock:
+        return new MockCrmAdapter();
+      default: {
+        // Exhaustive over the enum, so `provider` narrows to never — but the
+        // column is a plain string and can still hold something else.
+        const unknown: string = provider;
+        throw new BadRequestException(`Unsupported CRM provider: ${unknown}`);
+      }
+    }
+  }
+
+  /**
+   * Re-read the address book with the credential already on file.
+   *
+   * Importing only at connect time meant the only way to pick up a CRM change
+   * was to disconnect and reconnect, which unlinks every client on the way
+   * through. This re-runs the same import against the same credential.
+   */
+  async syncCrm(tenantId: string) {
+    const connection = await this.prisma.crmConnection.findUnique({
+      where: { tenantId },
+    });
+
+    if (!connection || connection.status !== 'connected') {
       throw new BadRequestException(
-        `Unsupported CRM provider: ${body.provider as string}`,
+        'No CRM is connected for this workspace. Connect one before syncing.',
       );
     }
+
+    // The column is a plain string; the default branch below catches anything
+    // that is not a provider we can build.
+    const adapter = this.adapterFor(
+      connection.provider as CrmProvider,
+      this.crypto.decrypt(connection.apiKey),
+    );
+
+    let contacts: CrmContact[];
+    try {
+      contacts = await adapter.fetchContacts();
+    } catch (error) {
+      throw new BadRequestException(
+        `Sync failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    const importedCount = await this.importContacts(tenantId, contacts);
+
+    // Move lastSync even when nothing changed — the tenant asked for a sync and
+    // needs to see that it ran.
+    const updated = await this.prisma.crmConnection.update({
+      where: { tenantId },
+      data: { status: 'connected' },
+    });
+
+    this.logger.log(
+      `Synced ${connection.provider} for tenant ${tenantId} — ${importedCount} contact(s)`,
+    );
+
+    return {
+      message: `Synced ${importedCount} contacts from ${connection.provider}.`,
+      importedCount,
+      provider: connection.provider,
+      lastSync: updated.updatedAt,
+    };
+  }
+
+  async connectCrm(tenantId: string, body: ConnectCrmDto) {
+    if (body.provider === CrmProvider.Zoho) {
+      // Zoho's credential is an MCP URL, not an API key, so it has its own
+      // route. Say so rather than reporting an unsupported provider.
+      throw new BadRequestException(
+        'Connect Zoho through /crm/connect-mcp with its MCP server URL.',
+      );
+    }
+    const adapter = this.adapterFor(body.provider, body.apiKey);
 
     await this.assertNoOtherAgentCrm(tenantId, body.provider);
 
