@@ -401,15 +401,26 @@ describe('PlatformTenantsService', () => {
         });
 
       const models = [
-        'interaction', 'escalationItem', 'generalAnalysis', 'knowledgeGap',
-        'document', 'crmConnection', 'crmAgentConnection', 'driveConnection',
-        'allowedDomain', 'allowlistEntry', 'processedGmailMessage', 'client',
+        'interaction',
+        'escalationItem',
+        'generalAnalysis',
+        'knowledgeGap',
+        'document',
+        'crmConnection',
+        'crmAgentConnection',
+        'driveConnection',
+        'allowedDomain',
+        'allowlistEntry',
+        'processedGmailMessage',
+        'client',
       ];
 
       const prisma: Record<string, unknown> = {
         $transaction: jest.fn().mockResolvedValue([]),
         tenant: {
-          findUnique: jest.fn().mockResolvedValue(status === null ? null : { status }),
+          findUnique: jest
+            .fn()
+            .mockResolvedValue(status === null ? null : { status }),
           delete: del('tenant'),
         },
         connectedAccount: {
@@ -433,18 +444,24 @@ describe('PlatformTenantsService', () => {
 
     it('refuses to delete an active tenant', async () => {
       const { service, transaction } = makeService('active');
-      await expect(service.purge('t1')).rejects.toBeInstanceOf(ConflictException);
+      await expect(service.purge('t1')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
       expect(transaction).not.toHaveBeenCalled();
     });
 
     it('refuses to delete a suspended tenant', async () => {
       const { service } = makeService('suspended');
-      await expect(service.purge('t1')).rejects.toBeInstanceOf(ConflictException);
+      await expect(service.purge('t1')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
     });
 
     it('throws NotFound for an unknown tenant', async () => {
       const { service } = makeService(null);
-      await expect(service.purge('nope')).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.purge('nope')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
 
     it('deletes an offboarded tenant last, after its data', async () => {
