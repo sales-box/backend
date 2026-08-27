@@ -25,7 +25,11 @@ describe('CrmService', () => {
       upsert: jest.Mock;
       delete: jest.Mock;
     };
-    client: { deleteMany: jest.Mock; updateMany: jest.Mock };
+    client: {
+      deleteMany: jest.Mock;
+      updateMany: jest.Mock;
+      count: jest.Mock;
+    };
     crmAgentConnection: {
       findUnique: jest.Mock;
       upsert: jest.Mock;
@@ -49,6 +53,7 @@ describe('CrmService', () => {
       client: {
         deleteMany: jest.fn(),
         updateMany: jest.fn(),
+        count: jest.fn().mockResolvedValue(0),
       },
       crmAgentConnection: {
         findUnique: jest.fn().mockResolvedValue(null),
@@ -100,6 +105,25 @@ describe('CrmService', () => {
         provider: CrmProvider.HubSpot,
         status: 'connected',
         lastSync: mockConn.updatedAt,
+        importedCount: 0,
+      });
+    });
+
+    // The panel used to read this off the connect mutation, so a reload showed
+    // 0 synced contacts for a workspace that had imported hundreds.
+    it('counts the clients that carry a CRM id', async () => {
+      prisma.crmConnection.findUnique.mockResolvedValue({
+        provider: CrmProvider.HubSpot,
+        status: 'connected',
+        updatedAt: new Date(),
+      });
+      prisma.client.count.mockResolvedValue(12);
+
+      const status = await service.getCrmStatus(tenantId);
+
+      expect(status).toMatchObject({ importedCount: 12 });
+      expect(prisma.client.count).toHaveBeenCalledWith({
+        where: { tenantId, crmId: { not: null } },
       });
     });
   });

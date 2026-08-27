@@ -89,6 +89,7 @@ describe('HubSpotAdapter', () => {
               firstname: 'John',
               lastname: 'Doe',
               company: 'Acme',
+              lifecyclestage: 'customer',
             },
           },
           {
@@ -98,6 +99,7 @@ describe('HubSpotAdapter', () => {
               firstname: 'Jane',
               lastname: '',
               company: 'Acme Corp',
+              lifecyclestage: 'salesqualifiedlead',
             },
           },
           {
@@ -117,14 +119,44 @@ describe('HubSpotAdapter', () => {
           name: 'John Doe',
           company: 'Acme',
           crmId: 'c-1',
+          status: 'customer',
         },
         {
           email: 'jane@acme.com',
           name: 'Jane',
           company: 'Acme Corp',
           crmId: 'c-2',
+          status: 'qualified',
         },
       ]);
+    });
+
+    it('asks HubSpot for lifecyclestage', async () => {
+      mockGetPage.mockResolvedValue({ results: [] });
+
+      await adapter.fetchContacts();
+
+      expect(mockGetPage).toHaveBeenCalledWith(
+        100,
+        undefined,
+        expect.arrayContaining(['lifecyclestage']),
+      );
+    });
+
+    it('leaves status undefined when the stage is missing or unknown', async () => {
+      mockGetPage.mockResolvedValue({
+        results: [
+          { id: 'c-4', properties: { email: 'no-stage@acme.com' } },
+          {
+            id: 'c-5',
+            properties: { email: 'custom@acme.com', lifecyclestage: '9912' },
+          },
+        ],
+      });
+
+      const res = await adapter.fetchContacts();
+
+      expect(res.map((c) => c.status)).toEqual([undefined, undefined]);
     });
   });
 });

@@ -225,6 +225,89 @@ describe('ClientsService', () => {
         update: { name },
       });
     });
+
+    it('creates with the status the CRM supplied, not the default', async () => {
+      mockClientFindFirst
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null);
+      mockClientUpsert.mockResolvedValue({ id: 'new-client-2' });
+
+      await service.getOrCreateClient(
+        tenantId,
+        email,
+        name,
+        'Acme',
+        'crm-9',
+        'customer',
+      );
+
+      expect(mockClientUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({ status: 'customer' }),
+          update: expect.objectContaining({ status: 'customer' }),
+        }),
+      );
+    });
+
+    it('starts a client with no CRM opinion as a new inquiry', async () => {
+      mockClientFindFirst
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null);
+      mockClientUpsert.mockResolvedValue({ id: 'new-client-4' });
+
+      await service.getOrCreateClient(tenantId, email, name, 'Acme', 'crm-9');
+
+      expect(mockClientUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({ status: 'new_inquiry' }),
+        }),
+      );
+    });
+
+    it('upgrades an already-known client when the CRM moved them on', async () => {
+      mockClientFindFirst.mockResolvedValueOnce({
+        id: 'client-1',
+        tenantId,
+        email,
+      });
+      mockClientUpdate.mockResolvedValueOnce({ id: 'client-1' });
+
+      await service.getOrCreateClient(
+        tenantId,
+        email,
+        undefined,
+        undefined,
+        'crm-9',
+        'opportunity',
+      );
+
+      expect(mockClientUpdate).toHaveBeenCalledWith({
+        where: { id: 'client-1' },
+        data: { crmId: 'crm-9', status: 'opportunity' },
+      });
+    });
+
+    it('leaves an existing status alone when the CRM has no opinion', async () => {
+      mockClientFindFirst.mockResolvedValueOnce({
+        id: 'client-1',
+        tenantId,
+        email,
+      });
+      mockClientUpdate.mockResolvedValueOnce({ id: 'client-1' });
+
+      await service.getOrCreateClient(
+        tenantId,
+        email,
+        undefined,
+        undefined,
+        'crm-9',
+      );
+
+      expect(mockClientUpdate).toHaveBeenCalledWith({
+        where: { id: 'client-1' },
+        data: { crmId: 'crm-9' },
+      });
+    });
   });
 
   describe('captureInboundEmail', () => {
