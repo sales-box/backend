@@ -32,6 +32,19 @@ export class CrmController {
     return this.crmService.getCrmStatus(req.user.tenantId!);
   }
 
+  /**
+   * Re-read the CRM with the credential already on file.
+   *
+   * Importing only at connect time left disconnect-and-reconnect as the only
+   * way to pick up a CRM change — and that unlinks every client on the way
+   * through.
+   */
+  @Post(':id/crm/sync')
+  @ApiOkResponse({ description: 'Re-import contacts from the connected CRM' })
+  async syncCrm(@Req() req: AuthenticatedRequest) {
+    return this.crmService.syncCrm(req.user.tenantId!);
+  }
+
   @Get(':id/crm/mcp-status')
   @ApiOkResponse({
     description: 'Get Zoho MCP connection status for the tenant',

@@ -18,16 +18,32 @@ export function buildTools(mcp: McpTools): {
         'No field names, API names, or record IDs.',
     );
 
+  /**
+   * A bare empty array does not read as an answer.
+   *
+   * The HubSpot tools carry a `{ found, ... }` envelope because a raw empty
+   * result made the model re-issue the same search until the graph hit its
+   * recursion limit — 18 identical searches, dead after 76 seconds, and the
+   * panel showed "No suggested actions" as though that were a verdict. Zoho
+   * returned the raw MCP payload and was never given the fix.
+   */
+  const searchModule = async (module: string, email: string) => {
+    const records: unknown = await mcp.searchRecords.invoke({
+      path_variables: { module },
+      query_params: { email },
+    });
+    const found = Array.isArray(records) ? records.length : records ? 1 : 0;
+    return { found, records };
+  };
+
+  const SEARCH_DESCRIPTION =
+    'found: 0 is a conclusive answer — the record does not exist. Do not repeat the search; create the record instead.';
+
   const searchLeads = tool(
-    async ({ email }): Promise<unknown> =>
-      mcp.searchRecords.invoke({
-        path_variables: { module: 'Leads' },
-        query_params: { email },
-      }),
+    async ({ email }): Promise<unknown> => searchModule('Leads', email),
     {
       name: 'searchLeads',
-      description:
-        'Search Zoho CRM Leads by sender email. Returns matching records or an empty array if not found.',
+      description: `Search Zoho CRM Leads by sender email. ${SEARCH_DESCRIPTION}`,
       schema: z.object({
         email: z.string().describe("The sender's email address to search for"),
       }),
@@ -35,15 +51,10 @@ export function buildTools(mcp: McpTools): {
   );
 
   const searchContacts = tool(
-    async ({ email }): Promise<unknown> =>
-      mcp.searchRecords.invoke({
-        path_variables: { module: 'Contacts' },
-        query_params: { email },
-      }),
+    async ({ email }): Promise<unknown> => searchModule('Contacts', email),
     {
       name: 'searchContacts',
-      description:
-        'Search Zoho CRM Contacts by sender email. Returns matching records or an empty array if not found.',
+      description: `Search Zoho CRM Contacts by sender email. ${SEARCH_DESCRIPTION}`,
       schema: z.object({
         email: z.string().describe("The sender's email address to search for"),
       }),
