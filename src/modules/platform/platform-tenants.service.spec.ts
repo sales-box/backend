@@ -4,7 +4,12 @@ import { ConflictException, NotFoundException } from '@nestjs/common';
 import { PlatformTenantsService } from './platform-tenants.service';
 import type { PrismaService } from '../../database/prisma.service';
 import type { AllowlistService } from '../allowlist/allowlist.service';
-import type { CryptoService } from '../auth/crypto.service';
+import type { GoogleGrantRevoker } from './google-grant-revoker';
+
+/** A revoker that records nothing — grant revocation is its own unit's job. */
+const stubRevoker = {
+  revokeAll: jest.fn().mockResolvedValue(undefined),
+} as unknown as GoogleGrantRevoker;
 
 /** An AllowlistService stub exposing the one method the service uses. */
 function stubAllowlist(
@@ -30,7 +35,11 @@ describe('PlatformTenantsService', () => {
         allowlistEntry: { groupBy },
       } as unknown as PrismaService;
       return {
-        service: new PlatformTenantsService(prisma, stubAllowlist().allowlist),
+        service: new PlatformTenantsService(
+          prisma,
+          stubAllowlist().allowlist,
+          stubRevoker,
+        ),
         groupBy,
       };
     }
@@ -78,21 +87,50 @@ describe('PlatformTenantsService', () => {
       tierRows: Array<{ tier: number; _count: { _all: number } }>,
       total = 0,
       newThisWeek = 0,
+      extra: {
+        billingRows?: Array<{
+          subscriptionStatus: string;
+          _count: { _all: number };
+        }>;
+        usage?: { seats: number; documents: number; emailsAnalysed: number };
+        signupDays?: Array<{ day: string; count: number }>;
+        emailDays?: Array<{ day: string; count: number }>;
+      } = {},
     ) {
-      const groupBy = jest
-        .fn()
-        .mockImplementation((args: { by: string[] }) =>
-          Promise.resolve(args.by[0] === 'status' ? statusRows : tierRows),
-        );
+      const groupBy = jest.fn().mockImplementation((args: { by: string[] }) => {
+        if (args.by[0] === 'status') return Promise.resolve(statusRows);
+        if (args.by[0] === 'tier') return Promise.resolve(tierRows);
+        return Promise.resolve(extra.billingRows ?? []);
+      });
+      const usage = extra.usage ?? {
+        seats: 0,
+        documents: 0,
+        emailsAnalysed: 0,
+      };
       const count = jest
         .fn()
         .mockResolvedValueOnce(total)
         .mockResolvedValueOnce(newThisWeek);
+      // The trend's two raw rollups resolve in the order they are awaited.
+      const queryRaw = jest
+        .fn()
+        .mockResolvedValueOnce(extra.signupDays ?? [])
+        .mockResolvedValueOnce(extra.emailDays ?? []);
       const prisma = {
         tenant: { groupBy, count },
+        allowlistEntry: { count: jest.fn().mockResolvedValue(usage.seats) },
+        document: { count: jest.fn().mockResolvedValue(usage.documents) },
+        generalAnalysis: {
+          count: jest.fn().mockResolvedValue(usage.emailsAnalysed),
+        },
+        $queryRaw: queryRaw,
       } as unknown as PrismaService;
       return {
-        service: new PlatformTenantsService(prisma, stubAllowlist().allowlist),
+        service: new PlatformTenantsService(
+          prisma,
+          stubAllowlist().allowlist,
+          stubRevoker,
+        ),
         count,
       };
     }
@@ -136,6 +174,94 @@ describe('PlatformTenantsService', () => {
       expect(res.byTier).toEqual({ 1: 30, 2: 0, 3: 2 });
     });
 
+    it('fills every billing bucket with zero when nobody has subscribed', async () => {
+      const { service } = makeService([], []);
+
+      const res = await service.stats();
+
+      expect(res.billing).toEqual({
+        none: 0,
+        active: 0,
+        past_due: 0,
+        canceled: 0,
+      });
+    });
+
+    it('reports paying tenants separately from their tier', async () => {
+      const { service } = makeService(
+        [],
+        [{ tier: 3, _count: { _all: 9 } }],
+        9,
+        0,
+        {
+          billingRows: [
+            { subscriptionStatus: 'active', _count: { _all: 2 } },
+            { subscriptionStatus: 'none', _count: { _all: 7 } },
+          ],
+        },
+      );
+
+      const res = await service.stats();
+
+      // Nine tenants sit on tier 3; only two of them actually pay. Reading
+      // tier as revenue would overstate it by 7.
+      expect(res.byTier[3]).toBe(9);
+      expect(res.billing.active).toBe(2);
+      expect(res.billing.none).toBe(7);
+    });
+
+    it('reports platform-wide usage volume', async () => {
+      const { service } = makeService([], [], 0, 0, {
+        usage: { seats: 12, documents: 34, emailsAnalysed: 560 },
+      });
+
+      const res = await service.stats();
+
+      expect(res.usage).toEqual({
+        seats: 12,
+        documents: 34,
+        emailsAnalysed: 560,
+      });
+    });
+
+    it('returns thirty consecutive days even when most of them are empty', async () => {
+      const { service } = makeService([], []);
+
+      const res = await service.stats();
+
+      expect(res.trend).toHaveLength(30);
+      expect(res.trend.every((p) => p.signups === 0)).toBe(true);
+      // Consecutive, ascending, no gaps.
+      for (let i = 1; i < res.trend.length; i += 1) {
+        const gap =
+          Date.parse(res.trend[i].date) - Date.parse(res.trend[i - 1].date);
+        expect(gap).toBe(86_400_000);
+      }
+      // The window ends today, so a chart drawn from it is current.
+      expect(res.trend[29].date).toBe(new Date().toISOString().slice(0, 10));
+    });
+
+    it("places each day's counts on that day and leaves the rest at zero", async () => {
+      const today = new Date().toISOString().slice(0, 10);
+      const { service } = makeService([], [], 0, 0, {
+        signupDays: [{ day: today, count: 3 }],
+        emailDays: [{ day: today, count: 17 }],
+      });
+
+      const res = await service.stats();
+
+      expect(res.trend[29]).toEqual({
+        date: today,
+        signups: 3,
+        emailsAnalysed: 17,
+      });
+      expect(res.trend[28]).toEqual({
+        date: res.trend[28].date,
+        signups: 0,
+        emailsAnalysed: 0,
+      });
+    });
+
     it('counts new tenants from the last seven days', async () => {
       const { service, count } = makeService([], [], 0, 0);
 
@@ -166,7 +292,11 @@ describe('PlatformTenantsService', () => {
         },
       } as unknown as PrismaService;
       return {
-        service: new PlatformTenantsService(prisma, stubAllowlist().allowlist),
+        service: new PlatformTenantsService(
+          prisma,
+          stubAllowlist().allowlist,
+          stubRevoker,
+        ),
       };
     }
 
@@ -216,7 +346,7 @@ describe('PlatformTenantsService', () => {
       } as unknown as PrismaService;
       const { allowlist, offboardTenant } = stubAllowlist();
       return {
-        service: new PlatformTenantsService(prisma, allowlist),
+        service: new PlatformTenantsService(prisma, allowlist, stubRevoker),
         update,
         offboardTenant,
       };
@@ -284,7 +414,11 @@ describe('PlatformTenantsService', () => {
         tenant: { findUnique, update },
       } as unknown as PrismaService;
       return {
-        service: new PlatformTenantsService(prisma, stubAllowlist().allowlist),
+        service: new PlatformTenantsService(
+          prisma,
+          stubAllowlist().allowlist,
+          stubRevoker,
+        ),
         update,
       };
     }
@@ -337,7 +471,11 @@ describe('PlatformTenantsService', () => {
         allowlistEntry: { groupBy },
       } as unknown as PrismaService;
       return {
-        service: new PlatformTenantsService(prisma, stubAllowlist().allowlist),
+        service: new PlatformTenantsService(
+          prisma,
+          stubAllowlist().allowlist,
+          stubRevoker,
+        ),
         count,
         findMany,
       };
@@ -401,15 +539,26 @@ describe('PlatformTenantsService', () => {
         });
 
       const models = [
-        'interaction', 'escalationItem', 'generalAnalysis', 'knowledgeGap',
-        'document', 'crmConnection', 'crmAgentConnection', 'driveConnection',
-        'allowedDomain', 'allowlistEntry', 'processedGmailMessage', 'client',
+        'interaction',
+        'escalationItem',
+        'generalAnalysis',
+        'knowledgeGap',
+        'document',
+        'crmConnection',
+        'crmAgentConnection',
+        'driveConnection',
+        'allowedDomain',
+        'allowlistEntry',
+        'processedGmailMessage',
+        'client',
       ];
 
       const prisma: Record<string, unknown> = {
         $transaction: jest.fn().mockResolvedValue([]),
         tenant: {
-          findUnique: jest.fn().mockResolvedValue(status === null ? null : { status }),
+          findUnique: jest
+            .fn()
+            .mockResolvedValue(status === null ? null : { status }),
           delete: del('tenant'),
         },
         connectedAccount: {
@@ -419,12 +568,11 @@ describe('PlatformTenantsService', () => {
       };
       for (const m of models) prisma[m] = { deleteMany: del(m) };
 
-      const crypto = { decrypt: (v: string) => v } as unknown as CryptoService;
       return {
         service: new PlatformTenantsService(
           prisma as unknown as PrismaService,
           stubAllowlist().allowlist,
-          crypto,
+          stubRevoker,
         ),
         calls,
         transaction: prisma.$transaction as jest.Mock,
@@ -433,18 +581,24 @@ describe('PlatformTenantsService', () => {
 
     it('refuses to delete an active tenant', async () => {
       const { service, transaction } = makeService('active');
-      await expect(service.purge('t1')).rejects.toBeInstanceOf(ConflictException);
+      await expect(service.purge('t1')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
       expect(transaction).not.toHaveBeenCalled();
     });
 
     it('refuses to delete a suspended tenant', async () => {
       const { service } = makeService('suspended');
-      await expect(service.purge('t1')).rejects.toBeInstanceOf(ConflictException);
+      await expect(service.purge('t1')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
     });
 
     it('throws NotFound for an unknown tenant', async () => {
       const { service } = makeService(null);
-      await expect(service.purge('nope')).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.purge('nope')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
 
     it('deletes an offboarded tenant last, after its data', async () => {

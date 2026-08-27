@@ -4,10 +4,10 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, TenantStatus } from '@prisma/client';
+import { Prisma, SubscriptionStatus, TenantStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { AllowlistService } from '../allowlist/allowlist.service';
-import { CryptoService } from '../auth/crypto.service';
+import { GoogleGrantRevoker } from './google-grant-revoker';
 import type { TenantStatusAction } from './dto/change-status.dto';
 
 const ACTIVE_SEAT_STATUSES = ['granted', 'verified'];
@@ -15,14 +15,39 @@ const ACTIVE_SEAT_STATUSES = ['granted', 'verified'];
 /** A closed workspace's plan is frozen — there is nothing left to bill for. */
 const TERMINAL_STATUSES: TenantStatus[] = ['offboarded', 'abandoned'];
 
+/** One UTC day of the platform trend chart. */
+export interface TrendPoint {
+  /** YYYY-MM-DD, UTC. */
+  date: string;
+  signups: number;
+  emailsAnalysed: number;
+}
+
 export interface PlatformStats {
   total: number;
   byStatus: Record<TenantStatus, number>;
   byTier: Record<number, number>;
   newThisWeek: number;
+  /** Platform-wide volume. Tenant counts alone say nothing about usage. */
+  usage: { seats: number; documents: number; emailsAnalysed: number };
+  /**
+   * Who is actually paying. Tier is NOT this — an unpaid tenant carries a tier
+   * number too, so a console that shows only tier reports revenue that does
+   * not exist.
+   */
+  billing: Record<SubscriptionStatus, number>;
+  trend: TrendPoint[];
 }
 
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const SEVEN_DAYS_MS = 7 * DAY_MS;
+const TREND_DAYS = 30;
+
+/** Raw shape of the per-day rollup queries. */
+interface DailyCount {
+  day: string;
+  count: number;
+}
 
 @Injectable()
 export class PlatformTenantsService {
@@ -31,7 +56,7 @@ export class PlatformTenantsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly allowlist: AllowlistService,
-    private readonly crypto: CryptoService,
+    private readonly revoker: GoogleGrantRevoker,
   ) {}
 
   /** Every tenant on the platform (operator view), paginated. Metadata only. */
@@ -84,7 +109,8 @@ export class PlatformTenantsService {
   }
 
   /**
-   * Platform-wide tenant counts for the operator overview.
+   * The operator overview: tenant mix, real usage volume, revenue mix, and a
+   * 30-day trend.
    *
    * Every bucket key is present with a zero default: a status with no tenants
    * simply does not come back from `groupBy`, and the console renders a "0"
@@ -92,11 +118,31 @@ export class PlatformTenantsService {
    */
   async stats(): Promise<PlatformStats> {
     const since = new Date(Date.now() - SEVEN_DAYS_MS);
-    const [statusRows, tierRows, total, newThisWeek] = await Promise.all([
+    const [
+      statusRows,
+      tierRows,
+      billingRows,
+      total,
+      newThisWeek,
+      seats,
+      documents,
+      emailsAnalysed,
+      trend,
+    ] = await Promise.all([
       this.prisma.tenant.groupBy({ by: ['status'], _count: { _all: true } }),
       this.prisma.tenant.groupBy({ by: ['tier'], _count: { _all: true } }),
+      this.prisma.tenant.groupBy({
+        by: ['subscriptionStatus'],
+        _count: { _all: true },
+      }),
       this.prisma.tenant.count(),
       this.prisma.tenant.count({ where: { createdAt: { gte: since } } }),
+      this.prisma.allowlistEntry.count({
+        where: { status: { in: ACTIVE_SEAT_STATUSES } },
+      }),
+      this.prisma.document.count(),
+      this.prisma.generalAnalysis.count(),
+      this.trend(),
     ]);
 
     const byStatus: Record<TenantStatus, number> = {
@@ -115,7 +161,77 @@ export class PlatformTenantsService {
       byTier[row.tier] = row._count._all;
     }
 
-    return { total, byStatus, byTier, newThisWeek };
+    const billing: Record<SubscriptionStatus, number> = {
+      none: 0,
+      active: 0,
+      past_due: 0,
+      canceled: 0,
+    };
+    for (const row of billingRows) {
+      billing[row.subscriptionStatus] = row._count._all;
+    }
+
+    return {
+      total,
+      byStatus,
+      byTier,
+      newThisWeek,
+      usage: { seats, documents, emailsAnalysed },
+      billing,
+      trend,
+    };
+  }
+
+  /**
+   * Signups and analysed emails per UTC day for the last 30 days, including the
+   * days on which nothing happened — a chart that silently skips empty days
+   * draws a flat busy line over a quiet month.
+   */
+  private async trend(): Promise<TrendPoint[]> {
+    const first = new Date(
+      Date.UTC(
+        new Date().getUTCFullYear(),
+        new Date().getUTCMonth(),
+        new Date().getUTCDate(),
+      ) -
+        (TREND_DAYS - 1) * DAY_MS,
+    );
+    const sinceIso = first.toISOString();
+
+    // The two `created_at` columns have DIFFERENT types, so they need different
+    // SQL to land on the same UTC day. `tenants.created_at` is a naive
+    // `timestamp` that Prisma already writes in UTC — truncating it directly is
+    // correct, and an `AT TIME ZONE` would shift it. `general_analysis.
+    // created_at` is `timestamptz`, so it must be converted to UTC first or
+    // `date_trunc` would use the database server's timezone.
+    const [signupRows, emailRows] = await Promise.all([
+      this.prisma.$queryRaw<DailyCount[]>`
+        SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS day,
+               COUNT(*)::int AS count
+        FROM tenants
+        WHERE created_at >= ${sinceIso}::timestamp
+        GROUP BY 1`,
+      this.prisma.$queryRaw<DailyCount[]>`
+        SELECT to_char(date_trunc('day', created_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
+               COUNT(*)::int AS count
+        FROM general_analysis
+        WHERE created_at >= ${sinceIso}::timestamptz
+        GROUP BY 1`,
+    ]);
+
+    const signups = new Map(signupRows.map((r) => [r.day, r.count]));
+    const emails = new Map(emailRows.map((r) => [r.day, r.count]));
+
+    return Array.from({ length: TREND_DAYS }, (_, i) => {
+      const date = new Date(first.getTime() + i * DAY_MS)
+        .toISOString()
+        .slice(0, 10);
+      return {
+        date,
+        signups: signups.get(date) ?? 0,
+        emailsAnalysed: emails.get(date) ?? 0,
+      };
+    });
   }
 
   /** One tenant's operational detail. Still metadata only — no business data. */
@@ -241,7 +357,7 @@ export class PlatformTenantsService {
     });
     const emails = accounts.map((a) => a.email);
 
-    await this.revokeGoogleGrants(accounts, id);
+    await this.revoker.revokeAll(accounts, `tenant ${id}`);
 
     const where = { tenantId: id };
     await this.prisma.$transaction([
@@ -269,43 +385,6 @@ export class PlatformTenantsService {
     this.logger.warn(
       `Tenant ${id} permanently deleted (${emails.length} mailbox(es))`,
     );
-  }
-
-  /**
-   * Best-effort revocation of each mailbox's Google grant.
-   *
-   * Deleting our copy of a refresh token does not invalidate it — the grant
-   * stays live in the customer's Google account, and once the row is gone we no
-   * longer know which grant to revoke. Failures are logged and do not abort the
-   * purge: a tenant that cannot be deleted because Google is briefly
-   * unreachable would be worse than a grant that needs manual cleanup.
-   */
-  private async revokeGoogleGrants(
-    accounts: Array<{ email: string; refreshToken: string | null }>,
-    tenantId: string,
-  ): Promise<void> {
-    for (const account of accounts) {
-      if (!account.refreshToken) continue;
-      try {
-        const token = this.crypto.decrypt(account.refreshToken);
-        const res = await fetch('https://oauth2.googleapis.com/revoke', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({ token }).toString(),
-        });
-        if (!res.ok) {
-          this.logger.error(
-            `Google revoke returned ${res.status} for a mailbox of tenant ${tenantId}; the grant may still be live`,
-          );
-        }
-      } catch (error) {
-        this.logger.error(
-          `Google revoke failed for a mailbox of tenant ${tenantId}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-    }
   }
 
   private assertTransition(
