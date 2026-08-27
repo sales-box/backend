@@ -452,18 +452,46 @@ export class AnalyticsService {
     }
   }
 
+  /**
+   * @param includeResolved - the dashboard shows an "N of M resolved" progress
+   *   bar, which it derives from this list. While resolved rows were filtered
+   *   out unconditionally the numerator was always zero, so the bar sat at 0%
+   *   for ever and the whole resolved-row rendering branch was unreachable.
+   *   Callers that only want outstanding work leave this false.
+   */
   async getKnowledgeGapAlerts(
     threshold: number = 3,
     tenantId?: string,
+    includeResolved = false,
   ): Promise<KnowledgeGapAlert[]> {
     try {
       const gaps = await this.prisma.knowledgeGap.findMany({
         where: {
-          resolved: false,
-          occurrences: { gte: threshold },
+          // The threshold is about OUTSTANDING volume, so it only applies to
+          // unresolved rows. Resolving resets occurrences to zero, so applying
+          // `gte: threshold` to resolved rows too would filter every one of them
+          // straight back out — and the progress bar this flag exists to feed
+          // would still have read "0 of N".
+          ...(includeResolved
+            ? {
+                OR: [
+                  { resolved: false, occurrences: { gte: threshold } },
+                  { resolved: true },
+                ],
+              }
+            : { resolved: false, occurrences: { gte: threshold } }),
           ...(tenantId ? { tenantId } : {}),
         },
-        orderBy: { occurrences: 'desc' },
+        // Outstanding work first, then busiest, then a stable tiebreaker. The
+        // dashboard asks for threshold=1, so most rows tie on occurrences; with
+        // no tiebreaker the list reshuffled between refetches and an admin
+        // mid-click could resolve a different topic than the one they aimed at.
+        orderBy: [
+          { resolved: 'asc' },
+          { occurrences: 'desc' },
+          { updatedAt: 'desc' },
+          { id: 'asc' },
+        ],
         include: {
           reports: {
             orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -492,14 +520,26 @@ export class AnalyticsService {
 
       return gaps.map(({ reports, ...gap }) => ({
         ...gap,
-        evidence: (reports ?? []).map((report) => ({
-          reportedAt: report.createdAt,
-          subject: report.interaction.subject,
-          summary: report.interaction.aiSummary,
-          classification: report.interaction.classification,
-          emailDate: report.interaction.date,
-          sender: report.interaction.client,
-        })),
+        // `occurrences` IS the evidence count for the current episode: it resets
+        // to zero on resolve and reportKnowledgeGap increments it exactly once
+        // per newly-linked interaction. The UI can therefore say "showing 5 of
+        // 14" honestly instead of printing a badge that the 5 cards contradict.
+        evidenceTotal: gap.occurrences,
+        // Only evidence from the current episode. A gap resolved last month
+        // starts a fresh window, so a zeroed count is never shown beside
+        // examples collected before it was documented.
+        evidence: (reports ?? [])
+          .filter(
+            (report) => !gap.resolvedAt || report.createdAt > gap.resolvedAt,
+          )
+          .map((report) => ({
+            reportedAt: report.createdAt,
+            subject: report.interaction.subject,
+            summary: report.interaction.aiSummary,
+            classification: report.interaction.classification,
+            emailDate: report.interaction.date,
+            sender: report.interaction.client,
+          })),
       }));
     } catch (error) {
       this.logger.error('Failed to fetch knowledge gap alerts', error);
@@ -511,10 +551,11 @@ export class AnalyticsService {
     try {
       if (tenantId) {
         const existing = await this.prisma.knowledgeGap.findFirst({
-          where: {
-            id,
-            OR: [{ tenantId }, { tenantId: null }],
-          },
+          // Scoped exactly like getKnowledgeGapAlerts reads. It used to also
+          // accept `{ tenantId: null }`, so a tenant admin who learned a
+          // legacy NULL-tenant gap's id could resolve it and read back its
+          // topic and count — a row their own list is not allowed to show them.
+          where: { id, tenantId },
         });
         if (!existing) {
           throw new NotFoundException(`Knowledge gap with ID ${id} not found`);
@@ -522,7 +563,11 @@ export class AnalyticsService {
       }
       return await this.prisma.knowledgeGap.update({
         where: { id },
-        data: { resolved: true },
+        // The count restarts with the topic. Leaving it meant a documented and
+        // resolved gap re-opened at its lifetime total — 12 old hits plus one
+        // new email came back as 13 and painted red, so the admin re-wrote
+        // documentation for a topic that had been asked about once since.
+        data: { resolved: true, occurrences: 0, resolvedAt: new Date() },
       });
     } catch (error) {
       if (error instanceof NotFoundException) {

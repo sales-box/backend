@@ -15,14 +15,31 @@ type TopicRule = {
 const TOPIC_RULES: TopicRule[] = [
   {
     key: 'pricing',
+    // Every pattern here has to be unambiguously about money.
+    //
+    // This rule is FIRST, so whatever it matches outranks security, legal,
+    // integrations, onboarding, product, support and demo. Two of the patterns
+    // used to be ordinary English verbs — /\bcosts?\b/ matched "costs the
+    // client time" and /\b(?:plan|...)s?\b/ matched "plans to" — so a SOC 2
+    // question was filed under Pricing, the security topic never got its own
+    // row, and the dashboard told the admin to go write pricing docs.
+    //
+    // "cost" and "plan" only count when something nearby makes them financial.
     patterns: [
       /\bpric(?:e|es|ing)\b/i,
-      /\bcosts?\b/i,
+      /\bhow much\b/i,
+      /\bcost of\b/i,
+      /\bcosts?\s+(?:\$|\d|per\b)/i,
+      /\b(?:total|annual|monthly|licen[cs]e|seat|subscription)\s+costs?\b/i,
       /\bquotes?\b/i,
       /\bbudget\b/i,
       /\bdiscounts?\b/i,
-      /\bsubscriptions?\b/i,
-      /\b(?:plan|tier|license|licence|seat)s?\b/i,
+      /\bsubscription\s+(?:cost|fee|price|plan)/i,
+      /\b(?:pricing|price|paid|billing)\s+(?:plan|tier)s?\b/i,
+      /\b(?:plan|tier)s?\s+(?:cost|price|include)/i,
+      /\bper[-\s](?:seat|user|month|year)\b/i,
+      /\blicen[cs](?:e|ing)\s+(?:cost|fee|price)\b/i,
+      /\bupgrade\s+(?:my|our|the)?\s*(?:plan|tier|subscription)\b/i,
     ],
   },
   {
@@ -49,7 +66,20 @@ const TOPIC_RULES: TopicRule[] = [
   },
   {
     key: 'contract_and_legal',
-    patterns: [/\b(?:contract|terms|sla|dpa|legal|cancellation|renewal)\b/i],
+    // Insurance, liability and bonding sit here rather than in their own bucket:
+    // a client asking for a certificate of insurance is asking what the contract
+    // obliges us to, and SG-SRV-2026 answers all three in its "Scope and role"
+    // section. Added after a live test where a real client asked exactly this —
+    // it only landed here because the summary happened to say "before signing a
+    // contract", and the same question phrased without that word fell through
+    // to "other". Ordered after security_and_compliance, so an SOC 2 question
+    // that merely mentions an insurer stays a security gap.
+    patterns: [
+      /\b(?:contract|terms|sla|dpa|legal|cancellation|renewal)\b/i,
+      /\b(?:insurance|insurer|insured|liability|liable|indemnity|indemnify)\b/i,
+      /\bbond(?:ed|ing)\b/i,
+      /\bcertificate of insurance\b/i,
+    ],
   },
   {
     key: 'product_capabilities',
@@ -80,19 +110,31 @@ const CLASSIFICATION_FALLBACKS: Record<string, string> = {
   'follow-up': 'follow_up_context',
 };
 
-export function determineKnowledgeGapTopic(
-  input: KnowledgeGapTopicInput,
-): string {
-  const searchable = [input.subject, input.aiSummary]
-    .filter(Boolean)
-    .join('\n');
-
+function firstMatchingRule(text: string): string | null {
+  if (!text.trim()) return null;
   for (const rule of TOPIC_RULES) {
-    if (rule.patterns.some((pattern) => pattern.test(searchable))) {
+    if (rule.patterns.some((pattern) => pattern.test(text))) {
       return rule.key;
     }
   }
+  return null;
+}
 
-  const classification = input.classification?.trim().toLowerCase() ?? '';
-  return CLASSIFICATION_FALLBACKS[classification] ?? 'other';
+export function determineKnowledgeGapTopic(
+  input: KnowledgeGapTopicInput,
+): string {
+  // The summary is what THIS email is about; the subject is whatever the thread
+  // was named when it started. Weighting them equally meant a long "Re: Pricing
+  // proposal - Acme" thread filed every later question under pricing, however
+  // far the conversation had moved — and resolving that one row dismissed all
+  // of them. Ask the summary first, and fall back to the subject only when the
+  // summary carries no signal.
+  return (
+    firstMatchingRule(input.aiSummary ?? '') ??
+    firstMatchingRule(input.subject ?? '') ??
+    CLASSIFICATION_FALLBACKS[
+      input.classification?.trim().toLowerCase() ?? ''
+    ] ??
+    'other'
+  );
 }

@@ -56,8 +56,16 @@ export type KnowledgeGapAlert = {
   topic: string;
   occurrences: number;
   resolved: boolean;
+  /** When an admin last marked this documented; null if never. */
+  resolvedAt: Date | null;
   tenantId: string | null;
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * How many interactions raised this topic in the CURRENT episode. `evidence`
+   * is capped at 5, so the UI needs this to say "showing 5 of 14" rather than
+   * printing a badge the visible cards appear to contradict.
+   */
+  evidenceTotal: number;
   evidence: KnowledgeGapEvidence[];
 };

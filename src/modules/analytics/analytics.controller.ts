@@ -7,6 +7,7 @@ import {
   Body,
   Query,
   DefaultValuePipe,
+  ParseBoolPipe,
   ParseIntPipe,
   ParseUUIDPipe,
   Req,
@@ -101,6 +102,15 @@ export class AnalyticsController {
     type: Number,
     description: 'Minimum occurrence count to alert on (default 3)',
   })
+  @ApiQuery({
+    name: 'includeResolved',
+    required: false,
+    type: Boolean,
+    description:
+      'Include gaps already marked resolved (default false). The dashboard ' +
+      'passes true so it can show "N of M resolved"; that counter read zero ' +
+      'for ever while resolved rows were filtered out unconditionally.',
+  })
   @ApiResponse({
     status: 200,
     description: 'Knowledge gaps at or above the threshold.',
@@ -109,10 +119,13 @@ export class AnalyticsController {
     @Query('threshold', new DefaultValuePipe(3), ParseIntPipe)
     threshold: number,
     @Req() req: AuthenticatedRequest,
+    @Query('includeResolved', new DefaultValuePipe(false), ParseBoolPipe)
+    includeResolved: boolean,
   ): Promise<KnowledgeGapAlert[]> {
     return this.analyticsService.getKnowledgeGapAlerts(
       threshold,
       req.user.tenantId ?? undefined,
+      includeResolved,
     );
   }
 
