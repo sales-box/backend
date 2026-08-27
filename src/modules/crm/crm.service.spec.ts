@@ -5,9 +5,22 @@ import { CryptoService } from '../auth/crypto.service';
 import { ClientsService } from '../clients/clients.service';
 import { CrmProvider } from './crm.constants';
 import { BadRequestException } from '@nestjs/common';
+import type { CrmContact } from './crm.interface';
 
 // connectCrm builds a real HubSpotAdapter and calls fetchContacts to verify the
 // credential. Without this the suite would reach hubapi.com on every run.
+// Same reason for Zoho: connectZohoMcp now builds a real adapter and reads the
+// address book, so without this the suite would reach the MCP server.
+const mockZohoFetch: jest.Mock<Promise<CrmContact[]>, []> = jest.fn();
+jest.mock('./zoho-crm.adapter', () => ({
+  ZohoMcpAdapter: jest.fn().mockImplementation(() => ({
+    fetchContacts: (): Promise<CrmContact[]> => mockZohoFetch(),
+  })),
+}));
+jest.mock('./zoho-mcp.verify', () => ({
+  verifyZohoMcpServer: jest.fn().mockResolvedValue(undefined),
+}));
+
 jest.mock('./hubspot-crm.adapter', () => ({
   HubSpotAdapter: jest.fn().mockImplementation(() => ({
     fetchContacts: jest
@@ -70,6 +83,15 @@ describe('CrmService', () => {
     clientsService = {
       getOrCreateClient: jest.fn(),
     };
+    mockZohoFetch.mockResolvedValue([
+      {
+        email: 'zoho-lead@acme.co',
+        name: 'Zoho Lead',
+        crmId: 'z-1',
+        status: 'qualified',
+      },
+      { email: 'zoho-contact@acme.co', name: 'Zoho Contact', crmId: 'z-2' },
+    ]);
 
     service = new CrmService(
       prisma as unknown as PrismaService,
@@ -306,6 +328,85 @@ describe('CrmService', () => {
         where: { tenantId },
       });
       expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // Zoho used to stop at verification: it wrote one row and imported nothing,
+  // so a connected Zoho workspace showed an empty Clients page for ever and
+  // the generic status/disconnect routes could not see it at all.
+  describe('Zoho reaches parity with HubSpot', () => {
+    const mcpServerUrl = 'https://zoho.test/mcp/x';
+
+    it('imports contacts on connect, like HubSpot does', async () => {
+      const res = await service.connectZohoMcp(tenantId, { mcpServerUrl });
+
+      expect(clientsService.getOrCreateClient).toHaveBeenCalledTimes(2);
+      expect(clientsService.getOrCreateClient).toHaveBeenCalledWith(
+        tenantId,
+        'zoho-lead@acme.co',
+        'Zoho Lead',
+        undefined,
+        'z-1',
+        'qualified',
+      );
+      expect(res).toMatchObject({ connected: true, importedCount: 2 });
+    });
+
+    // Every feature keyed off crm_connections — getCrmStatus, importedCount,
+    // disconnectCrm — was blind to Zoho without this row.
+    it('writes the credential row as well as the agent row', async () => {
+      await service.connectZohoMcp(tenantId, { mcpServerUrl });
+
+      expect(prisma.crmConnection.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            provider: CrmProvider.Zoho,
+            status: 'connected',
+          }),
+        }),
+      );
+      expect(prisma.crmAgentConnection.upsert).toHaveBeenCalled();
+      // The MCP URL is the credential here, so it is encrypted like a key.
+      expect(crypto.encrypt).toHaveBeenCalledWith(mcpServerUrl);
+    });
+
+    it('refuses the connection when the address book cannot be read', async () => {
+      mockZohoFetch.mockRejectedValue(new Error('no read permission'));
+
+      await expect(
+        service.connectZohoMcp(tenantId, { mcpServerUrl }),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.crmConnection.upsert).not.toHaveBeenCalled();
+      expect(prisma.crmAgentConnection.upsert).not.toHaveBeenCalled();
+    });
+
+    it('unlinks clients on disconnect, keeping their history', async () => {
+      prisma.crmConnection.findUnique.mockResolvedValue({
+        provider: CrmProvider.Zoho,
+        status: 'connected',
+      });
+      prisma.client.updateMany.mockResolvedValue({ count: 2 });
+
+      const res = await service.disconnectZohoMcp(tenantId);
+
+      expect(prisma.client.updateMany).toHaveBeenCalledWith({
+        where: { tenantId, crmId: { not: null } },
+        data: { crmId: null },
+      });
+      expect(prisma.crmConnection.delete).toHaveBeenCalled();
+      expect(res).toMatchObject({ connected: false, removedClients: 2 });
+    });
+
+    // The unscoped delete that used to be here took HubSpot's agent row down
+    // while the dashboard still read "Connected".
+    it('scopes the agent-row cleanup to Zoho', async () => {
+      prisma.crmConnection.findUnique.mockResolvedValue(null);
+
+      await service.disconnectZohoMcp(tenantId);
+
+      expect(prisma.crmAgentConnection.deleteMany).toHaveBeenCalledWith({
+        where: { tenantId, provider: CrmProvider.Zoho },
+      });
     });
   });
 });

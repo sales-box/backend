@@ -11,6 +11,7 @@ import { CryptoService } from '../auth/crypto.service';
 import { HubSpotAdapter } from './hubspot-crm.adapter';
 import { MockCrmAdapter } from './mock-crm.adapter';
 import { verifyZohoMcpServer } from './zoho-mcp.verify';
+import { ZohoMcpAdapter } from './zoho-crm.adapter';
 import { ConnectCrmDto } from './dto/connect-crm.dto';
 import { ConnectZohoMcpDto } from './dto/connect-zoho-mcp.dto';
 import { CrmProvider } from './crm.constants';
@@ -85,6 +86,19 @@ export class CrmService {
       );
     }
 
+    // Read the address book before claiming a connection, exactly as the
+    // HubSpot path does. Zoho used to stop at verification, so a connected
+    // Zoho workspace showed an empty Clients page for ever.
+    const adapter = new ZohoMcpAdapter(body.mcpServerUrl);
+    let contacts: CrmContact[];
+    try {
+      contacts = await adapter.fetchContacts();
+    } catch (error) {
+      throw new BadRequestException(
+        `Failed to verify CRM connection: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
     const connection = await this.prisma.crmAgentConnection.upsert({
       where: { tenantId },
       create: {
@@ -98,21 +112,52 @@ export class CrmService {
       },
     });
 
+    // The credential row too. Everything keyed off crm_connections —
+    // getCrmStatus, importedCount, disconnectCrm — was blind to Zoho without
+    // it. The MCP URL is the credential here, so it is encrypted like a key.
+    await this.prisma.crmConnection.upsert({
+      where: { tenantId },
+      create: {
+        tenantId,
+        provider: CrmProvider.Zoho,
+        apiKey: this.crypto.encrypt(body.mcpServerUrl),
+        status: 'connected',
+      },
+      update: {
+        provider: CrmProvider.Zoho,
+        apiKey: this.crypto.encrypt(body.mcpServerUrl),
+        status: 'connected',
+      },
+    });
+
+    const importedCount = await this.importContacts(tenantId, contacts);
+
     return {
-      message: 'Zoho MCP connection established successfully.',
+      message: `Zoho MCP connected successfully — imported ${importedCount} clients.`,
       connected: true,
+      importedCount,
       mcpServerUrl: connection.mcpServerUrl,
     };
   }
 
   async disconnectZohoMcp(tenantId: string) {
+    // The same disconnect HubSpot gets: unlink the clients, keep their
+    // history, drop the credential and the agent row. Zoho now imports
+    // clients, so anything less would leave them orphaned with a stale crmId.
+    const result = await this.disconnectCrm(tenantId);
+
+    // A workspace connected before Zoho wrote crm_connections has only the
+    // agent row, and disconnectCrm returns early on it. Scoped, so a HubSpot
+    // row is never caught by this — the unscoped delete that used to be here
+    // took HubSpot's row down while the dashboard still read "Connected".
     await this.prisma.crmAgentConnection.deleteMany({
-      where: { tenantId },
+      where: { tenantId, provider: CrmProvider.Zoho },
     });
 
     return {
       message: 'Zoho MCP disconnected successfully.',
       connected: false,
+      removedClients: result.removedClients,
     };
   }
 
@@ -193,6 +238,26 @@ export class CrmService {
       });
     }
 
+    const importedCount = await this.importContacts(tenantId, contacts);
+
+    return {
+      message: `CRM connected successfully — imported ${importedCount} clients. Now upload your product catalog.`,
+      importedCount,
+      status: connection.status,
+    };
+  }
+
+  /**
+   * Write a provider's contacts into the local clients table.
+   *
+   * Shared by every provider so an import cannot drift between them: one
+   * contact that fails is logged and skipped rather than failing the connect,
+   * because a partial address book still beats none.
+   */
+  private async importContacts(
+    tenantId: string,
+    contacts: CrmContact[],
+  ): Promise<number> {
     let importedCount = 0;
     for (const contact of contacts) {
       try {
@@ -211,12 +276,7 @@ export class CrmService {
         );
       }
     }
-
-    return {
-      message: `CRM connected successfully — imported ${importedCount} clients. Now upload your product catalog.`,
-      importedCount,
-      status: connection.status,
-    };
+    return importedCount;
   }
 
   async disconnectCrm(tenantId: string) {
