@@ -9,6 +9,8 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '@/modules/auth/jwt-auth.guard';
 import type { AuthenticatedRequest } from '@/modules/auth/jwt-auth.guard';
+import { PrismaService } from '@/database/prisma.service';
+import { InboxBackfillListener } from '@/modules/ai/classifier/inbox-backfill.listener';
 import { BackfillThreadIdService } from './backfill-thread-id.service';
 import type { BackfillResult } from './backfill-thread-id.service';
 
@@ -22,7 +24,66 @@ import type { BackfillResult } from './backfill-thread-id.service';
 @UseGuards(JwtAuthGuard)
 @Controller('ai/admin')
 export class AiAdminController {
-  constructor(private readonly backfillService: BackfillThreadIdService) {}
+  constructor(
+    private readonly backfillService: BackfillThreadIdService,
+    private readonly inboxBackfill: InboxBackfillListener,
+    private readonly prisma: PrismaService,
+  ) {}
+
+  /**
+   * POST /ai/admin/backfill-inbox
+   *
+   * Runs the existing-mail pass over every connected Sales Engineer mailbox in
+   * the caller's tenant, without waiting for a connect event.
+   *
+   * WHY THIS IS NOT OPTIONAL. The automatic trigger is
+   * `gmail.watch.established`, which fires when a mailbox is CONNECTED. Every
+   * company that connected before this feature existed therefore never gets a
+   * backfill at all — the exact customers whose inbox the feature was written
+   * to rescue. Their only recourse would be disconnecting and reconnecting a
+   * working mailbox, which is not something to ask a paying customer to do.
+   *
+   * It is also the recovery path. A backfill that exhausts its retries stays in
+   * the queue as a finished job, and re-running it any other way depends on an
+   * event nobody can fire on demand.
+   *
+   * Returns immediately: the work is queued, not awaited. One pass can be
+   * hundreds of Gmail fetches and LLM calls and must not be held open by an
+   * HTTP request. Watch the `classifier-backfill` queue, or the logs, for
+   * "Backfill for <address> complete".
+   */
+  @Post('backfill-inbox')
+  @HttpCode(202)
+  @ApiOperation({
+    summary:
+      "Queue the existing-mail pass for this tenant's mailboxes (admin only)",
+  })
+  async backfillInbox(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<{ queued: string[] }> {
+    if (!req.user.isAdmin) {
+      throw new ForbiddenException('Admin access required');
+    }
+
+    // Tenant-scoped, never global: an operator triggering maintenance must not
+    // be able to spend another company's LLM budget from their own session.
+    // Admin mailboxes are excluded for the same reason the listener excludes
+    // them — an admin's inbox is not a Sales Engineer's to analyse.
+    const accounts = await this.prisma.connectedAccount.findMany({
+      where: {
+        tenantId: req.user.tenantId,
+        status: 'connected',
+        isAdmin: false,
+      },
+      select: { email: true },
+    });
+
+    for (const account of accounts) {
+      await this.inboxBackfill.enqueue(account.email);
+    }
+
+    return { queued: accounts.map((a) => a.email) };
+  }
 
   /**
    * POST /ai/admin/backfill-thread-ids
