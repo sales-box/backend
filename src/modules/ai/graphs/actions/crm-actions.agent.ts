@@ -9,9 +9,18 @@ import { CHECKPOINTER_TOKEN } from '../checkpointer/checkpointer.constants';
 export interface ActionSuggestion {
   index: number;
   summary: string;
+  /**
+   * Which tool call this suggestion is for, so the approval can be bound to the
+   * action rather than to its position in the list. `index` stays for older
+   * clients; a decision sent without a toolCallId still pairs positionally.
+   */
+  toolCallId?: string;
+  /** The tool name, so a reviewer can tell a note from a deal. */
+  action?: string;
 }
 
 interface ActionRequest {
+  toolCallId?: string;
   name: string;
   args: { summary?: string; [key: string]: unknown };
   description?: string;
@@ -82,7 +91,20 @@ export class CRMActionsAgent {
 
     const executionThreadId = `${tenantId}:${threadId}`;
 
-    this.checkpointer.deleteThread(executionThreadId);
+    // Awaited. Fired-and-forgotten this lost its race against the invoke below
+    // and left two runs' messages merged into one thread — the checkpoint from
+    // the 27 Aug incident holds both. A wipe that fails is not worth failing the
+    // suggest over: the run still produces a fresh proposal, it just carries the
+    // previous conversation.
+    await this.checkpointer
+      .deleteThread(executionThreadId)
+      .catch((err: unknown) =>
+        this.logger.warn(
+          `Could not clear checkpoint ${executionThreadId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        ),
+      );
 
     const config = { configurable: { thread_id: executionThreadId } };
     const result = await agent.invoke({ messages }, config);
@@ -93,7 +115,11 @@ export class CRMActionsAgent {
   public async resumeWithDecision(
     tenantId: string,
     threadId: string,
-    decisions: Array<{ type: 'approve' | 'reject'; message?: string }>,
+    decisions: Array<{
+      type: 'approve' | 'reject';
+      message?: string;
+      toolCallId?: string;
+    }>,
   ): Promise<AgentExecutionResult> {
     const agent = await this.agentFactory.createAgentForTenant(tenantId);
 
@@ -169,6 +195,8 @@ export class CRMActionsAgent {
 
     const suggestions = actionRequests.map((req, index) => ({
       index,
+      toolCallId: req.toolCallId,
+      action: req.name,
       summary: req.args?.summary ?? 'Review this action before approving.',
     }));
 
