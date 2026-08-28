@@ -3,9 +3,11 @@ import { Job } from 'bullmq';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { GmailProvider } from '../../email/gmail/gmail-provider.service';
+import { CLASSIFY_EMAIL_JOB } from './classifier.constants';
 import { ClassifierProcessor } from './classifier.processor';
 import { ClassifierService } from './classifier.service';
 import { ClassifyEmailJobData } from './classifier.types';
+import { MessageClassifier } from './message-classifier.service';
 import { ClientsService } from '../../clients/clients.service';
 
 const ACCOUNT = {
@@ -85,13 +87,50 @@ function makeClients() {
 function makeJob(data: ClassifyEmailJobData): Job<ClassifyEmailJobData> {
   return {
     id: 'job-1',
-    name: 'classify-email',
+    name: CLASSIFY_EMAIL_JOB,
     data,
   } as unknown as Job<ClassifyEmailJobData>;
 }
 
+/** The processor delegates the per-message work; wire the real collaborator. */
+function makeProcessor(
+  prisma: PrismaService,
+  gmail: GmailProvider,
+  classifier: ClassifierService,
+  clients: ClientsService,
+) {
+  return new ClassifierProcessor(
+    prisma,
+    gmail,
+    new MessageClassifier(prisma, gmail, classifier, clients),
+  );
+}
+
 describe('ClassifierProcessor', () => {
   const jobData = { emailAddress: 'se@acme.com', historyId: '150' };
+
+  // The worker used to treat "not the backfill job" as "a live notification"
+  // and read historyId off whatever arrived. A payload that has none would
+  // then re-anchor the baseline from `undefined`.
+  it('rejects a job name it does not know instead of guessing', async () => {
+    const prisma = makePrisma();
+    const gmail = makeGmail(['m1']);
+    const processor = makeProcessor(
+      prisma,
+      gmail,
+      makeClassifier(),
+      makeClients(),
+    );
+    const job = {
+      id: 'job-x',
+      name: 'something-else',
+      data: jobData,
+    } as unknown as Job<ClassifyEmailJobData>;
+
+    await expect(processor.process(job)).rejects.toThrow(/unknown job/i);
+    expect(gmail.fetchNewMessageIds).not.toHaveBeenCalled();
+    expect(prisma.webhookSubscription.update).not.toHaveBeenCalled();
+  });
 
   it('classifies each new message and stores a general analysis row', async () => {
     const prisma = makePrisma();
@@ -102,12 +141,7 @@ describe('ClassifierProcessor', () => {
       expect(clients.captureInboundEmail).toHaveBeenCalledTimes(1);
       return Promise.resolve(CLASSIFICATION);
     });
-    const processor = new ClassifierProcessor(
-      prisma,
-      gmail,
-      classifier,
-      clients,
-    );
+    const processor = makeProcessor(prisma, gmail, classifier, clients);
 
     const result = await processor.process(makeJob(jobData));
 
@@ -160,12 +194,7 @@ describe('ClassifierProcessor', () => {
       classify: jest.fn().mockRejectedValue(new Error('LLM down')),
     } as unknown as ClassifierService;
     const clients = makeClients();
-    const processor = new ClassifierProcessor(
-      prisma,
-      gmail,
-      classifier,
-      clients,
-    );
+    const processor = makeProcessor(prisma, gmail, classifier, clients);
 
     await expect(processor.process(makeJob(jobData))).rejects.toThrow(
       /failed for 1\/1/,
@@ -186,12 +215,7 @@ describe('ClassifierProcessor', () => {
     });
     const classifier = makeClassifier();
     const clients = makeClients();
-    const processor = new ClassifierProcessor(
-      prisma,
-      gmail,
-      classifier,
-      clients,
-    );
+    const processor = makeProcessor(prisma, gmail, classifier, clients);
 
     const result = await processor.process(makeJob(jobData));
 
@@ -209,12 +233,7 @@ describe('ClassifierProcessor', () => {
     });
     const gmail = makeGmail(['m1']);
     const classifier = makeClassifier();
-    const processor = new ClassifierProcessor(
-      prisma,
-      gmail,
-      classifier,
-      makeClients(),
-    );
+    const processor = makeProcessor(prisma, gmail, classifier, makeClients());
 
     const result = await processor.process(makeJob(jobData));
 
@@ -231,12 +250,7 @@ describe('ClassifierProcessor', () => {
       labelIds: ['INBOX'], // missing Label_salesbox_123
     });
     const classifier = makeClassifier();
-    const processor = new ClassifierProcessor(
-      prisma,
-      gmail,
-      classifier,
-      makeClients(),
-    );
+    const processor = makeProcessor(prisma, gmail, classifier, makeClients());
 
     const result = await processor.process(makeJob(jobData));
 
@@ -249,7 +263,7 @@ describe('ClassifierProcessor', () => {
       connectedAccount: { findFirst: jest.fn().mockResolvedValue(null) },
     });
     const gmail = makeGmail();
-    const processor = new ClassifierProcessor(
+    const processor = makeProcessor(
       prisma,
       gmail,
       makeClassifier(),
@@ -273,7 +287,7 @@ describe('ClassifierProcessor', () => {
       },
     });
     const gmail = makeGmail();
-    const processor = new ClassifierProcessor(
+    const processor = makeProcessor(
       prisma,
       gmail,
       makeClassifier(),
@@ -303,7 +317,7 @@ describe('ClassifierProcessor', () => {
         .fn()
         .mockResolvedValue({ threadIds: [], newHistoryId: '150' }),
     } as unknown as GmailProvider;
-    const processor = new ClassifierProcessor(
+    const processor = makeProcessor(
       prisma,
       gmail,
       makeClassifier(),
@@ -328,12 +342,7 @@ describe('ClassifierProcessor', () => {
         .mockResolvedValueOnce(CLASSIFICATION)
         .mockRejectedValueOnce(new Error('LLM down')),
     } as unknown as ClassifierService;
-    const processor = new ClassifierProcessor(
-      prisma,
-      gmail,
-      classifier,
-      makeClients(),
-    );
+    const processor = makeProcessor(prisma, gmail, classifier, makeClients());
 
     await expect(processor.process(makeJob(jobData))).rejects.toThrow(
       /failed for 1\/2/,
@@ -353,12 +362,7 @@ describe('ClassifierProcessor', () => {
           new Error('LLM Generation Error: 429 status code (no body)'),
         ),
     } as unknown as ClassifierService;
-    const processor = new ClassifierProcessor(
-      prisma,
-      gmail,
-      classifier,
-      makeClients(),
-    );
+    const processor = makeProcessor(prisma, gmail, classifier, makeClients());
 
     await expect(processor.process(makeJob(jobData))).rejects.toThrow(
       /rate.?limit/i,
@@ -379,12 +383,7 @@ describe('ClassifierProcessor', () => {
           new Error('LLM Generation Error: 429 status code (no body)'),
         ),
     } as unknown as ClassifierService;
-    const processor = new ClassifierProcessor(
-      prisma,
-      gmail,
-      classifier,
-      makeClients(),
-    );
+    const processor = makeProcessor(prisma, gmail, classifier, makeClients());
 
     await expect(processor.process(makeJob(jobData))).rejects.toThrow(
       /rate.?limit/i,
@@ -416,12 +415,7 @@ describe('ClassifierProcessor', () => {
       getSalesboxLabelIds: jest.fn().mockResolvedValue(['Label_salesbox_123']),
     } as unknown as GmailProvider;
     const classifier = makeClassifier();
-    const processor = new ClassifierProcessor(
-      prisma,
-      gmail,
-      classifier,
-      makeClients(),
-    );
+    const processor = makeProcessor(prisma, gmail, classifier, makeClients());
 
     const result = await processor.process(makeJob(jobData));
 
@@ -455,12 +449,7 @@ describe('ClassifierProcessor', () => {
       getSalesboxLabelIds: jest.fn().mockResolvedValue(['Label_salesbox_123']),
     } as unknown as GmailProvider;
     const classifier = makeClassifier();
-    const processor = new ClassifierProcessor(
-      prisma,
-      gmail,
-      classifier,
-      makeClients(),
-    );
+    const processor = makeProcessor(prisma, gmail, classifier, makeClients());
 
     const result = await processor.process(makeJob(jobData));
 
@@ -489,12 +478,7 @@ describe('ClassifierProcessor', () => {
       getSalesboxLabelIds: jest.fn().mockResolvedValue(['Label_salesbox_123']),
     } as unknown as GmailProvider;
     const classifier = makeClassifier();
-    const processor = new ClassifierProcessor(
-      prisma,
-      gmail,
-      classifier,
-      makeClients(),
-    );
+    const processor = makeProcessor(prisma, gmail, classifier, makeClients());
 
     const result = await processor.process(makeJob(jobData));
 
@@ -523,7 +507,7 @@ describe('ClassifierProcessor', () => {
       getLabelIdByName: jest.fn().mockResolvedValue('Label_salesbox_123'),
       getSalesboxLabelIds: jest.fn().mockResolvedValue(['Label_salesbox_123']),
     } as unknown as GmailProvider;
-    const processor = new ClassifierProcessor(
+    const processor = makeProcessor(
       prisma,
       gmail,
       makeClassifier(),
@@ -548,7 +532,7 @@ describe('ClassifierProcessor', () => {
       },
     });
     const gmail = makeGmail(['m1']);
-    const processor = new ClassifierProcessor(
+    const processor = makeProcessor(
       prisma,
       gmail,
       makeClassifier(),
@@ -572,7 +556,7 @@ describe('ClassifierProcessor', () => {
       },
     });
     const gmail = makeGmail(['m1']);
-    const processor = new ClassifierProcessor(
+    const processor = makeProcessor(
       prisma,
       gmail,
       makeClassifier(),
@@ -605,12 +589,7 @@ describe('ClassifierProcessor', () => {
     } as unknown as GmailProvider;
 
     const classifier = makeClassifier();
-    const processor = new ClassifierProcessor(
-      prisma,
-      gmail,
-      classifier,
-      makeClients(),
-    );
+    const processor = makeProcessor(prisma, gmail, classifier, makeClients());
 
     await processor.process(makeJob(jobData));
 
@@ -642,7 +621,7 @@ describe('ClassifierProcessor', () => {
       const classifier = {
         classify: jest.fn().mockResolvedValue({ ...CLASSIFICATION, ...over }),
       } as unknown as ClassifierService;
-      const processor = new ClassifierProcessor(
+      const processor = makeProcessor(
         prisma,
         makeGmail(),
         classifier,

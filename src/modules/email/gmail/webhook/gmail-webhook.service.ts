@@ -3,7 +3,7 @@ import { GmailClientFactory } from '@/modules/email/gmail/gmail-client.factory';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '@/database/prisma.service';
-import { OnEvent } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 @Injectable()
 export class GmailWebhookService {
   private readonly logger = new Logger(GmailWebhookService.name);
@@ -13,6 +13,7 @@ export class GmailWebhookService {
     private readonly prisma: PrismaService,
     private readonly gmailClientFactory: GmailClientFactory,
     private readonly config: ConfigService,
+    private readonly eventEmitter: EventEmitter2,
   ) {
     this.topicName = this.config.getOrThrow<string>('GOOGLE_PUBSUB_TOPIC_NAME');
   }
@@ -44,14 +45,36 @@ export class GmailWebhookService {
     this.logger.log(
       `Detected new Google account connection for ${payload.email}. Initializing Pub/Sub...`,
     );
-    await this.subscribeToTopic(account.tenantId, payload.id, payload.email);
+    const watching = await this.subscribeToTopic(
+      account.tenantId,
+      payload.id,
+      payload.email,
+    );
+
+    // Anything that wants to read the mailbox from the moment it is connected
+    // — today the classifier's inbox backfill — hangs off THIS event, not off
+    // `google.account.connected`. Two independent listeners on the connect
+    // event have no ordering between them, so the other one could snapshot the
+    // mailbox before the baseline above was stored, and a message arriving in
+    // that window would be in neither the snapshot nor the forward history:
+    // lost, permanently.
+    //
+    // Emitted from here rather than from subscribeToTopic because the nightly
+    // renewal calls that too, and a renewal is not a newly connected mailbox.
+    if (watching) {
+      this.eventEmitter.emit('gmail.watch.established', {
+        id: payload.id,
+        email: payload.email,
+      });
+    }
   }
 
+  /** Returns true once the watch is open AND its baseline is persisted. */
   private async subscribeToTopic(
     tenantId: string,
     id: string,
     emailAccount: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const gmailClient = await this.gmailClientFactory.createClient(
       tenantId,
       emailAccount,
@@ -103,12 +126,14 @@ export class GmailWebhookService {
       this.logger.log(
         `Subscribed to Gmail Pub/Sub topic for account ${emailAccount}. Subscription expires at ${new Date(expirationEpoch).toISOString()}`,
       );
+      return true;
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       this.logger.error(
         `Failed to subscribe to Gmail Pub/Sub topic for account ${emailAccount}: ${errorMessage}`,
       );
+      return false;
     }
   }
 
