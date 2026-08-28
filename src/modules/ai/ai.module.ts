@@ -13,6 +13,7 @@ import { AiAdminController } from './backfill/ai-admin.controller';
 import { CheckpointerModule } from './graphs/checkpointer/checkpointer.module';
 import { CRMActionsAgent } from './graphs/actions/crm-actions.agent';
 import { AgentFactory } from './graphs/actions/agent.factory';
+import { FaqModule } from '@/modules/faq/faq.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { AgentFactory } from './graphs/actions/agent.factory';
     GmailModule,
     AuthModule,
     CheckpointerModule,
+    FaqModule,
   ],
   controllers: [AiController, AiAdminController],
   providers: [

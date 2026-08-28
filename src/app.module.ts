@@ -33,6 +33,7 @@ import { TenantsModule } from './modules/tenants/tenants.module';
 import { PaymentModule } from './modules/payments/payment.module';
 import { LlmModule } from './common/llm/llm.module';
 import { PlatformModule } from './modules/platform/platform.module';
+import { FaqModule } from './modules/faq/faq.module';
 
 const isProd = process.env.NODE_ENV === 'production';
 
@@ -126,6 +127,7 @@ const isProd = process.env.NODE_ENV === 'production';
     PaymentModule,
     LlmModule,
     PlatformModule,
+    FaqModule,
   ],
   providers: [
     // Apply rate limiting globally.

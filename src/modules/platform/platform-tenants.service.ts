@@ -367,6 +367,8 @@ export class PlatformTenantsService {
       this.prisma.generalAnalysis.deleteMany({ where }),
       this.prisma.knowledgeGap.deleteMany({ where }),
       this.prisma.document.deleteMany({ where }),
+      this.prisma.faqItem.deleteMany({ where }),
+      this.prisma.faqDocument.deleteMany({ where }),
       this.prisma.crmConnection.deleteMany({ where }),
       this.prisma.crmAgentConnection.deleteMany({ where }),
       this.prisma.driveConnection.deleteMany({ where }),

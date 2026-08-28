@@ -173,6 +173,12 @@ model GeneralAnalysis {
   // "no complaint detected", which is the honest reading.
   isComplaint             Boolean   @default(false) @map("is_complaint")
   complaintAbout          String    @default("none") @map("complaint_about")
+  // FAQ auto-reply: set when the classifier detected a FAQ-shaped question
+  // and a matching FaqItem was found above the similarity threshold.
+  isFaq                   Boolean   @default(false) @map("is_faq")
+  faqItemId               String?   @map("faq_item_id") @db.Uuid
+  faqItem                 FaqItem?  @relation(fields: [faqItemId], references: [id], onDelete: SetNull)
+  faqAutoReplied          Boolean   @default(false) @map("faq_auto_replied")
   escalationItem          EscalationItem?
 
   @@index([tenantId, isUrgent])
@@ -375,10 +381,48 @@ model Tenant {
   allowlistEntries  AllowlistEntry[]
   crmAgentConnection CrmAgentConnection?
   escalationItems   EscalationItem[]
+  faqDocuments      FaqDocument[]
 
   @@index([status, adminEmail])
   @@index([subscriptionStatus])
   @@map("tenants")
+}
+
+// ─── FAQ Auto-Reply ──────────────────────────────────────────────────────────
+// Admin uploads a structured Q&A file. The classifier detects FAQ-shaped emails
+// and matches them via vector similarity. A matched email is answered directly
+// from the SE's Gmail account without human intervention.
+
+model FaqDocument {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  filename   String
+  uploadedBy String?   @map("uploaded_by")
+  uploadedAt DateTime  @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  items      FaqItem[]
+
+  @@unique([tenantId, filename])
+  @@map("faq_documents")
+}
+
+model FaqItem {
+  id         String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  documentId String          @map("document_id") @db.Uuid
+  document   FaqDocument     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  tenantId   String          @map("tenant_id") @db.Uuid
+  /// Canonical question text — embedding is computed on this.
+  question   String
+  /// Full answer text sent verbatim as the auto-reply body.
+  answer     String
+  /// 768-dim embedding of the question. Null until the embed worker fills it.
+  embedding  Unsupported("vector(768)")?
+  createdAt  DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  // Back-reference: which analysis rows were answered from this FAQ item.
+  generalAnalyses GeneralAnalysis[]
+
+  @@index([tenantId], map: "idx_faq_items_tenant")
+  @@map("faq_items")
 }
 
 /// Stripe webhook idempotency: one row per processed event id.

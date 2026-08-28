@@ -16,6 +16,8 @@ describe('ClassifierService', () => {
     intentConfidence: 0.92,
     isComplaint: false,
     complaintAbout: 'none',
+    isFaq: false,
+    faqConfidence: 0,
   };
 
   function makeLlm(overrides: Partial<LlmClientPort> = {}): LlmClientPort {

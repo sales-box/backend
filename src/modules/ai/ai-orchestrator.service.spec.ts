@@ -38,6 +38,9 @@ function makeDeps() {
       suggestActions: jest.fn(),
       resumeWithDecision: jest.fn(),
     },
+    faqService: {
+      tryAutoReply: jest.fn().mockResolvedValue(false),
+    },
   };
 }
 
@@ -50,6 +53,7 @@ function makeOrchestrator(deps: ReturnType<typeof makeDeps>) {
     deps.replyService as never,
     deps.supervisorService as never,
     deps.crmActionsAgent as never,
+    deps.faqService as never,
   );
 }
 
