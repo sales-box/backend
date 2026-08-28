@@ -64,15 +64,37 @@ export class InboxBackfillListener {
   }
 
   /**
-   * Deterministic jobId keyed on the address: connecting twice, or an event
-   * delivered twice, collapses onto one backfill instead of classifying the
-   * same 500 messages again. `classifyOne` would no-op on the repeats anyway,
-   * but only after paying for a Gmail fetch each.
+   * Deterministic jobId keyed on the address: two connect events arriving
+   * together collapse onto one backfill instead of walking the same 500
+   * messages twice. `classifyOne` would no-op on the repeats anyway, but only
+   * after paying for a Gmail fetch each.
+   *
+   * THE CATCH, and why the remove() below exists: BullMQ enforces that id
+   * against FINISHED jobs too, and both `removeOnComplete` and `removeOnFail`
+   * retain a window of them. So one completed — or worse, one exhausted-retry
+   * failed — backfill made the address permanently un-enqueueable. Signing out
+   * and back in, the only trigger a user has, then did nothing at all and said
+   * nothing about it. A feature that cannot be re-run after it fails is a
+   * feature that is broken once and broken forever.
+   *
+   * Dropping any finished job with this id first restores that. It cannot
+   * disturb a run in progress: BullMQ refuses to remove an ACTIVE job, the
+   * error is swallowed, and the add that follows is the no-op it should be —
+   * which is exactly the duplicate-collapsing this id was chosen for.
    */
   async enqueue(emailAddress: string): Promise<void> {
+    const jobId = `backfill#${emailAddress}`;
+
+    try {
+      await this.queue.remove(jobId);
+    } catch {
+      // Active job, or nothing there. Either way the add below does the right
+      // thing, so there is nothing to report.
+    }
+
     const data: BackfillInboxJobData = { emailAddress };
     await this.queue.add(BACKFILL_INBOX_JOB, data, {
-      jobId: `backfill#${emailAddress}`,
+      jobId,
       // The pass stops itself on a provider rate limit, which is a "come back
       // later", not a failure of the work — so it has to be retried or the
       // remainder is simply dropped. Everything already stored is skipped on
