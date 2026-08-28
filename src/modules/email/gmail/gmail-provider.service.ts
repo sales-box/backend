@@ -313,4 +313,88 @@ export class GmailProvider implements EmailProvider {
 
     return parsedThreads;
   }
+
+  /**
+   * Sends a reply to an email thread from the SE's Gmail account.
+   *
+   * Requires the `gmail.modify` (or `gmail.send`) OAuth scope — the current
+   * `gmail.readonly` scope will result in a 403 from the Gmail API. The caller
+   * must verify the token has the required scope before calling this method.
+   *
+   * Threading is preserved via the `In-Reply-To` and `References` RFC 2822
+   * headers, which Gmail and most email clients use to group messages in the
+   * same conversation. `threadId` keeps Gmail's own grouping consistent.
+   *
+   * @param tenantId     - Tenant owning the SE account (for credential lookup).
+   * @param accountEmail - The SE's email address (From: address of the reply).
+   * @param originalMessageId - Gmail message id of the email being replied to.
+   * @param originalThreadId  - Gmail thread id to keep the reply in-thread.
+   * @param toEmail      - Recipient address (the client who sent the original).
+   * @param subject      - Subject of the original email (Re: prepended if absent).
+   * @param replyBody    - Plain-text body of the auto-reply.
+   * @returns The Gmail message id of the sent reply.
+   */
+  async sendReply(
+    tenantId: string,
+    accountEmail: string,
+    originalMessageId: string,
+    originalThreadId: string,
+    toEmail: string,
+    subject: string,
+    replyBody: string,
+  ): Promise<string> {
+    const gmailClient = await this.clientFactory.createClient(
+      tenantId,
+      accountEmail,
+    );
+
+    // Fetch the original message to get the RFC 2822 Message-ID header (not the
+    // Gmail internal id). This is what In-Reply-To and References must reference.
+    let rfcMessageId: string | undefined;
+    try {
+      const orig = await gmailClient.users.messages.get({
+        userId: 'me',
+        id: originalMessageId,
+        format: 'metadata',
+        metadataHeaders: ['Message-ID', 'Message-Id'],
+      });
+      rfcMessageId =
+        orig.data.payload?.headers?.find(
+          (h) => h.name?.toLowerCase() === 'message-id',
+        )?.value ?? undefined;
+    } catch {
+      // Non-fatal: threading will still work via threadId; In-Reply-To just won't be set.
+    }
+
+    const reSubject = subject.trimStart().toLowerCase().startsWith('re:')
+      ? subject
+      : `Re: ${subject}`;
+
+    // Build RFC 2822 MIME message.
+    const lines = [
+      `From: ${accountEmail}`,
+      `To: ${toEmail}`,
+      `Subject: ${reSubject}`,
+      `Content-Type: text/plain; charset=UTF-8`,
+      ...(rfcMessageId
+        ? [`In-Reply-To: ${rfcMessageId}`, `References: ${rfcMessageId}`]
+        : []),
+      '',
+      replyBody,
+    ];
+
+    // Gmail API expects base64url-encoded RFC 2822.
+    const raw = Buffer.from(lines.join('\r\n'))
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+
+    const res = await gmailClient.users.messages.send({
+      userId: 'me',
+      requestBody: { raw, threadId: originalThreadId },
+    });
+
+    return res.data.id ?? '';
+  }
 }

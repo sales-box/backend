@@ -8,6 +8,8 @@ const valid = {
   intentConfidence: 0.87,
   isComplaint: false,
   complaintAbout: 'none',
+  isFaq: false,
+  faqConfidence: 0,
 };
 
 describe('validateClassification', () => {

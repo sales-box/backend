@@ -4,13 +4,15 @@ import { PrismaService } from '../../../database/prisma.service';
 import { ClientsService } from '../../clients/clients.service';
 import { ParsedMessage } from '../../email/email.types';
 import { GmailProvider } from '../../email/gmail/gmail-provider.service';
+import { FaqService } from '../../faq/faq.service';
 import { isMessageGoneError } from './classifier-errors.util';
 import { CLASSIFIER_PROMPT_VERSION } from './classifier.constants';
 import { ClassifierService } from './classifier.service';
 import { prepareEmailText } from './email-text.util';
 
 /**
- * One inbox message, end to end: fetch, capture, classify, store, escalate.
+ * One inbox message, end to end: fetch, capture, classify, store, escalate,
+ * and (when the email is FAQ-shaped and a match is found) auto-reply.
  *
  * Lives outside both workers because both need it and there must be exactly
  * one copy. The stored-row check at the top is the exactly-once guarantee that
@@ -26,6 +28,7 @@ export class MessageClassifier {
     private readonly gmailProvider: GmailProvider,
     private readonly classifier: ClassifierService,
     private readonly clientsService: ClientsService,
+    private readonly faqService?: FaqService,
   ) {}
 
   /** True when this call is the one that stored a new analysis row. */
@@ -156,10 +159,35 @@ export class MessageClassifier {
           promptVersion: CLASSIFIER_PROMPT_VERSION,
           isComplaint: result.isComplaint,
           complaintAbout: result.complaintAbout,
+          isFaq: result.isFaq,
         },
       });
 
-      // A complaint about the sales engineer, or about how the company treated
+      // ── FAQ auto-reply ──────────────────────────────────────────────────────
+      const emailText =
+        prepareEmailText(parsed.textPlain, parsed.textHtml) ||
+        (parsed.subject ?? '');
+      const clientEmail =
+        (parsed.from ?? '').match(/<([^>]+)>/)?.[1]?.trim() ??
+        parsed.from ??
+        '';
+
+      await this.faqService?.tryAutoReply({
+        tenantId: account.tenantId,
+        accountEmail: account.email,
+        messageId,
+        threadId: parsed.threadId || null,
+        subject: parsed.subject ?? '',
+        clientEmail,
+        emailText,
+        isFaq: result.isFaq,
+        faqConfidence: result.faqConfidence,
+        isComplaint: result.isComplaint,
+        intent: result.intent,
+        analysisId: created.id,
+      });
+
+      // ── Escalation ──────────────────────────────────────────────────────────
       // the client, has to reach the admin on its own account. Routed only to
       // the SE's inbox, the person being complained about is the one who
       // decides whether anyone else ever hears about it — which is exactly the

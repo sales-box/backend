@@ -116,6 +116,7 @@ export class EmailsService {
       threadId: string | null;
       isUrgent: boolean;
       intent: string;
+      faqAutoReplied: boolean;
       supervisorLabel: string | null;
       reviewedAt: Date | null;
     }
@@ -128,6 +129,7 @@ export class EmailsService {
           thread_id as "threadId",
           is_urgent as "isUrgent",
           intent,
+          faq_auto_replied as "faqAutoReplied",
           supervisor_label as "supervisorLabel",
           reviewed_at as "reviewedAt"
         FROM general_analysis
@@ -141,6 +143,7 @@ export class EmailsService {
           thread_id as "threadId",
           is_urgent as "isUrgent",
           intent,
+          faq_auto_replied as "faqAutoReplied",
           supervisor_label as "supervisorLabel",
           reviewed_at as "reviewedAt"
         FROM general_analysis
@@ -160,6 +163,10 @@ export class EmailsService {
     const reviewedBreakdown = { green: 0, yellow: 0, red: 0 };
 
     for (const a of filteredAnalyses) {
+      if (a.faqAutoReplied) {
+        intentBreakdown['auto replied'] =
+          (intentBreakdown['auto replied'] || 0) + 1;
+      }
       if (a.isUrgent) {
         urgentCount++;
       }
@@ -229,6 +236,7 @@ export class EmailsService {
       threadId: string | null;
       isUrgent: boolean;
       intent: string;
+      faqAutoReplied: boolean;
       supervisorLabel: string | null;
       reviewedAt: Date | null;
     }
@@ -236,6 +244,7 @@ export class EmailsService {
       ? await this.prisma.$queryRaw<AnalysisRow[]>`
           SELECT DISTINCT ON (thread_id)
             thread_id as "threadId", is_urgent as "isUrgent", intent,
+            faq_auto_replied as "faqAutoReplied",
             supervisor_label as "supervisorLabel", reviewed_at as "reviewedAt"
           FROM general_analysis
           WHERE tenant_id = ${tenantId}::uuid AND account_email = ${email}
@@ -243,6 +252,7 @@ export class EmailsService {
       : await this.prisma.$queryRaw<AnalysisRow[]>`
           SELECT DISTINCT ON (thread_id)
             thread_id as "threadId", is_urgent as "isUrgent", intent,
+            faq_auto_replied as "faqAutoReplied",
             supervisor_label as "supervisorLabel", reviewed_at as "reviewedAt"
           FROM general_analysis
           WHERE tenant_id IS NULL AND account_email = ${email}
@@ -315,6 +325,7 @@ export class EmailsService {
     category: string,
   ):
     | { kind: 'intent'; intent: string }
+    | { kind: 'auto-replied' }
     | { kind: 'urgent' }
     | { kind: 'label'; label: 'green' | 'yellow' | 'red' }
     | { kind: 'not-reviewed' }
@@ -326,6 +337,9 @@ export class EmailsService {
       'follow-up': 'follow-up',
       sensitive: 'sensitive',
     };
+    if (category === 'auto-replied' || category === 'auto replied') {
+      return { kind: 'auto-replied' };
+    }
     if (intents[category]) return { kind: 'intent', intent: intents[category] };
     if (category === 'urgent') return { kind: 'urgent' };
     if (category === 'ready') return { kind: 'label', label: 'green' };
@@ -339,6 +353,7 @@ export class EmailsService {
     r: {
       isUrgent: boolean;
       intent: string;
+      faqAutoReplied?: boolean;
       supervisorLabel: string | null;
       reviewedAt: Date | null;
     },
@@ -346,6 +361,8 @@ export class EmailsService {
   ): boolean {
     if (!filter) return false;
     switch (filter.kind) {
+      case 'auto-replied':
+        return r.faqAutoReplied === true;
       case 'intent':
         return r.intent === filter.intent;
       case 'urgent':

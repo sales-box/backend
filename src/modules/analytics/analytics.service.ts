@@ -596,6 +596,7 @@ export class AnalyticsService {
       classification: string | null;
       confidence: number | null;
       action: string | null;
+      faqAutoReplied: boolean;
     }>;
     meta: {
       total: number;
@@ -697,6 +698,18 @@ export class AnalyticsService {
         }),
       ]);
 
+      // Fetch faqAutoReplied from GeneralAnalysis for this batch
+      const msgIds = interactions
+        .map((i) => i.messageId)
+        .filter((id): id is string => id !== null);
+      const analyses = await this.prisma.generalAnalysis.findMany({
+        where: { messageId: { in: msgIds } },
+        select: { messageId: true, faqAutoReplied: true },
+      });
+      const faqByMsg = new Map(
+        analyses.map((a) => [a.messageId, a.faqAutoReplied]),
+      );
+
       const data = interactions.map((interaction) => ({
         id: interaction.id,
         time: interaction.date,
@@ -705,6 +718,10 @@ export class AnalyticsService {
         classification: interaction.classification,
         confidence: interaction.productConfidence,
         action: interaction.recommendation,
+        faqAutoReplied:
+          interaction.messageId != null
+            ? (faqByMsg.get(interaction.messageId) ?? false)
+            : false,
       }));
 
       const totalPages = Math.ceil(total / limit);

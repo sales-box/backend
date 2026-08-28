@@ -9,6 +9,8 @@ import { ClassifierService } from './classifier.service';
 import { ClassifyEmailJobData } from './classifier.types';
 import { MessageClassifier } from './message-classifier.service';
 import { ClientsService } from '../../clients/clients.service';
+import { FaqService } from '../../faq/faq.service';
+import type { ClassificationResult } from './classifier.types';
 
 const ACCOUNT = {
   id: 'acct-1',
@@ -17,7 +19,7 @@ const ACCOUNT = {
   status: 'connected',
 };
 const SUBSCRIPTION = { connectedAccountId: 'acct-1', lastHistoryId: '100' };
-const CLASSIFICATION = {
+const CLASSIFICATION: ClassificationResult = {
   reasoning: 'r',
   isUrgent: true,
   urgencyReason: 'deadline',
@@ -25,6 +27,8 @@ const CLASSIFICATION = {
   intentConfidence: 0.9,
   isComplaint: false,
   complaintAbout: 'none',
+  isFaq: false,
+  faqConfidence: 0.0,
 };
 const PARSED = {
   id: 'm1',
@@ -48,7 +52,9 @@ function makePrisma(overrides: Record<string, unknown> = {}) {
     },
     generalAnalysis: {
       findUnique: jest.fn().mockResolvedValue(null),
+      findFirst: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockResolvedValue({ id: 'analysis-1' }),
+      update: jest.fn().mockResolvedValue({}),
     },
     escalationItem: {
       upsert: jest.fn().mockResolvedValue({}),
@@ -84,6 +90,13 @@ function makeClients() {
   } as unknown as ClientsService;
 }
 
+function makeFaq() {
+  return {
+    findBestMatch: jest.fn().mockResolvedValue(null),
+    tryAutoReply: jest.fn().mockResolvedValue(false),
+  } as unknown as FaqService;
+}
+
 function makeJob(data: ClassifyEmailJobData): Job<ClassifyEmailJobData> {
   return {
     id: 'job-1',
@@ -98,11 +111,12 @@ function makeProcessor(
   gmail: GmailProvider,
   classifier: ClassifierService,
   clients: ClientsService,
+  faq?: FaqService,
 ) {
   return new ClassifierProcessor(
     prisma,
     gmail,
-    new MessageClassifier(prisma, gmail, classifier, clients),
+    new MessageClassifier(prisma, gmail, classifier, clients, faq ?? makeFaq()),
   );
 }
 

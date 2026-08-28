@@ -105,11 +105,25 @@ const makeClients = () =>
     captureInboundEmail: jest.fn().mockResolvedValue({}),
   }) as unknown as ClientsService;
 
+import { FaqService } from '../../faq/faq.service';
+
+const makeFaq = (): FaqService =>
+  ({
+    findBestMatch: jest.fn().mockResolvedValue(null),
+    tryAutoReply: jest.fn().mockResolvedValue(false),
+  }) as unknown as FaqService;
+
 const makeProcessor = (prisma: PrismaService, gmail: GmailProvider) =>
   new InboxBackfillProcessor(
     prisma,
     gmail,
-    new MessageClassifier(prisma, gmail, makeClassifier(), makeClients()),
+    new MessageClassifier(
+      prisma,
+      gmail,
+      makeClassifier(),
+      makeClients(),
+      makeFaq(),
+    ),
   );
 
 const backfillJob = (emailAddress: string) =>
