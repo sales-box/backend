@@ -148,7 +148,7 @@ The ${companyName} Team`,
 <p>To get started, please follow these steps to install the extension:</p>
 
 <ul>
-  <li>Download the extension ZIP file here: <a href="${installUrl}">${installUrl}</a></li>
+  <li>Download the extension ZIP file here: <a href="${installUrl}"> Click here to download </a></li>
   <li>Follow the instructions to install the extension and apply the 'salesbox' label to your emails.</li>
 </ul>
 
