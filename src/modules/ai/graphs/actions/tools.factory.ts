@@ -1,10 +1,27 @@
 import { tool, StructuredTool } from 'langchain';
 import { z } from 'zod';
+import { cleanPhone } from './phone';
+import { extractRecords } from '../../../crm/zoho-records';
 
 interface McpTools {
   searchRecords: StructuredTool;
   createRecords: StructuredTool;
   updateRecords: StructuredTool;
+}
+
+/**
+ * Drop the prose the model appends to a phone number.
+ *
+ * Zoho validates per RECORD, not per field, so one malformed Phone throws away
+ * the company and job title sent alongside it — and the failure reaches the
+ * panel as a success. Seen live on 29 Aug.
+ */
+function withCleanPhone<T extends { Phone?: string }>(fields: T): T {
+  if (!('Phone' in fields)) return fields;
+  const Phone = cleanPhone(fields.Phone);
+  const next = { ...fields, Phone };
+  if (Phone === undefined) delete next.Phone;
+  return next;
 }
 
 export function buildTools(mcp: McpTools): {
@@ -28,16 +45,35 @@ export function buildTools(mcp: McpTools): {
    * returned the raw MCP payload and was never given the fix.
    */
   const searchModule = async (module: string, email: string) => {
-    const records: unknown = await mcp.searchRecords.invoke({
+    const raw: unknown = await mcp.searchRecords.invoke({
       path_variables: { module },
       query_params: { email },
     });
-    const found = Array.isArray(records) ? records.length : records ? 1 : 0;
-    return { found, records };
+
+    // Counting the raw payload was wrong: Zoho answers with a single MCP
+    // content object, which is always truthy, so `found` was 1 even for an
+    // empty result. The model then believed a record existed, and — having no
+    // id to work with — INVENTED one ("1234567890123456789") and passed it to
+    // updateContact, createTask and createDeal. Approving that would have
+    // written someone else's record or failed outright.
+    const records = extractRecords(raw);
+    return {
+      found: records.length,
+      // Only the fields an action needs. The raw Zoho record carries ~90
+      // properties, and burying the id in them is what made it guessable.
+      records: records.map((r) => ({
+        id: r.id,
+        Full_Name: r.Full_Name,
+        Email: r.Email,
+        Company: r.Company ?? r.Account_Name,
+      })),
+    };
   };
 
   const SEARCH_DESCRIPTION =
-    'found: 0 is a conclusive answer — the record does not exist. Do not repeat the search; create the record instead.';
+    'found: 0 is a conclusive answer — the record does not exist. Do not repeat ' +
+    'the search; create the record instead. Every id you pass to another tool ' +
+    'must come from a records[] entry here — never invent or guess an id.';
 
   const searchLeads = tool(
     async ({ email }): Promise<unknown> => searchModule('Leads', email),
@@ -65,7 +101,7 @@ export function buildTools(mcp: McpTools): {
     async ({ summary: _summary, ...fields }): Promise<unknown> =>
       mcp.createRecords.invoke({
         path_variables: { module: 'Leads' },
-        body: { data: [fields] },
+        body: { data: [withCleanPhone(fields)] },
       }),
     {
       name: 'createLead',
@@ -92,14 +128,35 @@ export function buildTools(mcp: McpTools): {
     async ({ summary: _summary, ...fields }): Promise<unknown> =>
       mcp.updateRecords.invoke({
         path_variables: { module: 'Leads' },
-        body: { data: [fields] },
+        body: { data: [withCleanPhone(fields)] },
       }),
     {
       name: 'updateLead',
       description:
-        'Update an existing Lead record. Use to change status or add description context after receiving an email.',
+        'Update an existing Lead record after receiving an email: correct the ' +
+        'company, job title, phone or name the sender gave, change the status, ' +
+        'or add context. Only pass fields the email actually states.',
+      // These mirror createLead's schema. They were missing, so an approved
+      // "update the company name and job title" wrote nothing at all — the tool
+      // had no parameter to carry either, and the silent no-op was reported as
+      // success. Seen live on 29 Aug: a lead stayed "Company: Unknown" after an
+      // email that named the company in its signature.
       schema: z.object({
         id: z.string().describe('Zoho Lead record ID from searchLeads result'),
+        Company: z
+          .string()
+          .optional()
+          .describe("The lead's company, when the email states it"),
+        Designation: z
+          .string()
+          .optional()
+          .describe("The lead's job title, when the email states it"),
+        Phone: z.string().optional(),
+        First_Name: z.string().optional(),
+        Last_Name: z
+          .string()
+          .optional()
+          .describe('Only when the email gives a fuller or corrected name'),
         Lead_Status: z
           .enum([
             'New',
@@ -125,16 +182,33 @@ export function buildTools(mcp: McpTools): {
     async ({ summary: _summary, ...fields }): Promise<unknown> =>
       mcp.updateRecords.invoke({
         path_variables: { module: 'Contacts' },
-        body: { data: [fields] },
+        body: { data: [withCleanPhone(fields)] },
       }),
     {
       name: 'updateContact',
       description:
-        'Update an existing Contact record. Use to add description context after receiving an email.',
+        'Update an existing Contact record after receiving an email: correct the ' +
+        'job title, phone or name the sender gave, or add context. Only pass ' +
+        'fields the email actually states.',
+      // Description alone was not enough — the HubSpot equivalent writes six
+      // properties, so an approved "they changed role" wrote nothing on Zoho.
+      // Account_Name is deliberately absent: on a Contact that is a lookup to
+      // an Account record, and moving someone between companies is not
+      // something to infer from an email signature.
       schema: z.object({
         id: z
           .string()
           .describe('Zoho Contact record ID from searchContacts result'),
+        Title: z
+          .string()
+          .optional()
+          .describe("The contact's job title, when the email states it"),
+        Phone: z.string().optional(),
+        First_Name: z.string().optional(),
+        Last_Name: z
+          .string()
+          .optional()
+          .describe('Only when the email gives a fuller or corrected name'),
         Description: z
           .string()
           .optional()

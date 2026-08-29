@@ -112,8 +112,26 @@ export function extractRecords(payload: unknown): ZohoRecord[] {
 
   if (typeof payload === 'object') {
     const o = payload as Record<string, unknown>;
-    for (const key of ['data', 'records', 'content', 'result', 'results']) {
-      if (key in o) return extractRecords(o[key]);
+    // Try each wrapper in turn and keep the first that actually yields records.
+    //
+    // Returning on the first key that merely EXISTS was wrong twice over: a key
+    // present but null or empty ended the search early, and Zoho's real answer
+    // is a single MCP content object — { type, text, structuredContent } —
+    // whose records sit one level further in. Verified against a live server on
+    // 29 Aug: `text` is a JSON string of { data, info }, and structuredContent
+    // is { data, status }.
+    for (const key of [
+      'data',
+      'records',
+      'structuredContent',
+      'text',
+      'content',
+      'result',
+      'results',
+    ]) {
+      if (!(key in o) || o[key] == null) continue;
+      const found = extractRecords(o[key]);
+      if (found.length > 0) return found;
     }
   }
 
@@ -126,7 +144,34 @@ export function extractRecords(payload: unknown): ZohoRecord[] {
  * A record with no email cannot be matched to an inbound sender, which is the
  * only thing the local client row is for.
  */
-export function toCrmContacts(records: ZohoRecord[]): CrmContact[] {
+/** The two modules a person can live in. */
+export type ZohoModule = 'Contacts' | 'Leads';
+
+/**
+ * What the module itself says about a person.
+ *
+ * Zoho carries `Lead_Status` on Leads and nothing equivalent on Contacts, so
+ * reading only that field made the import say the opposite of the truth: a
+ * qualified Contact — someone converted out of a lead and attached to a real
+ * Account — landed on `new_inquiry`, the lowest rung, while an unqualified Lead
+ * could land on `qualified`.
+ *
+ * Being in the Contacts module IS the lifecycle signal. It means qualified and
+ * account-attached. It does not mean `customer`: that would need a won deal,
+ * and the import does not read Deals.
+ *
+ * A Lead yields undefined when its status is unrecognised, so the caller's own
+ * default applies and an existing row is left alone.
+ */
+const MODULE_STATUS: Readonly<Record<ZohoModule, ClientStatus | undefined>> = {
+  Contacts: 'qualified',
+  Leads: undefined,
+};
+
+export function toCrmContacts(
+  records: ZohoRecord[],
+  module: ZohoModule,
+): CrmContact[] {
   return records.flatMap((record) => {
     const email = str(record.Email);
     const crmId = str(record.id);
@@ -137,7 +182,9 @@ export function toCrmContacts(records: ZohoRecord[]): CrmContact[] {
         name: nameOf(record),
         company: companyOf(record),
         crmId,
-        status: statusFromLeadStatus(record.Lead_Status),
+        // An explicit Lead_Status always wins over the module's default.
+        status:
+          statusFromLeadStatus(record.Lead_Status) ?? MODULE_STATUS[module],
       },
     ];
   });

@@ -118,6 +118,19 @@ export class ClientsService {
       if (status) {
         updateData.status = status;
       }
+      // The CRM's name and company were being discarded here, so a client the
+      // CRM already knew — one whose email arrived before the first sync — kept
+      // the display name off the email and a null company for ever. Observed on
+      // 29 Aug: Zoho held "Hamada Loksha / Delta Industrial Park" while the row
+      // read "hamoksha eloksha" with no company. Guarded on truthiness so a
+      // provider that sends nothing cannot blank a good local value, which is
+      // the same rule the upsert's update branch below already follows.
+      if (name) {
+        updateData.name = name;
+      }
+      if (company) {
+        updateData.company = company;
+      }
       return this.prisma.client.update({
         where: { id: resolved.existingClientId },
         data: updateData,

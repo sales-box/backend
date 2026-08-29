@@ -2,7 +2,7 @@ import { Logger } from '@nestjs/common';
 import { MultiServerMCPClient } from '@langchain/mcp-adapters';
 import type { StructuredTool } from '@langchain/core/tools';
 import type { CrmContact, ICrmAdapter } from './crm.interface';
-import { extractRecords, toCrmContacts } from './zoho-records';
+import { extractRecords, toCrmContacts, type ZohoModule } from './zoho-records';
 
 /**
  * The modules a contact can live in. Zoho splits people across two: a Lead is
@@ -10,7 +10,7 @@ import { extractRecords, toCrmContacts } from './zoho-records';
  * one Contacts object, so importing only one Zoho module would silently hide
  * half the address book.
  */
-const MODULES = ['Contacts', 'Leads'] as const;
+const MODULES: readonly ZohoModule[] = ['Contacts', 'Leads'];
 
 /**
  * Listing every record is not one of the three primitives the connect flow
@@ -67,7 +67,7 @@ export class ZohoMcpAdapter implements ICrmAdapter {
           path_variables: { module },
           query_params: { email },
         });
-        const [first] = toCrmContacts(extractRecords(raw));
+        const [first] = toCrmContacts(extractRecords(raw), module);
         if (first) return { id: first.crmId };
       } catch (error) {
         this.logger.warn(
@@ -114,7 +114,7 @@ export class ZohoMcpAdapter implements ICrmAdapter {
             : { criteria: ALL_WITH_EMAIL, per_page: MAX_PER_MODULE },
         });
 
-        for (const contact of toCrmContacts(extractRecords(raw))) {
+        for (const contact of toCrmContacts(extractRecords(raw), module)) {
           // Contacts is read first, so an account-attached record wins over a
           // Lead row for the same person.
           const key = contact.email.toLowerCase();

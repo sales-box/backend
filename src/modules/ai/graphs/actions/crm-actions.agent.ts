@@ -30,8 +30,17 @@ interface LangGraphInterrupt {
   value: unknown;
 }
 
+interface ToolOutcome {
+  tool_call_id?: string;
+  name?: string;
+  status?: string;
+  content?: unknown;
+}
+
 interface LangGraphResult {
   __interrupt__?: LangGraphInterrupt[];
+  /** Present after a resume; carries one entry per executed tool call. */
+  messages?: ToolOutcome[];
 }
 
 /** The slice of LangGraph's state snapshot this file relies on. */
@@ -151,7 +160,41 @@ export class CRMActionsAgent {
       config,
     );
 
+    this.logToolOutcomes(threadId, result);
+
     return { ...this.formatAgentResult(threadId, result), applied: true };
+  }
+
+  /**
+   * Write what each approved tool actually did to the log.
+   *
+   * LangGraph's ToolNode turns any tool exception into a ToolMessage and lets
+   * the graph continue, so a rejected CRM write reaches the panel as a success.
+   * That has now hidden three real failures: a note the CRM never received, and
+   * two updates Zoho refused with INVALID_DATA naming the exact field.
+   *
+   * This only logs. The response shape is deliberately unchanged — making
+   * `applied` honest means deciding what partial success means to the panel,
+   * and that is a bigger change than a diagnostic.
+   */
+  private logToolOutcomes(threadId: string, result: LangGraphResult): void {
+    for (const message of result?.messages ?? []) {
+      if (message?.tool_call_id === undefined) continue;
+
+      const name = message.name ?? 'unknown tool';
+      const content =
+        typeof message.content === 'string'
+          ? message.content
+          : JSON.stringify(message.content);
+
+      if (message.status === 'error') {
+        this.logger.error(
+          `CRM action ${name} FAILED on thread ${threadId}: ${content?.slice(0, 500)}`,
+        );
+      } else {
+        this.logger.log(`CRM action ${name} ok on thread ${threadId}`);
+      }
+    }
   }
 
   /** Is this thread actually parked on an approval interrupt? */

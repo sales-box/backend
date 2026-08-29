@@ -183,9 +183,11 @@ describe('ClientsService', () => {
 
       expect(result).toEqual({ id: 'client-1', tenantId, email });
       expect(mockClientCreate).not.toHaveBeenCalled();
+      // The name reaches the row now. It used to be dropped on this branch,
+      // which left a CRM-known client stuck with whatever their email said.
       expect(mockClientUpdate).toHaveBeenCalledWith({
         where: { id: 'client-1' },
-        data: {},
+        data: { name },
       });
     });
 
@@ -284,6 +286,61 @@ describe('ClientsService', () => {
       expect(mockClientUpdate).toHaveBeenCalledWith({
         where: { id: 'client-1' },
         data: { crmId: 'crm-9', status: 'opportunity' },
+      });
+    });
+
+    // The CRM's name and company were discarded on this branch, so a client the
+    // CRM already knew kept the display name off their email and a null company
+    // for ever. Seen live: Zoho held "Hamada Loksha / Delta Industrial Park"
+    // while the row read "hamoksha eloksha" with no company.
+    it('refreshes name and company on an already-known client', async () => {
+      mockClientFindFirst.mockResolvedValueOnce({
+        id: 'client-1',
+        tenantId,
+        email,
+      });
+      mockClientUpdate.mockResolvedValueOnce({ id: 'client-1' });
+
+      await service.getOrCreateClient(
+        tenantId,
+        email,
+        'Hamada Loksha',
+        'Delta Industrial Park',
+        'crm-9',
+        'qualified',
+      );
+
+      expect(mockClientUpdate).toHaveBeenCalledWith({
+        where: { id: 'client-1' },
+        data: {
+          crmId: 'crm-9',
+          status: 'qualified',
+          name: 'Hamada Loksha',
+          company: 'Delta Industrial Park',
+        },
+      });
+    });
+
+    // A provider that sends nothing must not blank a good local value.
+    it('does not wipe name or company when the CRM sends neither', async () => {
+      mockClientFindFirst.mockResolvedValueOnce({
+        id: 'client-1',
+        tenantId,
+        email,
+      });
+      mockClientUpdate.mockResolvedValueOnce({ id: 'client-1' });
+
+      await service.getOrCreateClient(
+        tenantId,
+        email,
+        undefined,
+        undefined,
+        'crm-9',
+      );
+
+      expect(mockClientUpdate).toHaveBeenCalledWith({
+        where: { id: 'client-1' },
+        data: { crmId: 'crm-9' },
       });
     });
 
