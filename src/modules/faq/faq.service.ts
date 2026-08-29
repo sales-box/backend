@@ -210,7 +210,7 @@ export class FaqService {
 
       // Embed questions synchronously before returning.
       const itemIds = doc.items.map((i) => i.id);
-      await this.embedFaqItems(itemIds);
+      await this.embedFaqItems(itemIds, tx);
 
       return { filename, itemsCreated: doc.items.length };
     });
@@ -220,10 +220,15 @@ export class FaqService {
    * Embeds all questions for the given item ids.
    * Called fire-and-forget from ingest; also called by any future backfill.
    */
-  async embedFaqItems(itemIds: string[]): Promise<void> {
+  async embedFaqItems(
+    itemIds: string[],
+    tx?: Prisma.TransactionClient,
+  ): Promise<void> {
     if (itemIds.length === 0) return;
 
-    const items = await this.prisma.faqItem.findMany({
+    const client = tx ?? this.prisma;
+
+    const items = await client.faqItem.findMany({
       where: { id: { in: itemIds } },
       select: { id: true, question: true },
     });
@@ -240,7 +245,7 @@ export class FaqService {
     }
 
     for (let i = 0; i < items.length; i++) {
-      await this.prisma.$executeRaw`
+      await client.$executeRaw`
         UPDATE faq_items
         SET embedding = ${JSON.stringify(vectors[i])}::vector
         WHERE id = ${items[i].id}::uuid
