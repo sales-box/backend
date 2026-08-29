@@ -828,6 +828,7 @@ describe('AnalyticsService', () => {
           classification: 'sales',
           confidence: 0.9,
           action: 'reply',
+          faqAutoReplied: false,
         },
       ]);
       expect(result.meta).toEqual({

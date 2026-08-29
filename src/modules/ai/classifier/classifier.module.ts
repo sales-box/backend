@@ -12,6 +12,7 @@ import { InboxBackfillProcessor } from './inbox-backfill.processor';
 import { LLM_CLIENT } from './llm-client.port';
 import { MessageClassifier } from './message-classifier.service';
 import { ClientsModule } from '../../clients/clients.module';
+import { FaqModule } from '../../../modules/faq/faq.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { ClientsModule } from '../../clients/clients.module';
     }),
     GmailModule,
     ClientsModule,
+    FaqModule,
   ],
   providers: [
     ClassifierService,

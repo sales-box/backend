@@ -68,4 +68,5 @@ export const BACKFILL_NEWER_THAN_DAYS = positiveIntFromEnv(
 );
 
 // Bumped on every prompt change so eval runs and stored rows stay comparable.
-export const CLASSIFIER_PROMPT_VERSION = 'v2';
+// v3: added isFaq + faqConfidence fields and FAQ detection section.
+export const CLASSIFIER_PROMPT_VERSION = 'v3';

@@ -55,6 +55,10 @@ export function validateClassification(raw: unknown): ClassificationResult {
       ? (r.complaintAbout as ComplaintTarget)
       : 'none';
 
+  const isFaq = r.isFaq === true;
+  const rawFaqConf = typeof r.faqConfidence === 'number' ? r.faqConfidence : 0;
+  const faqConfidence = isFaq ? Math.min(1, Math.max(0, rawFaqConf)) : 0;
+
   return {
     reasoning: typeof r.reasoning === 'string' ? r.reasoning : '',
     isUrgent: r.isUrgent,
@@ -70,5 +74,7 @@ export function validateClassification(raw: unknown): ClassificationResult {
         ? 'service'
         : claimedTarget
       : 'none',
+    isFaq,
+    faqConfidence,
   };
 }

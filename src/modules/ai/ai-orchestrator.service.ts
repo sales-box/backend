@@ -11,6 +11,8 @@ import { SupervisorService } from '@/modules/ai/supervisor/supervisor.service';
 import { SupervisorInput } from '@/modules/ai/supervisor/supervisor.types';
 import { CRMActionsAgent } from './graphs/actions/crm-actions.agent';
 
+import { FaqService } from '@/modules/faq/faq.service';
+
 /** high > medium > low. Used to make an escalation's severity monotonic. */
 const SEVERITY_RANK: Record<string, number> = { low: 0, medium: 1, high: 2 };
 
@@ -39,6 +41,7 @@ export class AiOrchestratorService {
     private readonly replyService: ReplyService,
     private readonly supervisorService: SupervisorService,
     private readonly crmActionsAgent: CRMActionsAgent,
+    private readonly faqService?: FaqService,
   ) {}
 
   /**
@@ -53,6 +56,8 @@ export class AiOrchestratorService {
     tenantId: string,
     text: string,
     threadId: string | null,
+    subject = '',
+    clientEmail = '',
   ) {
     const existing = await this.prisma.generalAnalysis.findUnique({
       where: { messageId },
@@ -71,7 +76,7 @@ export class AiOrchestratorService {
     // uses, then persist so a later webhook pass finds it already done.
     const result = await this.classifierService.classify(text);
     try {
-      return await this.prisma.generalAnalysis.create({
+      const created = await this.prisma.generalAnalysis.create({
         data: {
           messageId,
           threadId,
@@ -83,15 +88,30 @@ export class AiOrchestratorService {
           intentConfidence: result.intentConfidence,
           reasoning: result.reasoning,
           promptVersion: CLASSIFIER_PROMPT_VERSION,
-          // Easy to miss and impossible to recover: Prisma types a column with
-          // a default as OPTIONAL on create, so omitting these compiles fine
-          // and silently stores "no complaint". The background processor
-          // short-circuits on an existing row, so nothing ever corrects it —
-          // a complaint first seen through the panel would be lost for good.
           isComplaint: result.isComplaint,
           complaintAbout: result.complaintAbout,
+          isFaq: result.isFaq,
         },
       });
+
+      if (tenantId) {
+        await this.faqService?.tryAutoReply({
+          tenantId,
+          accountEmail,
+          messageId,
+          threadId,
+          subject,
+          clientEmail,
+          emailText: text,
+          isFaq: result.isFaq,
+          faqConfidence: result.faqConfidence,
+          isComplaint: result.isComplaint,
+          intent: result.intent,
+          analysisId: created.id,
+        });
+      }
+
+      return created;
     } catch (error) {
       // P2002: background processor beat us in a race — read its row instead.
       if (
@@ -198,6 +218,8 @@ export class AiOrchestratorService {
         tenantId,
         emailBody,
         parsed.threadId || null,
+        parsed.subject ?? '',
+        clientEmail,
       );
     } catch (error) {
       classificationSucceeded = false;
@@ -226,6 +248,9 @@ export class AiOrchestratorService {
         // admin's escalation feed on the strength of an error.
         isComplaint: false,
         complaintAbout: 'none',
+        isFaq: false,
+        faqItemId: null,
+        faqAutoReplied: false,
       };
     }
 

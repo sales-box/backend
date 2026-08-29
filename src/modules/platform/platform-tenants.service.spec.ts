@@ -544,6 +544,8 @@ describe('PlatformTenantsService', () => {
         'generalAnalysis',
         'knowledgeGap',
         'document',
+        'faqDocument',
+        'faqItem',
         'crmConnection',
         'crmAgentConnection',
         'driveConnection',

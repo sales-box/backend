@@ -39,6 +39,14 @@ export interface ClassificationResult {
   isComplaint: boolean;
   /** What the complaint is about. 'none' whenever isComplaint is false. */
   complaintAbout: ComplaintTarget;
+  /**
+   * True when the email is a standalone factual question that a structured
+   * FAQ document could answer verbatim — no SE judgment required.
+   * False for complaints, support tickets, demos, and anything ambiguous.
+   */
+  isFaq: boolean;
+  /** How confident the model is that this is FAQ-answerable (0.0–1.0). */
+  faqConfidence: number;
 }
 
 export interface ClassifyEmailJobData {
@@ -57,5 +65,6 @@ export interface BackfillInboxJobData {
 
 export interface ClassifyJobResult {
   classified: number;
+  faqAutoReplied?: number;
   skipped?: 'no_account' | 'no_tenant' | 'no_baseline' | 'history_expired';
 }
