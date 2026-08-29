@@ -8,8 +8,68 @@ import type {
   ToolCall,
 } from 'langchain';
 
+/**
+ * A decision may carry the id of the tool call it was made for.
+ *
+ * It did not, and the pairing was by array position alone — so an approval was
+ * bound to a POSITION in the panel's list rather than to an action. When that
+ * list changed underneath (a different email, a panel reload, a re-analysis),
+ * the approval silently re-targeted whatever now sat at that index. Verified on
+ * 27 Aug: an approved `createNote` was applied to `createTask`, which HubSpot
+ * duly created, while the note was recorded as rejected.
+ */
+type IdentifiedDecision = Decision & { toolCallId?: string };
+
 interface HITLResumeValue {
-  decisions: Decision[];
+  decisions: IdentifiedDecision[];
+}
+
+/**
+ * Line each decision up with the tool call it was actually made for.
+ *
+ * Matched by id when every decision carries one. When none do, it falls back to
+ * the original positional pairing so an older client keeps working exactly as
+ * it does today — the fallback is the previous behaviour, not a new one.
+ *
+ * A partial set is refused rather than guessed at: half-identified decisions
+ * mean the client is mid-upgrade, and pairing the rest by position is the very
+ * failure this exists to stop.
+ */
+export function pairDecisions(
+  decisions: IdentifiedDecision[],
+  toolCalls: ToolCall[],
+): Array<{ decision: IdentifiedDecision; toolCall: ToolCall }> {
+  const identified = decisions.filter(
+    (d) => typeof d.toolCallId === 'string' && d.toolCallId.length > 0,
+  );
+
+  if (identified.length === 0) {
+    return toolCalls.map((toolCall, i) => ({
+      decision: decisions[i],
+      toolCall,
+    }));
+  }
+
+  if (identified.length !== decisions.length) {
+    throw new Error(
+      `Decisions must all carry a toolCallId or none may: ${identified.length} of ${decisions.length} did.`,
+    );
+  }
+
+  const byId = new Map(identified.map((d) => [d.toolCallId, d]));
+  if (byId.size !== identified.length) {
+    throw new Error('Decisions contain a duplicate toolCallId.');
+  }
+
+  return toolCalls.map((toolCall) => {
+    const decision = byId.get(toolCall.id);
+    if (!decision) {
+      throw new Error(
+        `No decision was supplied for pending tool call ${toolCall.name} (${toolCall.id ?? 'no id'}).`,
+      );
+    }
+    return { decision, toolCall };
+  });
 }
 
 function applyDecision(
@@ -139,6 +199,7 @@ export function humanInTheLoopMiddleware(
                 `${descriptionPrefix}\n\nTool: ${toolCall.name}\nArgs: ${JSON.stringify(toolCall.args, null, 2)}`);
 
           actionRequests.push({
+            toolCallId: toolCall.id,
             name: toolCall.name,
             args: toolCall.args,
             description,
@@ -172,11 +233,14 @@ export function humanInTheLoopMiddleware(
         const revisedToolCalls: ToolCall[] = [...autoApprovedToolCalls];
         const artificialToolMessages: ToolMessage[] = [];
 
-        for (let i = 0; i < decisions.length; i++) {
+        for (const { decision, toolCall } of pairDecisions(
+          decisions,
+          interruptToolCalls,
+        )) {
           const { revisedToolCall, toolMessage } = applyDecision(
-            decisions[i],
-            interruptToolCalls[i],
-            resolvedConfigs[interruptToolCalls[i].name],
+            decision,
+            toolCall,
+            resolvedConfigs[toolCall.name],
           );
 
           if (revisedToolCall) revisedToolCalls.push(revisedToolCall);

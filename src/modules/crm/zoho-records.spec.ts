@@ -36,6 +36,48 @@ describe('extractRecords', () => {
     ]);
   });
 
+  // The shape a real Zoho MCP server actually returns, captured from a live
+  // server on 29 Aug. A single content object — not an array of them — whose
+  // records sit inside a JSON string. The parser handled the array form and
+  // returned nothing for this one, which is what made a Zoho connect report
+  // success over an empty Clients page.
+  describe("the live server's own shape", () => {
+    const liveEnvelope = (records: unknown[]) => ({
+      type: 'text',
+      text: JSON.stringify({
+        data: records,
+        info: { per_page: 200, count: records.length, more_records: false },
+      }),
+      structuredContent: { data: records, status: 'success' },
+    });
+
+    it('reads records out of an MCP content object', () => {
+      expect(extractRecords(liveEnvelope([record]))).toEqual([record]);
+    });
+
+    it('still finds them when structuredContent is absent', () => {
+      const full = liveEnvelope([record]);
+      const textOnly = { type: full.type, text: full.text };
+      expect(extractRecords(textOnly)).toEqual([record]);
+    });
+
+    it('returns nothing for an empty result rather than throwing', () => {
+      expect(extractRecords(liveEnvelope([]))).toEqual([]);
+    });
+  });
+
+  // A key that exists but is null or empty must not end the search: the real
+  // envelope carries several candidate keys and only one of them has the rows.
+  it('keeps looking past a key that is present but empty', () => {
+    expect(
+      extractRecords({
+        data: null,
+        records: [],
+        text: JSON.stringify({ data: [record] }),
+      }),
+    ).toEqual([record]);
+  });
+
   // An import that returns nothing is recoverable; one that throws kills the
   // whole connect.
   it.each([null, undefined, 42, 'not json', {}, { data: null }])(
@@ -76,22 +118,26 @@ describe('statusFromLeadStatus', () => {
 describe('toCrmContacts', () => {
   it('maps a Contact, taking the company off the account object', () => {
     expect(
-      toCrmContacts([
-        {
-          id: 'z-1',
-          Email: 'jane@acme.co',
-          First_Name: 'Jane',
-          Last_Name: 'Doe',
-          Account_Name: { name: 'Acme' },
-        },
-      ]),
+      toCrmContacts(
+        [
+          {
+            id: 'z-1',
+            Email: 'jane@acme.co',
+            First_Name: 'Jane',
+            Last_Name: 'Doe',
+            Account_Name: { name: 'Acme' },
+          },
+        ],
+        'Contacts',
+      ),
     ).toEqual([
       {
         email: 'jane@acme.co',
         name: 'Jane Doe',
         company: 'Acme',
         crmId: 'z-1',
-        status: undefined,
+        // Being in Contacts is itself the signal: converted and account-attached.
+        status: 'qualified',
       },
     ]);
   });
@@ -99,15 +145,18 @@ describe('toCrmContacts', () => {
   // Leads name the same field differently, and carry the lifecycle value.
   it('maps a Lead, taking the company off Company and the status off Lead_Status', () => {
     expect(
-      toCrmContacts([
-        {
-          id: 'z-2',
-          Email: 'bob@corp.io',
-          Full_Name: 'Bob Jones',
-          Company: 'Corp',
-          Lead_Status: 'Pre-Qualified',
-        },
-      ]),
+      toCrmContacts(
+        [
+          {
+            id: 'z-2',
+            Email: 'bob@corp.io',
+            Full_Name: 'Bob Jones',
+            Company: 'Corp',
+            Lead_Status: 'Pre-Qualified',
+          },
+        ],
+        'Leads',
+      ),
     ).toEqual([
       {
         email: 'bob@corp.io',
@@ -120,9 +169,10 @@ describe('toCrmContacts', () => {
   });
 
   it('prefers Full_Name over the name parts', () => {
-    const [c] = toCrmContacts([
-      { id: '1', Email: 'a@b.co', Full_Name: 'Full', First_Name: 'Part' },
-    ]);
+    const [c] = toCrmContacts(
+      [{ id: '1', Email: 'a@b.co', Full_Name: 'Full', First_Name: 'Part' }],
+      'Contacts',
+    );
     expect(c.name).toBe('Full');
   });
 
@@ -134,6 +184,34 @@ describe('toCrmContacts', () => {
     [{ id: '1', Email: '   ' }, 'blank email'],
   ];
   it.each(incomplete)('drops a record with %s', (record) => {
-    expect(toCrmContacts([record])).toEqual([]);
+    expect(toCrmContacts([record], 'Contacts')).toEqual([]);
+  });
+
+  // Reading only Lead_Status made the import say the opposite of the truth: a
+  // qualified Contact landed on new_inquiry while an unqualified Lead could
+  // land on qualified. The module carries the lifecycle now.
+  describe('the module carries the lifecycle', () => {
+    const person = { id: '1', Email: 'a@b.co', Full_Name: 'A B' };
+
+    it('treats a Contact as qualified even with no status field', () => {
+      expect(toCrmContacts([person], 'Contacts')[0].status).toBe('qualified');
+    });
+
+    it('leaves a Lead with no recognised status to the caller default', () => {
+      expect(toCrmContacts([person], 'Leads')[0].status).toBeUndefined();
+    });
+
+    it('lets an explicit Lead_Status win over the module default', () => {
+      const contacted = { ...person, Lead_Status: 'Contacted' };
+      expect(toCrmContacts([contacted], 'Contacts')[0].status).toBe(
+        'new_inquiry',
+      );
+    });
+
+    it('does not claim a Contact is a customer — that needs a won deal', () => {
+      expect(toCrmContacts([person], 'Contacts')[0].status).not.toBe(
+        'customer',
+      );
+    });
   });
 });

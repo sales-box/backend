@@ -9,9 +9,18 @@ import { CHECKPOINTER_TOKEN } from '../checkpointer/checkpointer.constants';
 export interface ActionSuggestion {
   index: number;
   summary: string;
+  /**
+   * Which tool call this suggestion is for, so the approval can be bound to the
+   * action rather than to its position in the list. `index` stays for older
+   * clients; a decision sent without a toolCallId still pairs positionally.
+   */
+  toolCallId?: string;
+  /** The tool name, so a reviewer can tell a note from a deal. */
+  action?: string;
 }
 
 interface ActionRequest {
+  toolCallId?: string;
   name: string;
   args: { summary?: string; [key: string]: unknown };
   description?: string;
@@ -21,8 +30,17 @@ interface LangGraphInterrupt {
   value: unknown;
 }
 
+interface ToolOutcome {
+  tool_call_id?: string;
+  name?: string;
+  status?: string;
+  content?: unknown;
+}
+
 interface LangGraphResult {
   __interrupt__?: LangGraphInterrupt[];
+  /** Present after a resume; carries one entry per executed tool call. */
+  messages?: ToolOutcome[];
 }
 
 /** The slice of LangGraph's state snapshot this file relies on. */
@@ -82,7 +100,20 @@ export class CRMActionsAgent {
 
     const executionThreadId = `${tenantId}:${threadId}`;
 
-    this.checkpointer.deleteThread(executionThreadId);
+    // Awaited. Fired-and-forgotten this lost its race against the invoke below
+    // and left two runs' messages merged into one thread — the checkpoint from
+    // the 27 Aug incident holds both. A wipe that fails is not worth failing the
+    // suggest over: the run still produces a fresh proposal, it just carries the
+    // previous conversation.
+    await this.checkpointer
+      .deleteThread(executionThreadId)
+      .catch((err: unknown) =>
+        this.logger.warn(
+          `Could not clear checkpoint ${executionThreadId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        ),
+      );
 
     const config = { configurable: { thread_id: executionThreadId } };
     const result = await agent.invoke({ messages }, config);
@@ -93,7 +124,11 @@ export class CRMActionsAgent {
   public async resumeWithDecision(
     tenantId: string,
     threadId: string,
-    decisions: Array<{ type: 'approve' | 'reject'; message?: string }>,
+    decisions: Array<{
+      type: 'approve' | 'reject';
+      message?: string;
+      toolCallId?: string;
+    }>,
   ): Promise<AgentExecutionResult> {
     const agent = await this.agentFactory.createAgentForTenant(tenantId);
 
@@ -125,7 +160,41 @@ export class CRMActionsAgent {
       config,
     );
 
+    this.logToolOutcomes(threadId, result);
+
     return { ...this.formatAgentResult(threadId, result), applied: true };
+  }
+
+  /**
+   * Write what each approved tool actually did to the log.
+   *
+   * LangGraph's ToolNode turns any tool exception into a ToolMessage and lets
+   * the graph continue, so a rejected CRM write reaches the panel as a success.
+   * That has now hidden three real failures: a note the CRM never received, and
+   * two updates Zoho refused with INVALID_DATA naming the exact field.
+   *
+   * This only logs. The response shape is deliberately unchanged — making
+   * `applied` honest means deciding what partial success means to the panel,
+   * and that is a bigger change than a diagnostic.
+   */
+  private logToolOutcomes(threadId: string, result: LangGraphResult): void {
+    for (const message of result?.messages ?? []) {
+      if (message?.tool_call_id === undefined) continue;
+
+      const name = message.name ?? 'unknown tool';
+      const content =
+        typeof message.content === 'string'
+          ? message.content
+          : JSON.stringify(message.content);
+
+      if (message.status === 'error') {
+        this.logger.error(
+          `CRM action ${name} FAILED on thread ${threadId}: ${content?.slice(0, 500)}`,
+        );
+      } else {
+        this.logger.log(`CRM action ${name} ok on thread ${threadId}`);
+      }
+    }
   }
 
   /** Is this thread actually parked on an approval interrupt? */
@@ -169,6 +238,8 @@ export class CRMActionsAgent {
 
     const suggestions = actionRequests.map((req, index) => ({
       index,
+      toolCallId: req.toolCallId,
+      action: req.name,
       summary: req.args?.summary ?? 'Review this action before approving.',
     }));
 

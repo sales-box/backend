@@ -1,4 +1,8 @@
-import { verifyZohoMcpServer, ZOHO_REQUIRED_TOOLS } from './zoho-mcp.verify';
+import {
+  verifyZohoMcpServer,
+  ZOHO_REQUIRED_TOOLS,
+  explainConnectionFailure,
+} from './zoho-mcp.verify';
 
 const mockGetTools = jest.fn();
 
@@ -34,7 +38,24 @@ describe('verifyZohoMcpServer', () => {
 
     await expect(
       verifyZohoMcpServer('https://example.com/nope'),
-    ).rejects.toThrow(/no Zoho MCP server answered/);
+    ).rejects.toThrow(/did not respond/i);
+  });
+
+  // A 401 means the URL was right and the server answered. Reporting it as a
+  // bad address sent tenants off to re-copy a URL that had nothing wrong with
+  // it — observed live against a Zoho registry server on 29 Aug.
+  it('reports a rejected credential as authorisation, not a bad address', async () => {
+    mockGetTools.mockRejectedValue(
+      new Error(
+        'Authentication failed for HTTP server "zoho". Check your credentials',
+      ),
+    );
+
+    await expect(
+      verifyZohoMcpServer(
+        'https://zoho-crm-data-operations-1.zohomcp.com/mcp/x/message',
+      ),
+    ).rejects.toThrow(/401/);
   });
 
   it('never leaks the transport error into the message the tenant reads', async () => {
@@ -60,5 +81,39 @@ describe('verifyZohoMcpServer', () => {
     expect(msg).not.toContain('Streamable HTTP');
     expect(msg).not.toContain('404');
     expect(msg.length).toBeLessThan(200);
+  });
+});
+
+// Every failure used to collapse into "no server answered at that address",
+// which sent a tenant off to re-copy a URL that was already correct. Observed
+// live on 29 Aug: a Zoho registry server returns 401 to a URL that is exactly
+// right, because those servers authorise through the agent platform.
+describe('explainConnectionFailure', () => {
+  it('names authorisation, not the address, on a 401', () => {
+    const msg = explainConnectionFailure(
+      'Authentication failed for HTTP server "zoho" at https://x.zohomcp.com/mcp/abc. Please check your credentials',
+    );
+    expect(msg).toMatch(/401/);
+    expect(msg).toMatch(/authoris|authoriz/i);
+    expect(msg).not.toMatch(/does not resolve|expire/i);
+  });
+
+  it('tells an expired URL apart from a rejected one', () => {
+    const msg = explainConnectionFailure('getaddrinfo ENOTFOUND x.zohomcp.com');
+    expect(msg).toMatch(/expire|does not resolve/i);
+    expect(msg).not.toMatch(/401/);
+  });
+
+  it('names a timeout as a timeout', () => {
+    expect(explainConnectionFailure('connect ETIMEDOUT 1.2.3.4:443')).toMatch(
+      /did not respond/i,
+    );
+  });
+
+  it('falls back to something actionable for an unrecognised failure', () => {
+    const msg = explainConnectionFailure(
+      'Streamable HTTP error: something odd',
+    );
+    expect(msg).toMatch(/exactly as Zoho generated it/i);
   });
 });

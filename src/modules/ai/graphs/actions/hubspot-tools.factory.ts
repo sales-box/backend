@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { AssociationTypes, Client } from '@hubspot/api-client';
 import { FilterOperatorEnum } from '@hubspot/api-client/lib/codegen/crm/contacts';
 import { AssociationSpecAssociationCategoryEnum } from '@hubspot/api-client/lib/codegen/crm/objects/notes';
+import { cleanPhone } from './phone';
 
 /**
  * One deal stage as the tenant's own portal defines it.
@@ -133,6 +134,19 @@ export async function probeTicketsAvailable(client: Client): Promise<boolean> {
  *    is a lead is a property (`lifecyclestage`), not a separate module, so
  *    there is no `createLead`/`searchLeads` pair to mirror.
  */
+/**
+ * Drop the prose the model appends to a phone number.
+ *
+ * HubSpot accepts anything here, so unlike Zoho this is not a hard failure —
+ * it just writes "+20 122 555 0987, based in New Cairo" into a phone field.
+ * Same helper on both providers so a number is stored the same way whichever
+ * CRM is connected.
+ */
+function withCleanPhone<T extends { phone?: string }>(properties: T): T {
+  if (!('phone' in properties)) return properties;
+  return { ...properties, phone: cleanPhone(properties.phone) };
+}
+
 export function buildHubSpotTools(ctx: HubSpotToolContext): {
   readTools: StructuredTool[];
   writeTools: StructuredTool[];
@@ -236,7 +250,9 @@ export function buildHubSpotTools(ctx: HubSpotToolContext): {
     async ({ summary: _summary, ...properties }): Promise<unknown> => {
       const created = await client.crm.contacts.basicApi.create({
         properties: Object.fromEntries(
-          Object.entries(properties).filter(([, v]) => v !== undefined),
+          Object.entries(withCleanPhone(properties)).filter(
+            ([, v]) => v !== undefined,
+          ),
         ),
         associations: [],
       });
@@ -269,7 +285,9 @@ export function buildHubSpotTools(ctx: HubSpotToolContext): {
     async ({ summary: _summary, id, ...properties }): Promise<unknown> => {
       const updated = await client.crm.contacts.basicApi.update(id, {
         properties: Object.fromEntries(
-          Object.entries(properties).filter(([, v]) => v !== undefined),
+          Object.entries(withCleanPhone(properties)).filter(
+            ([, v]) => v !== undefined,
+          ),
         ),
       });
       return { id: updated.id, ...updated.properties };

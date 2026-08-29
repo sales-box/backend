@@ -18,6 +18,48 @@ export const ZOHO_REQUIRED_TOOLS = [
 ] as const;
 
 /**
+ * Turn the MCP client's transport error into the one sentence that helps.
+ *
+ * Every failure used to collapse into "no server answered at that address",
+ * which sent a tenant off to re-copy a URL that was already correct. The three
+ * real causes need three different actions, and a 401 in particular is not a
+ * bad address at all — the server answered and refused.
+ */
+export function explainConnectionFailure(raw: string): string {
+  if (
+    /\b401\b|unautheni?ticated|authentication failed|unauthorized/i.test(raw)
+  ) {
+    return (
+      'Zoho rejected the credential (401). The server is reachable, so the URL ' +
+      'is right — it has not been authorised for this workspace. Zoho\u2019s ' +
+      'registry servers (Data Operations and the rest) authorise through the ' +
+      'agent platform rather than the URL, so they cannot be connected here; ' +
+      'use a presigned MCP URL whose token carries its own access.'
+    );
+  }
+
+  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo|NXDOMAIN/i.test(raw)) {
+    return (
+      'that address does not resolve. Presigned Zoho MCP URLs expire — ' +
+      'generate a fresh one if yours is old, and check the whole URL was ' +
+      'copied.'
+    );
+  }
+
+  if (/ETIMEDOUT|timeout|timed out|ECONNREFUSED/i.test(raw)) {
+    return (
+      'the Zoho MCP server did not respond in time. It may be down, or the ' +
+      'URL may point at something that is not an MCP endpoint.'
+    );
+  }
+
+  return (
+    'could not open an MCP session at that address. Paste the presigned URL ' +
+    'exactly as Zoho generated it, including the path after the host.'
+  );
+}
+
+/**
  * Prove a Zoho MCP URL is usable before telling the tenant it is connected.
  *
  * Resolves when the server answers and exposes all three primitives. Rejects
@@ -40,17 +82,9 @@ export async function verifyZohoMcpServer(mcpServerUrl: string): Promise<void> {
     // URL that answers with a web page, that is the page's HTML. Pasting that
     // into a toast tells the tenant nothing and buries the one sentence that
     // would help. It goes to the log; they get the sentence.
-    logger.warn(
-      `Zoho MCP verification failed for ${mcpServerUrl}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-
-    throw new Error(
-      'no Zoho MCP server answered at that address. ' +
-        'Paste the presigned URL exactly as Zoho generated it — these expire, ' +
-        'so generate a fresh one if yours is old.',
-    );
+    const raw = error instanceof Error ? error.message : String(error);
+    logger.warn(`Zoho MCP verification failed for ${mcpServerUrl}: ${raw}`);
+    throw new Error(explainConnectionFailure(raw));
   }
 
   const missing = ZOHO_REQUIRED_TOOLS.filter((n) => !toolNames.includes(n));
