@@ -4,6 +4,8 @@ import { EmailsService } from './emails.service';
 import { EmailService } from '@/modules/email/email.service';
 import { google } from 'googleapis';
 import { EmailThread } from '@/modules/email/email.types';
+import { GmailClientProvider } from './gmail-client.provider';
+import { PrismaService } from '@/database/prisma.service';
 
 // Mock googleapis for profile email resolution
 jest.mock('googleapis', () => {
@@ -30,10 +32,36 @@ describe('EmailsService', () => {
   let service: EmailsService;
   let mockEmailService: any;
   let mockGmail: any;
+  let mockGmailClientProvider: any;
+  let mockGmailClient: any;
+  let mockPrisma: any;
 
   beforeEach(async () => {
     mockEmailService = {
       fetchThreads: jest.fn(),
+    };
+
+    mockGmailClient = {
+      users: {
+        labels: {
+          list: jest.fn().mockResolvedValue({
+            data: {
+              labels: [{ id: 'salesbox-label-id', name: 'salesbox' }],
+            },
+          }),
+        },
+        threads: {
+          list: jest.fn(),
+        },
+      },
+    };
+
+    mockGmailClientProvider = {
+      getClientForAccount: jest.fn().mockResolvedValue(mockGmailClient),
+    };
+
+    mockPrisma = {
+      $queryRaw: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -42,6 +70,14 @@ describe('EmailsService', () => {
         {
           provide: EmailService,
           useValue: mockEmailService,
+        },
+        {
+          provide: GmailClientProvider,
+          useValue: mockGmailClientProvider,
+        },
+        {
+          provide: PrismaService,
+          useValue: mockPrisma,
         },
       ],
     }).compile();
@@ -144,6 +180,137 @@ describe('EmailsService', () => {
 
       const result = await service.fetchThreadsForClient(clientEmail, token);
       expect(result).toEqual([]);
+    });
+  });
+
+  describe('getInboxStatsForSe', () => {
+    const seEmail = 'seller@example.com';
+    const tenantId = 'tenant-123';
+
+    it('should call getClientForAccount and aggregate inbox statistics correctly when tenantId is provided', async () => {
+      mockGmailClient.users.threads.list.mockResolvedValue({
+        data: {
+          threads: [
+            { id: 'thread-1' },
+            { id: 'thread-2' },
+            { id: 'thread-3' },
+            { id: 'thread-4' },
+          ],
+        },
+      });
+
+      const mockAnalyses = [
+        {
+          threadId: 'thread-1',
+          isUrgent: true,
+          intent: 'demo',
+          supervisorLabel: 'green',
+          reviewedAt: new Date('2026-07-18T12:00:00Z'),
+        },
+        {
+          threadId: 'thread-2',
+          isUrgent: false,
+          intent: 'pricing',
+          supervisorLabel: 'yellow',
+          reviewedAt: new Date('2026-07-18T13:00:00Z'),
+        },
+        {
+          threadId: 'thread-3',
+          isUrgent: false,
+          intent: 'demo',
+          supervisorLabel: null,
+          reviewedAt: null,
+        },
+        {
+          threadId: 'thread-5', // Inactive thread
+          isUrgent: true,
+          intent: 'demo',
+          supervisorLabel: 'red',
+          reviewedAt: new Date('2026-07-18T14:00:00Z'),
+        },
+      ];
+
+      mockPrisma.$queryRaw.mockResolvedValue(mockAnalyses);
+
+      const result = await service.getInboxStatsForSe(seEmail, tenantId);
+
+      expect(mockGmailClientProvider.getClientForAccount).toHaveBeenCalledWith(
+        tenantId,
+        seEmail,
+      );
+      expect(mockGmailClient.users.threads.list).toHaveBeenCalledWith({
+        userId: 'me',
+        labelIds: ['salesbox-label-id'],
+        maxResults: 100,
+        pageToken: undefined,
+      });
+      // Check query was made to Prisma
+      expect(mockPrisma.$queryRaw).toHaveBeenCalled();
+
+      // Check results
+      expect(result.totalEmails).toBe(4);
+      expect(result.urgentCount).toBe(1); // thread-1 is urgent (thread-5 is inactive)
+      expect(result.intentBreakdown).toEqual({
+        demo: 2, // thread-1, thread-3 (thread-5 is inactive)
+        pricing: 1, // thread-2
+      });
+      expect(result.reviewedBreakdown).toEqual({
+        green: 1, // thread-1
+        yellow: 1, // thread-2
+        red: 0, // thread-5 is inactive
+      });
+      expect(result.notYetReviewedCount).toBe(2); // thread-3 (reviewedAt is null), thread-4 (no analysis record)
+      expect(result.syncedAt).toBeDefined();
+    });
+
+    it('scopes the aggregate query to the caller tenant', async () => {
+      mockGmailClient.users.threads.list.mockResolvedValue({
+        data: {
+          threads: [{ id: 'thread-1' }],
+        },
+      });
+
+      mockPrisma.$queryRaw.mockResolvedValue([
+        {
+          threadId: 'thread-1',
+          isUrgent: false,
+          intent: 'general',
+          supervisorLabel: 'red',
+          reviewedAt: new Date(),
+        },
+      ]);
+
+      const result = await service.getInboxStatsForSe(seEmail, tenantId);
+
+      expect(mockGmailClientProvider.getClientForAccount).toHaveBeenCalledWith(
+        tenantId,
+        seEmail,
+      );
+      expect(mockPrisma.$queryRaw).toHaveBeenCalled();
+      expect(result.totalEmails).toBe(1);
+      expect(result.urgentCount).toBe(0);
+      expect(result.intentBreakdown).toEqual({ general: 1 });
+      expect(result.reviewedBreakdown).toEqual({ green: 0, yellow: 0, red: 1 });
+      expect(result.notYetReviewedCount).toBe(0);
+    });
+
+    it('should return totalEmails 0 if threads list is empty or undefined', async () => {
+      mockGmailClient.users.threads.list.mockResolvedValue({
+        data: {},
+      });
+      mockPrisma.$queryRaw.mockResolvedValue([]);
+
+      const result = await service.getInboxStatsForSe(seEmail, tenantId);
+
+      expect(mockGmailClientProvider.getClientForAccount).toHaveBeenCalledWith(
+        tenantId,
+        seEmail,
+      );
+      expect(result.totalEmails).toBe(0);
+      expect(result.urgentCount).toBe(0);
+      expect(result.intentBreakdown).toEqual({});
+      expect(result.reviewedBreakdown).toEqual({ green: 0, yellow: 0, red: 0 });
+      expect(result.notYetReviewedCount).toBe(0);
     });
   });
 });

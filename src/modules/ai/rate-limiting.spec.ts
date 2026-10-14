@@ -9,8 +9,12 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import fastifyMultipart from '@fastify/multipart';
 import type { FastifyInstance } from 'fastify';
 import { AiController } from './ai.controller';
+import { AiOrchestratorService } from './ai-orchestrator.service';
 import { KnowledgeBaseController } from '../knowledge-base/knowledge-base.controller';
 import { KnowledgeBaseService } from '../knowledge-base/knowledge-base.service';
+import { KbSearchService } from '../knowledge-base/kb-search.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { PrismaService } from '../../database/prisma.service';
 
 // A plain route with NO @Throttle note. It proves the GLOBAL 100/min still
 // applies everywhere else — tightening upload/ai must not drop this to 5 or 10.
@@ -39,8 +43,32 @@ describe('route rate limiting', () => {
         // The upload handler is never reached before the throttle blocks it, so a
         // stub service is enough to let the controller be constructed.
         { provide: KnowledgeBaseService, useValue: { ingest: jest.fn() } },
+        // Same reasoning for the KB test route: constructed, never invoked.
+        { provide: KbSearchService, useValue: { search: jest.fn() } },
+        // AiController now requires AiOrchestratorService — stub it out since
+        // this suite only tests throttle behaviour (the handler is never called).
+        {
+          provide: AiOrchestratorService,
+          useValue: { processEmail: jest.fn() },
+        },
+        // KnowledgeBaseController pulls in AdminTenantGuard, which now depends on
+        // PrismaService. The guard isn't exercised here (auth is bypassed, and no
+        // tested route hits it) — this stub just lets it be constructed.
+        {
+          provide: PrismaService,
+          useValue: {
+            tenant: {
+              findUnique: jest.fn().mockResolvedValue({ status: 'active' }),
+            },
+          },
+        },
       ],
-    }).compile();
+    })
+      // This suite tests THROTTLING only — bypass the KB auth guard so requests
+      // reach the throttle layer instead of 401-ing on a missing token.
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     app = moduleRef.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
@@ -61,14 +89,31 @@ describe('route rate limiting', () => {
   const hit = (method: 'GET' | 'POST', url: string) =>
     server.inject({ method, url });
 
-  it('upload route: 5 pass, the 6th is blocked with 429 + retry-after', async () => {
-    for (let i = 1; i <= 5; i++) {
+  it('upload route: 60 pass, the 61st is blocked with 429 + retry-after', async () => {
+    // Raised from 5 to 60/min so bulk KB uploads (the KB holds up to 200 docs)
+    // don't silently lose the overflow to 429 — still a brute-force damper.
+    for (let i = 1; i <= 60; i++) {
       const res = await hit('POST', '/knowledge-base/upload');
-      expect(res.statusCode).not.toBe(429); // within the 5/min limit
+      expect(res.statusCode).not.toBe(429); // within the 60/min limit
     }
-    const sixth = await hit('POST', '/knowledge-base/upload');
-    expect(sixth.statusCode).toBe(429);
-    expect(sixth.headers['retry-after']).toBeDefined();
+    const overflow = await hit('POST', '/knowledge-base/upload');
+    expect(overflow.statusCode).toBe(429);
+    expect(overflow.headers['retry-after']).toBeDefined();
+  });
+
+  it('KB test route: 20 pass, the 21st is blocked with 429 + retry-after', async () => {
+    // Tighter than upload on purpose: every call embeds the question, which is
+    // a real round trip to the embedding provider (up to 45s with retries).
+    // Throttles are per-route and are NOT inherited, so this route having its
+    // own is the only thing standing between a held-down Enter key and 60
+    // concurrent embedding calls.
+    for (let i = 1; i <= 20; i++) {
+      const res = await hit('POST', '/knowledge-base/test');
+      expect(res.statusCode).not.toBe(429);
+    }
+    const overflow = await hit('POST', '/knowledge-base/test');
+    expect(overflow.statusCode).toBe(429);
+    expect(overflow.headers['retry-after']).toBeDefined();
   });
 
   it('AI route: 10 pass, the 11th is blocked with 429 + retry-after', async () => {

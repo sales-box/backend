@@ -1,8 +1,19 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AnalyticsController } from './analytics.controller';
 import { AnalyticsService } from './analytics.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import type { AuthenticatedRequest } from '../auth/jwt-auth.guard';
+import { AdminTenantGuard } from '../../common/guards/admin-tenant.guard';
 
 /* eslint-disable @typescript-eslint/unbound-method */
+
+// A verified request as JwtAuthGuard would leave it: tenant id lives on the
+// token, so the controller reads it from req.user, never from the query.
+function reqFor(tenantId: string | null): AuthenticatedRequest {
+  return {
+    user: { sub: 'admin-1', tenantId, isAdmin: true, email: 'a@t.com' },
+  } as AuthenticatedRequest;
+}
 
 describe('AnalyticsController', () => {
   let controller: AnalyticsController;
@@ -18,10 +29,22 @@ describe('AnalyticsController', () => {
             getAnalyticsSummary: jest.fn(),
             getKnowledgeGapAlerts: jest.fn(),
             resolveGap: jest.fn(),
+            upsertKnowledgeGap: jest.fn(),
+            reportKnowledgeGap: jest.fn(),
+            getActivityFeed: jest.fn(),
+            getTeamStats: jest.fn(),
           },
         },
       ],
-    }).compile();
+    })
+      // Unit test targets the controller's logic; the guards (JwtAuthGuard,
+      // AdminTenantGuard) have their own specs. Pass them through here so the
+      // module compiles without their dependencies.
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(AdminTenantGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     controller = module.get<AnalyticsController>(AnalyticsController);
     service = module.get<AnalyticsService>(AnalyticsService);
@@ -41,14 +64,25 @@ describe('AnalyticsController', () => {
       };
       (service.getAnalyticsSummary as jest.Mock).mockResolvedValue(mockResult);
 
-      const result = await controller.getSummary(7);
-      expect(service.getAnalyticsSummary).toHaveBeenCalledWith(7);
+      const result = await controller.getSummary(7, reqFor('tenant-a'));
+      expect(service.getAnalyticsSummary).toHaveBeenCalledWith(7, 'tenant-a');
       expect(result).toEqual(mockResult);
     });
 
     it('should default to 30 days if no query param provided', async () => {
-      await controller.getSummary(undefined as unknown as number);
-      expect(service.getAnalyticsSummary).toHaveBeenCalledWith(undefined);
+      await controller.getSummary(
+        undefined as unknown as number,
+        reqFor('tenant-a'),
+      );
+      expect(service.getAnalyticsSummary).toHaveBeenCalledWith(
+        undefined,
+        'tenant-a',
+      );
+    });
+
+    it('takes tenantId from the token, not the request', async () => {
+      await controller.getSummary(7, reqFor('tenant-b'));
+      expect(service.getAnalyticsSummary).toHaveBeenCalledWith(7, 'tenant-b');
     });
   });
 
@@ -61,19 +95,39 @@ describe('AnalyticsController', () => {
         mockAlerts,
       );
 
-      const result = await controller.getAlerts(5);
-      expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(5);
+      const result = await controller.getAlerts(5, reqFor('tenant-a'));
+      expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(
+        5,
+        'tenant-a',
+        undefined,
+      );
       expect(result).toEqual(mockAlerts);
     });
 
     it('should default to threshold 3 if no query param provided', async () => {
-      await controller.getAlerts(undefined as unknown as number);
-      expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(undefined);
+      await controller.getAlerts(
+        undefined as unknown as number,
+        reqFor('tenant-a'),
+      );
+      expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(
+        undefined,
+        'tenant-a',
+        undefined,
+      );
+    });
+
+    it('takes tenantId from the token, not the request', async () => {
+      await controller.getAlerts(3, reqFor('tenant-b'));
+      expect(service.getKnowledgeGapAlerts).toHaveBeenCalledWith(
+        3,
+        'tenant-b',
+        undefined,
+      );
     });
   });
 
   describe('resolveGap', () => {
-    it('should call resolveGap with id', async () => {
+    it('should call resolveGap with id and tenantId from request token', async () => {
       const mockGap = {
         id: '1',
         topic: 'test',
@@ -82,9 +136,88 @@ describe('AnalyticsController', () => {
       };
       (service.resolveGap as jest.Mock).mockResolvedValue(mockGap);
 
-      const result = await controller.resolveGap('1');
-      expect(service.resolveGap).toHaveBeenCalledWith('1');
+      const result = await controller.resolveGap('1', reqFor('tenant-a'));
+      expect(service.resolveGap).toHaveBeenCalledWith('1', 'tenant-a');
       expect(result).toEqual(mockGap);
+    });
+  });
+
+  describe('reportGap', () => {
+    it('reports the tenant-scoped message and lets the server derive the topic', async () => {
+      const mockGap = {
+        id: 'gap-1',
+        topic: 'pricing',
+        tenantId: 'tenant-a',
+        occurrences: 1,
+        resolved: false,
+        reportAdded: true,
+      };
+      (service.reportKnowledgeGap as jest.Mock).mockResolvedValue(mockGap);
+
+      const dto = { messageId: 'gmail-1' };
+      const result = await controller.reportGap(dto, reqFor('tenant-a'));
+
+      expect(service.reportKnowledgeGap).toHaveBeenCalledWith(
+        'gmail-1',
+        'tenant-a',
+      );
+      expect(result).toEqual(mockGap);
+    });
+  });
+
+  describe('getActivityFeed', () => {
+    it('should call getActivityFeed with correct query parameters and tenantId', async () => {
+      const mockFeed = {
+        data: [
+          {
+            id: 'int-1',
+            time: new Date(),
+            client: 'Alice',
+            company: 'Acme Corp',
+            classification: 'sales_inquiry',
+            confidence: 0.95,
+            action: 'send_quote',
+          },
+        ],
+        meta: {
+          total: 1,
+          page: 1,
+          limit: 50,
+          totalPages: 1,
+        },
+      };
+      (service.getActivityFeed as jest.Mock).mockResolvedValue(mockFeed);
+
+      const query = { page: 1, limit: 50, date: '2026-07-14' };
+      const result = await controller.getActivityFeed(
+        query,
+        reqFor('tenant-a'),
+      );
+
+      expect(service.getActivityFeed).toHaveBeenCalledWith('tenant-a', query);
+      expect(result).toEqual(mockFeed);
+    });
+  });
+
+  describe('getTeamStats', () => {
+    it('should call getTeamStats with tenantId from request token', async () => {
+      const mockStats = [
+        {
+          email: 'se@example.com',
+          status: 'verified',
+          grantedAt: new Date(),
+          verifiedAt: new Date(),
+          lastLoginAt: new Date(),
+          emailsReceived: 10,
+          repliesSent: 8,
+          replyRate: 0.8,
+        },
+      ];
+      (service.getTeamStats as jest.Mock).mockResolvedValue(mockStats);
+
+      const result = await controller.getTeamStats(reqFor('tenant-a'));
+      expect(service.getTeamStats).toHaveBeenCalledWith('tenant-a');
+      expect(result).toEqual(mockStats);
     });
   });
 });

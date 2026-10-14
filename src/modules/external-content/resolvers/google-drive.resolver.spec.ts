@@ -108,6 +108,22 @@ describe('GoogleDriveResolver', () => {
         }),
       );
     });
+
+    it('looks up ONLY the calling tenant connection — never another tenant (S3-V10)', async () => {
+      await resolver.getAdminAuth('tenant-b');
+      expect(findFirst).toHaveBeenCalledWith({
+        where: { status: 'connected', tenantId: 'tenant-b' },
+        orderBy: { createdAt: 'asc' },
+      });
+    });
+
+    it('legacy callers (no tenant) only match the pre-tenant NULL row', async () => {
+      await resolver.getAdminAuth();
+      expect(findFirst).toHaveBeenCalledWith({
+        where: { status: 'connected', tenantId: null },
+        orderBy: { createdAt: 'asc' },
+      });
+    });
   });
 
   it('fetches a binary file via alt=media (S2-V8)', async () => {

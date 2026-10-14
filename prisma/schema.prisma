@@ -1,6 +1,5 @@
 generator client {
-  provider        = "prisma-client-js"
-  previewFeatures = ["postgresqlExtensions"]
+  provider = "prisma-client-js"
 }
 
 generator erd {
@@ -9,54 +8,112 @@ generator erd {
 }
 
 datasource db {
-  provider   = "postgresql"
-  url        = env("DATABASE_URL")
-  extensions = [vector]
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
 model Client {
   id           String        @id @default(uuid())
-  email        String        @unique
+  email        String
   name         String?
   company      String?
   status       String        @default("new_inquiry")
   crmId        String?       @map("crm_id")
   dealId       String?       @map("deal_id")
+  tenantId     String?       @map("tenant_id") @db.Uuid
+  tenant       Tenant?       @relation(fields: [tenantId], references: [id])
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   interactions Interaction[]
 
+  @@unique([tenantId, email])
   @@map("clients")
 }
 
 model Interaction {
-  id             String   @id @default(uuid())
-  clientId       String   @map("client_id")
-  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  date           DateTime @default(now())
-  type           String
-  subject        String
-  aiSummary      String   @map("ai_summary")
-  classification String?
-  confidence     Float?
-  recommendation String?
-  createdAt      DateTime @default(now())
+  id                      String               @id @default(uuid())
+  tenantId                String               @map("tenant_id")
+  clientId                String               @map("client_id")
+  client                  Client               @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  date                    DateTime             @default(now())
+  type                    String
+  subject                 String
+  aiSummary               String               @map("ai_summary")
+  classification          String?
+  recommendation          String?
+  // Which KB document the AI answer was based on ("Based on: X.pdf").
+  // Filled by the AI Phase — this column only prepares the slot.
+  sourceSnapshot          String?              @map("source_snapshot")
+  createdAt               DateTime             @default(now())
+  productConfidence       Float?               @map("product_confidence")
+  clientHistoryConfidence Float?               @map("client_history_confidence")
+  // Gmail message id when this interaction was auto-logged by the AI pipeline.
+  // Null for manually-created timeline entries. Lets the pipeline upsert one
+  // interaction per email instead of duplicating on every re-process.
+  messageId               String?              @map("message_id")
+  knowledgeGapReports     KnowledgeGapReport[]
 
+  @@unique([tenantId, messageId], name: "tenant_message")
   @@map("interactions")
 }
 
+model CrmConnection {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @unique @map("tenant_id")
+  provider  String
+  apiKey    String   @map("api_key")
+  status    String   @default("connected")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("crm_connections")
+}
+
+/// Which CRM this tenant's action agent writes to, and how to reach it.
+///
+/// Was `ZohoMcpConnection`. Renamed when HubSpot gained write access: the agent
+/// stack is provider-neutral, and a table named after one provider made it look
+/// otherwise. One row per tenant — an organisation uses exactly one CRM.
+model CrmAgentConnection {
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @unique @map("tenant_id") @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// 'zoho' | 'hubspot'. Defaults to zoho so existing rows keep working.
+  provider String @default("zoho")
+  /// Only providers reached over MCP carry a URL. HubSpot authenticates with the
+  /// private app token already held (encrypted) on CrmConnection, so this is null
+  /// for it — hence nullable.
+  mcpServerUrl String?  @map("mcp_server_url")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("crm_agent_connections")
+}
 
 model ConnectedAccount {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  email          String    @unique
-  accessToken    String    @map("access_token")
-  refreshToken   String?   @map("refresh_token")
-  scope          String?
-  tokenExpiresAt DateTime? @map("token_expires_at") @db.Timestamptz(6)
-  status         String    @default("connected")
-  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id                  String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email               String
+  isAdmin             Boolean              @default(false) @map("is_admin")
+  // Admin email+password login (argon2id). Lives on the SAME row as the
+  // Google connection so both identities converge — never a duplicate account.
+  passwordHash        String?              @map("password_hash")
+  accessToken         String               @map("access_token")
+  refreshToken        String?              @map("refresh_token")
+  scope               String?
+  tokenExpiresAt      DateTime?            @map("token_expires_at") @db.Timestamptz(6)
+  status              String               @default("connected")
+  tenantId            String?              @map("tenant_id") @db.Uuid
+  tenant              Tenant?              @relation(fields: [tenantId], references: [id])
+  createdAt           DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  // Stamped on EVERY successful OAuth login (SE or admin), unlike
+  // AllowlistEntry.verifiedAt which is set once on first activation only.
+  // This is the real "is this person actively using the product" signal.
+  lastLoginAt         DateTime?            @map("last_login_at") @db.Timestamptz(6)
   webhookSubscription WebhookSubscription?
+
+  @@unique([tenantId, email])
   @@map("connected_accounts")
 }
 
@@ -71,14 +128,67 @@ model ProcessedGmailMessage {
 }
 
 model WebhookSubscription {
-  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  connectedAccountId  String    @unique @map("connected_account_id") @db.Uuid
-  provider            String    @default("GMAIL")
-  expirationDate      DateTime  @map("expiration_date") @db.Timestamptz(6)
-  subscriptionId      String?   @map("subscription_id")
-  connectedAccount    ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+  id                 String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  connectedAccountId String           @unique @map("connected_account_id") @db.Uuid
+  provider           String           @default("GMAIL")
+  expirationDate     DateTime         @map("expiration_date") @db.Timestamptz(6)
+  subscriptionId     String?          @map("subscription_id")
+  // Gmail history baseline: the last historyId the classifier processed for
+  // this account. history.list(startHistoryId=this) returns exactly the
+  // messages we haven't classified yet. Null until the first watch/notification
+  // seeds it.
+  lastHistoryId      String?          @map("last_history_id")
+  connectedAccount   ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
 
   @@map("webhook_subscriptions")
+}
+
+// Classifier output — "General Analysis". One row per
+// Gmail message, written ONCE by the background classifier; every on-demand
+// stage (Extractor onward) reads it from here and never re-runs the classifier.
+// Keyed by messageId (not Interaction): no Interaction/Client row exists yet
+// at webhook time — client identity resolution happens later, on-demand.
+model GeneralAnalysis {
+  id                      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  messageId               String    @unique @map("message_id")
+  threadId                String?   @map("thread_id")
+  accountEmail            String    @map("account_email")
+  tenantId                String?   @map("tenant_id") @db.Uuid
+  isUrgent                Boolean   @map("is_urgent")
+  urgencyReason           String?   @map("urgency_reason")
+  intent                  String
+  intentConfidence        Float     @map("intent_confidence")
+  reasoning               String?
+  promptVersion           String    @map("prompt_version")
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  productConfidence       Float?    @map("product_confidence")
+  clientHistoryConfidence Float?    @map("client_history_confidence")
+  supervisorLabel         String?   @map("supervisor_label")
+  reviewedAt              DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  // Complaint detection. Separate from `intent` because the same email is
+  // often both a support ticket and something the admin must see independently:
+  // a complaint about the sales engineer cannot be routed only to that sales
+  // engineer. 'product' | 'service' | 'person' | 'none'.
+  // Defaults keep every row classified before this existed readable as
+  // "no complaint detected", which is the honest reading.
+  isComplaint             Boolean   @default(false) @map("is_complaint")
+  complaintAbout          String    @default("none") @map("complaint_about")
+  // FAQ auto-reply: set when the classifier detected a FAQ-shaped question
+  // and a matching FaqItem was found above the similarity threshold.
+  isFaq                   Boolean   @default(false) @map("is_faq")
+  faqItemId               String?   @map("faq_item_id") @db.Uuid
+  faqItem                 FaqItem?  @relation(fields: [faqItemId], references: [id], onDelete: SetNull)
+  faqAutoReplied          Boolean   @default(false) @map("faq_auto_replied")
+  escalationItem          EscalationItem?
+
+  @@index([tenantId, isUrgent])
+  // Supports AnalyticsService.getTeamStats — groupBy(accountEmail) scoped
+  // by tenant, run on every Analytics "team" page load.
+  @@index([tenantId, accountEmail])
+  // Supports AnalyticsService.getAnalyticsSummary — window counts, daily
+  // time-series, and month-over-month, all filtered by tenant + created_at.
+  @@index([tenantId, createdAt])
+  @@map("general_analysis")
 }
 
 enum DocumentStatus {
@@ -90,30 +200,38 @@ enum DocumentStatus {
 }
 
 model Document {
-  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  filename        String         @db.VarChar
-  productName     String?        @map("product_name") @db.VarChar
-  fileType        String?        @map("file_type") @db.VarChar
-  status          DocumentStatus @default(processing)
-  chunkCount      Int            @default(0) @map("chunk_count")
-  processingError String?        @map("processing_error")
-  uploadedBy      String?        @map("uploaded_by") @db.VarChar
-  uploadDate      DateTime       @default(now()) @map("upload_date") @db.Timestamptz(6)
-  processedAt     DateTime?      @map("processed_at") @db.Timestamptz(6)
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  filename        String          @db.VarChar
+  productName     String?         @map("product_name") @db.VarChar
+  fileType        String?         @map("file_type") @db.VarChar
+  status          DocumentStatus  @default(processing)
+  chunkCount      Int             @default(0) @map("chunk_count")
+  processingError String?         @map("processing_error")
+  // Quality gate: flagged at upload time when extraction looks unreliable
+  // (e.g. a scanned PDF with almost no extractable text).
+  isLowConfidence Boolean         @default(false) @map("is_low_confidence")
+  qualityReason   String?         @map("quality_reason")
+  uploadedBy      String?         @map("uploaded_by") @db.VarChar
+  uploadDate      DateTime        @default(now()) @map("upload_date") @db.Timestamptz(6)
+  processedAt     DateTime?       @map("processed_at") @db.Timestamptz(6)
   chunks          DocumentChunk[]
+  tenantId        String?         @map("tenant_id") @db.Uuid
+  tenant          Tenant?         @relation(fields: [tenantId], references: [id])
+  qualityScore    Int?            @map("quality_score")
+  qualityReport   Json?           @map("quality_report")
 
-  @@unique([filename, productName], map: "uq_documents_file")
+  @@unique([tenantId, filename, productName], map: "uq_documents_file")
   @@map("documents")
 }
 
 model DocumentChunk {
-  id         String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  documentId String                       @map("document_id") @db.Uuid
-  document   Document                     @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  chunkIndex Int?                         @map("chunk_index")
+  id         String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  documentId String                      @map("document_id") @db.Uuid
+  document   Document                    @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  chunkIndex Int?                        @map("chunk_index")
   content    String?
-  embedding  Unsupported("vector(1536)")?
-  tokenCount Int?                         @map("token_count")
+  embedding  Unsupported("vector(768)")?
+  tokenCount Int?                        @map("token_count")
   metadata   Json?
 
   @@index([documentId], map: "idx_chunks_doc")
@@ -124,10 +242,15 @@ model DocumentChunk {
 // A domain NOT present here is never fetched. Karim inserts rows directly.
 model AllowedDomain {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  domain    String   @unique
+  domain    String
   addedBy   String   @map("added_by")
+  tenantId  String?  @map("tenant_id") @db.Uuid
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id])
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
+  // Each tenant maintains its OWN allow-list; two tenants may both allow
+  // the same domain without colliding.
+  @@unique([tenantId, domain])
   @@map("allowed_domains")
 }
 
@@ -141,6 +264,8 @@ model DriveConnection {
   scope          String?
   tokenExpiresAt DateTime? @map("token_expires_at") @db.Timestamptz(6)
   status         String    @default("connected")
+  tenantId       String?   @map("tenant_id") @db.Uuid
+  tenant         Tenant?   @relation(fields: [tenantId], references: [id])
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -148,12 +273,219 @@ model DriveConnection {
 }
 
 model KnowledgeGap {
-  id          String   @id @default(cuid())
-  topic       String   @unique
-  occurrences Int      @default(1)
-  resolved    Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id          String               @id @default(cuid())
+  topic       String
+  occurrences Int                  @default(1)
+  resolved    Boolean              @default(false)
+  /// When an admin last marked this topic documented. `occurrences` restarts at
+  /// zero at that moment, so the count always means "asked about since we wrote
+  /// the docs" rather than a lifetime total, and the evidence list is filtered
+  /// to the same window. NULL for a gap that has never been resolved.
+  resolvedAt  DateTime?            @map("resolved_at")
+  tenantId    String?              @map("tenant_id") @db.Uuid
+  tenant      Tenant?              @relation(fields: [tenantId], references: [id])
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  reports     KnowledgeGapReport[]
 
+  // Same topic exists once PER TENANT — occurrence counts never mix
+  // between two companies.
+  @@unique([tenantId, topic])
   @@map("knowledge_gaps")
+}
+
+// One email can raise a given gap only once. The report points back to the
+// existing Interaction so admins can inspect the exact subject, sender and AI
+// summary without copying raw email content into analytics tables.
+model KnowledgeGapReport {
+  id             String       @id @default(cuid())
+  knowledgeGapId String       @map("knowledge_gap_id")
+  interactionId  String       @unique @map("interaction_id")
+  knowledgeGap   KnowledgeGap @relation(fields: [knowledgeGapId], references: [id], onDelete: Cascade)
+  interaction    Interaction  @relation(fields: [interactionId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@index([knowledgeGapId, createdAt])
+  @@map("knowledge_gap_reports")
+}
+
+enum TenantStatus {
+  pending
+  active
+  // Reversible operator pause (platform-admin console). Blocks all the tenant's
+  // users via the tenant guards; re-activating restores access with no data loss.
+  suspended
+  abandoned
+  offboarded
+
+  @@map("tenant_status")
+}
+
+/// Billing state, kept deliberately separate from `TenantStatus`.
+///
+/// `status` answers "does this account exist and is it un-suspended" — it turns
+/// `active` when the admin clicks the email verification link. `subscriptionStatus`
+/// answers "has this company paid", and only a signature-verified Stripe webhook
+/// may set it to `active`. There is no free tier: every state below except
+/// `active` denies access to the product.
+enum SubscriptionStatus {
+  /// Signed up and verified, never paid. Can log in and reach checkout, nothing else.
+  none
+  /// Paid and in good standing. The only state that unlocks the product.
+  active
+  /// Was active, then a charge failed. Access is denied until they pay again,
+  /// but the row remembers they were a customer (see `subscribedAt`).
+  past_due
+  /// Refunded, charged back, or subscription deleted. Access revoked.
+  canceled
+
+  @@map("subscription_status")
+}
+
+model Tenant {
+  id                         String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyName                String       @map("company_name")
+  status                     TenantStatus @default(pending)
+  /// Which paid plan they are on. Meaningless on its own — read it only once
+  /// `subscriptionStatus` is `active`, because an unpaid tenant also carries a
+  /// tier number. The guards deny unpaid tenants before any tier lookup runs.
+  tier                       Int          @default(1)
+  /// Has this company actually paid. Written only by the Stripe webhook.
+  /// Defaults to `none`: signing up buys nothing.
+  subscriptionStatus         SubscriptionStatus @default(none) @map("subscription_status")
+  /// When the current subscription first went active. Kept across `past_due`
+  /// and `canceled` so support can tell a lapsed customer from someone who
+  /// never paid at all.
+  subscribedAt               DateTime?    @map("subscribed_at")
+  /// Stripe customer id, once we have one. Lets support reconcile a tenant
+  /// against Stripe without guessing from the email.
+  stripeCustomerId           String?      @map("stripe_customer_id")
+  /// The address signup was started from, stored lowercased. Without it the
+  /// server had no way to tell which pending tenant a "resend my link" request
+  /// belonged to, so it guessed — and mailed the newest pending tenant's token
+  /// to whoever asked. Nullable because tenants created before this column
+  /// exists have no recorded signup address.
+  adminEmail                 String?      @map("admin_email")
+  emailVerifiedAt            DateTime?    @map("email_verified_at")
+  emailVerificationToken     String?      @unique @map("email_verification_token")
+  emailVerificationExpiresAt DateTime?    @map("email_verification_expires_at")
+  createdAt                  DateTime     @default(now()) @map("created_at")
+  updatedAt                  DateTime     @updatedAt @map("updated_at")
+
+  clients           Client[]
+  connectedAccounts ConnectedAccount[]
+  documents         Document[]
+  allowedDomains    AllowedDomain[]
+  driveConnections  DriveConnection[]
+  knowledgeGaps     KnowledgeGap[]
+  allowlistEntries  AllowlistEntry[]
+  crmAgentConnection CrmAgentConnection?
+  escalationItems   EscalationItem[]
+  faqDocuments      FaqDocument[]
+
+  @@index([status, adminEmail])
+  @@index([subscriptionStatus])
+  @@map("tenants")
+}
+
+// ─── FAQ Auto-Reply ──────────────────────────────────────────────────────────
+// Admin uploads a structured Q&A file. The classifier detects FAQ-shaped emails
+// and matches them via vector similarity. A matched email is answered directly
+// from the SE's Gmail account without human intervention.
+
+model FaqDocument {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  filename   String
+  uploadedBy String?   @map("uploaded_by")
+  uploadedAt DateTime  @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  items      FaqItem[]
+
+  @@unique([tenantId, filename])
+  @@map("faq_documents")
+}
+
+model FaqItem {
+  id         String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  documentId String          @map("document_id") @db.Uuid
+  document   FaqDocument     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  tenantId   String          @map("tenant_id") @db.Uuid
+  /// Canonical question text — embedding is computed on this.
+  question   String
+  /// Full answer text sent verbatim as the auto-reply body.
+  answer     String
+  /// 768-dim embedding of the question. Null until the embed worker fills it.
+  embedding  Unsupported("vector(768)")?
+  createdAt  DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  // Back-reference: which analysis rows were answered from this FAQ item.
+  generalAnalyses GeneralAnalysis[]
+
+  @@index([tenantId], map: "idx_faq_items_tenant")
+  @@map("faq_items")
+}
+
+/// Stripe webhook idempotency: one row per processed event id.
+/// Prevents re-processing when Stripe retries a delivery.
+model ProcessedStripeEvent {
+  eventId     String   @id @map("event_id")
+  eventType   String   @map("event_type")
+  processedAt DateTime @default(now()) @map("processed_at")
+
+  @@map("processed_stripe_events")
+}
+
+model AllowlistEntry {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  tenant     Tenant    @relation(fields: [tenantId], references: [id])
+  email      String
+  status     String    @default("granted") // granted | verified | revoked
+  grantedAt  DateTime  @default(now()) @map("granted_at")
+  verifiedAt DateTime? @map("verified_at")
+  revokedAt  DateTime? @map("revoked_at")
+
+  @@unique([tenantId, email])
+  @@map("allowlist_entries")
+}
+
+/// Platform operator (the Salesbox team) — a separate identity domain from
+/// tenant users. NOT a ConnectedAccount and NOT tied to any tenant: platform
+/// admins authenticate with their own login and a platform JWT (no tenantId),
+/// and are the only role allowed to act across tenants. Seeded, never self-serve.
+/// An email here is never also a ConnectedAccount (separation of duties, enforced
+/// at seed time).
+model PlatformAdmin {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String    @unique
+  passwordHash String    @map("password_hash")
+  name         String?
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz(6)
+
+  @@map("platform_admins")
+}
+
+model EscalationItem {
+  id                String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId          String          @map("tenant_id") @db.Uuid
+  tenant            Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  generalAnalysisId String          @unique @map("general_analysis_id") @db.Uuid
+  generalAnalysis   GeneralAnalysis @relation(fields: [generalAnalysisId], references: [id], onDelete: Cascade)
+  
+  messageId         String          @map("message_id")
+  accountEmail      String          @map("account_email") // The SE email address
+  
+  severity          String          // "high" (urgent+sensitive), "medium" (urgent or sensitive), "low" (red label)
+  reason            String          // Stored urgencyReason or reasoning
+  status            String          @default("pending") // "pending" | "reviewed" | "dismissed"
+  
+  reviewedBy        String?         @map("reviewed_by")
+  reviewedAt        DateTime?       @map("reviewed_at") @db.Timestamptz(6)
+  
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([tenantId, status, createdAt])
+  @@map("escalation_items")
 }

@@ -11,10 +11,19 @@ export interface ClientRecord {
 
 export interface ClientContext {
   isNewClient: boolean;
+  /** How the client record was resolved. 'individual' means this exact person
+   *  is known. 'domain' means only company context was found. */
+  matchedBy: 'domain' | 'individual' | null;
   clientId: string | null;
   status: string;
+  name: string;
   company: string;
   crmId: string | null;
+  /** TOTAL logged interactions with this exact person. `history` below is
+   *  truncated to the 5 most recent for display; the Supervisor grades on this
+   *  count, where 5 and 200 must not look identical. 0 whenever `history` is
+   *  empty (new client, or a 'domain' match that belongs to someone else). */
+  historyCount: number;
   history: {
     date: string;
     type: string;
@@ -23,4 +32,16 @@ export interface ClientContext {
     classification: string | null;
     recommendation: string | null;
   }[];
+}
+
+export interface CaptureInboundEmailInput {
+  messageId: string;
+  senderEmail: string;
+  senderName?: string;
+  date?: string | Date | null;
+  subject?: string | null;
+  aiSummary?: string | null;
+  classification?: string | null;
+  productConfidence?: number | null;
+  clientHistoryConfidence?: number | null;
 }

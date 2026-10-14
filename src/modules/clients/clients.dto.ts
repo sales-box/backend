@@ -45,7 +45,11 @@ export class CreateInteractionDto {
 
   @IsNumber()
   @IsOptional()
-  confidence?: number;
+  productConfidence?: number;
+
+  @IsNumber()
+  @IsOptional()
+  clientHistoryConfidence?: number;
 
   @IsString()
   @IsOptional()

@@ -47,6 +47,24 @@ describe('GmailParserService', () => {
     expect(result.textPlain).toBeDefined();
     expect(result.textHtml).toBeDefined();
     expect(result.attachments).toBeDefined();
+    expect(result.labelIds).toEqual([]);
+  });
+
+  it('populates labelIds from raw message labelIds', () => {
+    const raw: gmail_v1.Schema$Message = {
+      id: 'msg-labeled',
+      threadId: 'thread-1',
+      labelIds: ['Label_123', 'INBOX'],
+      payload: {
+        headers: BASE_HEADERS,
+        mimeType: 'text/plain',
+        body: { data: encode('Hello') },
+      },
+    };
+
+    const result = service.parseMessage(raw);
+
+    expect(result.labelIds).toEqual(['Label_123', 'INBOX']);
   });
 
   it('plain-text body is decoded from base64url', () => {

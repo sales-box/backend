@@ -64,6 +64,10 @@ export class EnvironmentVariables {
   @Max(65535)
   REDIS_PORT: number = 6379;
 
+  @IsOptional()
+  @IsString()
+  REDIS_PASSWORD?: string;
+
   @IsString()
   @MinLength(16)
   COOKIE_SECRET!: string;
@@ -107,6 +111,19 @@ export class EnvironmentVariables {
   @MinLength(1)
   GOOGLE_SCOPES!: string;
 
+  // ----- JWT (admin login + SE login) -----
+
+  // Signs and verifies every JWT: admin password login, SE login, and the
+  // JwtAuthGuard/TenantAllowlistGuard. Dev fallback mirrors the COOKIE_SECRET
+  // pattern; production MUST override.
+  @IsString()
+  @MinLength(32)
+  JWT_SECRET: string = 'dev-jwt-secret-change-me-0123456789abcdef';
+
+  @IsString()
+  @MinLength(2)
+  JWT_EXPIRES_IN: string = '1h';
+
   // ----- Token encryption / frontend -----
 
   @Validate(Is32ByteKeyConstraint)
@@ -114,6 +131,9 @@ export class EnvironmentVariables {
 
   @IsUrl({ require_tld: false })
   FRONTEND_DASHBOARD_URL!: string;
+
+  @IsUrl({ require_tld: false })
+  EXTENSION_INSTALL_URL!: string;
 
   // ----- CRM (HubSpot) -----
 
@@ -150,6 +170,80 @@ export class EnvironmentVariables {
   @IsOptional()
   @IsString()
   S3_ENDPOINT?: string;
+
+  // ----- Email Verification (Nodemailer) -----
+
+  @IsString()
+  @MinLength(1)
+  SMTP_HOST: string = 'smtp.gmail.com';
+
+  @IsInt()
+  @Min(1)
+  @Max(65535)
+  SMTP_PORT: number = 587;
+
+  @IsString()
+  @MinLength(1)
+  SMTP_USER!: string;
+
+  @IsString()
+  @MinLength(1)
+  SMTP_PASS!: string;
+
+  @IsUrl({ require_tld: false })
+  API_URL: string = 'http://localhost:3000';
+
+  // ----- LLM (provider-agnostic — OpenAI SDK + configurable baseURL) -----
+  // Currently pointed at Groq's OpenAI-compatible endpoint. Swapping
+  // providers later (e.g. once ITI issues an OpenAI key) should only
+  // require changing these vars, not the client code.
+  @IsOptional()
+  @IsString()
+  LLM_API_KEY?: string;
+
+  @IsString()
+  @MinLength(1)
+  LLM_API_KEYS!: string;
+
+  @IsUrl({ require_tld: false })
+  LLM_BASE_URL!: string;
+
+  @IsString()
+  @MinLength(1)
+  PORTKEY_API_KEY!: string;
+
+  @IsUrl({ require_tld: false })
+  PORTKEY_BASE_URL!: string;
+
+  @IsString()
+  @MinLength(1)
+  PORTKEY_CONFIG_ID!: string;
+
+  @IsString()
+  @MinLength(1)
+  LLM_MODEL!: string;
+
+  // Multimodal model for image/attachment analysis (Extractor's vision
+  // fallback, Attachments module). Reuses LLM_API_KEY/LLM_BASE_URL —
+  // only the model name differs.
+  @IsString()
+  @MinLength(1)
+  VISION_MODEL!: string;
+
+  // ----- Embeddings (separate provider from chat) -----
+  // Chat runs on Groq, which serves no /embeddings endpoint, so the
+  // embedding provider must be configurable independently. Currently
+  // pointed at a local Ollama instance (OpenAI-compatible API).
+  @IsString()
+  @MinLength(1)
+  EMBEDDING_API_KEY!: string;
+
+  @IsUrl({ require_tld: false })
+  EMBEDDING_BASE_URL!: string;
+
+  @IsString()
+  @MinLength(1)
+  EMBEDDING_MODEL!: string;
 }
 
 export function validateEnv(

@@ -1,0 +1,70 @@
+export const INTENTS = [
+  'product inquiry',
+  'demo request',
+  'support',
+  'follow-up',
+  'sensitive',
+] as const;
+
+export type Intent = (typeof INTENTS)[number];
+
+/**
+ * Who or what a complaint is about — the distinction that decides where it goes.
+ *
+ * A complaint about the product is a support problem and belongs with the SE
+ * handling the account. A complaint about the SE, or about the company's
+ * conduct, cannot only go there: the person being complained about would be the
+ * one deciding whether anyone hears it. That is why this is separate from
+ * `intent` rather than another intent value — the same email is often both a
+ * support ticket and something the admin needs to see independently.
+ */
+export const COMPLAINT_TARGETS = [
+  'product',
+  'service',
+  'person',
+  'none',
+] as const;
+
+export type ComplaintTarget = (typeof COMPLAINT_TARGETS)[number];
+
+/** The stored contract — the exact shape CONTRACTS.md promises the Extractor. */
+export interface ClassificationResult {
+  isUrgent: boolean;
+  urgencyReason: string | null;
+  intent: Intent;
+  intentConfidence: number;
+  /** Model's own audit trail; stored for debugging/eval, not part of the contract. */
+  reasoning: string;
+  /** True when the client is unhappy, not merely asking for something. */
+  isComplaint: boolean;
+  /** What the complaint is about. 'none' whenever isComplaint is false. */
+  complaintAbout: ComplaintTarget;
+  /**
+   * True when the email is a standalone factual question that a structured
+   * FAQ document could answer verbatim — no SE judgment required.
+   * False for complaints, support tickets, demos, and anything ambiguous.
+   */
+  isFaq: boolean;
+  /** How confident the model is that this is FAQ-answerable (0.0–1.0). */
+  faqConfidence: number;
+}
+
+export interface ClassifyEmailJobData {
+  emailAddress: string;
+  historyId: string;
+}
+
+/**
+ * Backlog pass over a newly connected mailbox. Carries no historyId on
+ * purpose: this path does not read or advance the watch baseline, it lists the
+ * label directly. See BACKFILL_INBOX_JOB.
+ */
+export interface BackfillInboxJobData {
+  emailAddress: string;
+}
+
+export interface ClassifyJobResult {
+  classified: number;
+  faqAutoReplied?: number;
+  skipped?: 'no_account' | 'no_tenant' | 'no_baseline' | 'history_expired';
+}

@@ -41,6 +41,8 @@ services:
       # Inside the compose network, reach services by their service name.
       DATABASE_URL: postgresql://salesbox:salesbox@postgres:5432/salesbox?schema=public
       REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
     ports:
       - '3000:3000'
     depends_on:

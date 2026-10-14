@@ -1,0 +1,5 @@
+{"id":"one-product","text":"Hi, does your platform integrate with Salesforce, and what's the pricing for 100 users?","expected":{"intent":"product inquiry","isUrgent":false}}
+{"id":"one-demo","text":"We'd love to see it in action. Can we schedule a demo next Wednesday afternoon?","expected":{"intent":"demo request","isUrgent":false}}
+{"id":"one-support","text":"Since yesterday's update our reports won't load and the team is stuck. Please help urgently.","expected":{"intent":"support","isUrgent":true}}
+{"id":"one-followup","text":"Just circling back on the quote you sent last week - any news?","expected":{"intent":"follow-up","isUrgent":false}}
+{"id":"one-sensitive","text":"If this billing error isn't fixed this week we will cancel the contract and contact our lawyers.","expected":{"intent":"sensitive","isUrgent":true}}

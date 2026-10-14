@@ -1,6 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ClientsController } from './clients.controller';
 import { ClientsService } from './clients.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { AdminTenantGuard } from '../../common/guards/admin-tenant.guard';
 
 describe('ClientsController', () => {
   let controller: ClientsController;
@@ -14,6 +16,13 @@ describe('ClientsController', () => {
     getClientContext: jest.fn(),
   };
 
+  const tenantId = 'tenant-test-123';
+
+  /** Minimal AuthenticatedRequest stub that satisfies the controller methods. */
+  const mockReq = {
+    user: { tenantId, isAdmin: true, email: 'admin@example.com', sub: 'acc-1' },
+  } as unknown as import('../auth/jwt-auth.guard').AuthenticatedRequest;
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ClientsController],
@@ -23,7 +32,13 @@ describe('ClientsController', () => {
           useValue: mockClientsService,
         },
       ],
-    }).compile();
+    })
+      // Guard logic is tested separately; skip here to keep unit tests fast.
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(AdminTenantGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     controller = module.get<ClientsController>(ClientsController);
 
@@ -35,14 +50,16 @@ describe('ClientsController', () => {
   });
 
   describe('createClient', () => {
-    it('should call service.getOrCreateClient', async () => {
-      const dto = {
-        email: 'test@example.com',
-        name: 'Test',
-        company: 'Company',
-      };
+    const dto = {
+      email: 'test@example.com',
+      name: 'Test',
+      company: 'Company',
+    };
+
+    it('should call service.getOrCreateClient with tenantId from JWT', async () => {
       const expectedResult = {
         id: '1',
+        tenantId,
         email: dto.email,
         name: dto.name,
         company: dto.company,
@@ -52,10 +69,11 @@ describe('ClientsController', () => {
       };
       mockClientsService.getOrCreateClient.mockResolvedValue(expectedResult);
 
-      const result = await controller.createClient(dto);
+      const result = await controller.createClient(mockReq, dto);
 
       expect(result).toEqual(expectedResult);
       expect(mockClientsService.getOrCreateClient).toHaveBeenCalledWith(
+        tenantId,
         dto.email,
         dto.name,
         dto.company,
@@ -64,16 +82,18 @@ describe('ClientsController', () => {
   });
 
   describe('addInteraction', () => {
-    it('should call service.addInteraction', async () => {
-      const clientId = '1';
-      const dto = { type: 'email', subject: 'Subject', aiSummary: 'Summary' };
-      const expectedResult = { id: 'int-1', clientId, ...dto };
+    const clientId = '1';
+    const dto = { type: 'email', subject: 'Subject', aiSummary: 'Summary' };
+
+    it('should call service.addInteraction with tenantId from JWT', async () => {
+      const expectedResult = { id: 'int-1', tenantId, clientId, ...dto };
       mockClientsService.addInteraction.mockResolvedValue(expectedResult);
 
-      const result = await controller.addInteraction(clientId, dto);
+      const result = await controller.addInteraction(mockReq, clientId, dto);
 
       expect(result).toEqual(expectedResult);
       expect(mockClientsService.addInteraction).toHaveBeenCalledWith(
+        tenantId,
         clientId,
         dto,
       );
@@ -81,10 +101,12 @@ describe('ClientsController', () => {
   });
 
   describe('getClient', () => {
-    it('should call service.getClient', async () => {
-      const clientId = '1';
+    const clientId = '1';
+
+    it('should call service.getClient with tenantId from JWT', async () => {
       const mockResult = {
         id: clientId,
+        tenantId,
         email: 'test@example.com',
         name: 'Test',
         company: 'Company',
@@ -95,16 +117,20 @@ describe('ClientsController', () => {
       };
       mockClientsService.getClient.mockResolvedValue(mockResult);
 
-      const result = await controller.getClient(clientId);
+      const result = await controller.getClient(mockReq, clientId);
 
       expect(result).toEqual(mockResult);
-      expect(mockClientsService.getClient).toHaveBeenCalledWith(clientId);
+      expect(mockClientsService.getClient).toHaveBeenCalledWith(
+        tenantId,
+        clientId,
+      );
     });
   });
 
   describe('getClients', () => {
-    it('should call service.getClients with search and pagination params', async () => {
-      const query = { search: 'acme', page: 1, limit: 10 };
+    const query = { search: 'acme', page: 1, limit: 10 };
+
+    it('should call service.getClients with tenantId from JWT and pagination params', async () => {
       const mockResult = {
         data: [],
         meta: {
@@ -118,20 +144,25 @@ describe('ClientsController', () => {
       };
       mockClientsService.getClients.mockResolvedValue(mockResult);
 
-      const result = await controller.getClients(query);
+      const result = await controller.getClients(mockReq, query);
 
       expect(result).toEqual(mockResult);
-      expect(mockClientsService.getClients).toHaveBeenCalledWith(query.search, {
-        page: query.page,
-        limit: query.limit,
-      });
+      expect(mockClientsService.getClients).toHaveBeenCalledWith(
+        tenantId,
+        query.search,
+        {
+          page: query.page,
+          limit: query.limit,
+        },
+      );
     });
   });
 
   describe('getInteractions', () => {
-    it('should call service.getInteractions with pagination params', async () => {
-      const clientId = '1';
-      const query = { page: 2, limit: 5 };
+    const clientId = '1';
+    const query = { page: 2, limit: 5 };
+
+    it('should call service.getInteractions with tenantId from JWT and pagination params', async () => {
       const mockResult = {
         data: [],
         meta: {
@@ -145,10 +176,11 @@ describe('ClientsController', () => {
       };
       mockClientsService.getInteractions.mockResolvedValue(mockResult);
 
-      const result = await controller.getInteractions(clientId, query);
+      const result = await controller.getInteractions(mockReq, clientId, query);
 
       expect(result).toEqual(mockResult);
       expect(mockClientsService.getInteractions).toHaveBeenCalledWith(
+        tenantId,
         clientId,
         {
           page: query.page,
@@ -159,8 +191,9 @@ describe('ClientsController', () => {
   });
 
   describe('getClientContext', () => {
-    it('should call service.getClientContext with query email parameter', async () => {
-      const email = 'test@example.com';
+    const email = 'test@example.com';
+
+    it('should call service.getClientContext with tenantId from JWT and email', async () => {
       const expectedResult = {
         isNewClient: false,
         clientId: 'client-1',
@@ -171,10 +204,13 @@ describe('ClientsController', () => {
       };
       mockClientsService.getClientContext.mockResolvedValue(expectedResult);
 
-      const result = await controller.getClientContext(email);
+      const result = await controller.getClientContext(mockReq, email);
 
       expect(result).toEqual(expectedResult);
-      expect(mockClientsService.getClientContext).toHaveBeenCalledWith(email);
+      expect(mockClientsService.getClientContext).toHaveBeenCalledWith(
+        tenantId,
+        email,
+      );
     });
   });
 });

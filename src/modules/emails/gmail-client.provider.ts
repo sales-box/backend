@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { gmail_v1, google } from 'googleapis';
 import { PrismaService } from '../../database/prisma.service';
@@ -17,9 +21,18 @@ export class GmailClientProvider {
     private readonly crypto: CryptoService,
   ) {}
 
-  async getClientForAccount(email: string): Promise<gmail_v1.Gmail> {
+  /**
+   * `tenantId` is required. This method decrypts a mailbox's OAuth tokens, and
+   * its callers take the address from request bodies, so an email-only lookup
+   * would hand any caller any tenant's credentials. Same rule as
+   * AuthService.getUserCredentials — do not add a fallback.
+   */
+  async getClientForAccount(
+    tenantId: string,
+    email: string,
+  ): Promise<gmail_v1.Gmail> {
     const account = await this.prisma.connectedAccount.findUnique({
-      where: { email },
+      where: { tenantId_email: { tenantId, email } },
     });
 
     if (!account || account.status !== 'connected') {
@@ -34,11 +47,29 @@ export class GmailClientProvider {
       this.config.getOrThrow<string>('GOOGLE_REDIRECT_URI'),
     );
 
+    // A stored token that will not decrypt is a real, recoverable state — a
+    // rotated TOKEN_ENCRYPTION_KEY, a row copied between environments, a
+    // truncated column. It used to escape as a bare "Malformed encrypted
+    // payload" 500, which tells the Sales Engineer nothing and tells the
+    // dashboard nothing it can act on. Report it as what it is: this mailbox
+    // has to be reconnected.
+    let credentials: { accessToken: string; refreshToken?: string };
+    try {
+      credentials = {
+        accessToken: this.crypto.decrypt(account.accessToken),
+        refreshToken: account.refreshToken
+          ? this.crypto.decrypt(account.refreshToken)
+          : undefined,
+      };
+    } catch {
+      throw new ConflictException(
+        `Stored Gmail credentials for ${email} could not be read. Reconnect the mailbox.`,
+      );
+    }
+
     oauth2.setCredentials({
-      access_token: this.crypto.decrypt(account.accessToken),
-      refresh_token: account.refreshToken
-        ? this.crypto.decrypt(account.refreshToken)
-        : undefined,
+      access_token: credentials.accessToken,
+      refresh_token: credentials.refreshToken,
       expiry_date: account.tokenExpiresAt?.getTime(),
       scope: account.scope ?? undefined,
     });

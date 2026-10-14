@@ -3,6 +3,10 @@ import { EmailProvider } from '@/modules/email/email-provider.abstract';
 import { EmailThread, ParsedMessage } from '@/modules/email/email.types';
 import { GmailParserService } from '@/modules/email/gmail/gmail-parser.service';
 import { GmailClientFactory } from '@/modules/email/gmail/gmail-client.factory';
+import {
+  NewMessagesResult,
+  NewSentThreadsResult,
+} from '@/modules/email/gmail/gmail.types';
 import { gmail_v1 } from 'googleapis';
 
 @Injectable()
@@ -13,10 +17,14 @@ export class GmailProvider implements EmailProvider {
   ) {}
 
   async fetchMessage(
+    tenantId: string,
     messageId: string,
     emailAccount: string,
   ): Promise<ParsedMessage> {
-    const gmailClient = await this.clientFactory.createClient(emailAccount);
+    const gmailClient = await this.clientFactory.createClient(
+      tenantId,
+      emailAccount,
+    );
 
     const message = await gmailClient.users.messages.get({
       userId: 'me',
@@ -27,11 +35,223 @@ export class GmailProvider implements EmailProvider {
     return this.parser.parseMessage(message.data);
   }
 
+  /**
+   * Resolves internal Gmail labelIds matching the 'salesbox' label
+   * (handles name variations such as 'Salesbox', 'SalesBox', 'Sales Box', 'sales-box', 'salesbox/inbound').
+   */
+  async getSalesboxLabelIds(
+    tenantId: string,
+    emailAccount: string,
+  ): Promise<string[]> {
+    try {
+      const gmailClient = await this.clientFactory.createClient(
+        tenantId,
+        emailAccount,
+      );
+      const res = await gmailClient.users.labels.list({ userId: 'me' });
+      const labels = res.data.labels ?? [];
+      const matches = labels.filter((l) => {
+        if (!l.name) return false;
+        const normalized = l.name.toLowerCase().replace(/[\s-_]/g, '');
+        return normalized === 'salesbox' || normalized.startsWith('salesbox/');
+      });
+      return matches.map((m) => m.id!).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Resolves the primary internal Gmail labelId for a given label name.
+   */
+  async getLabelIdByName(
+    tenantId: string,
+    emailAccount: string,
+    _labelName = 'salesbox',
+  ): Promise<string | null> {
+    const ids = await this.getSalesboxLabelIds(tenantId, emailAccount);
+    return ids[0] ?? null;
+  }
+
+  /**
+   * Message ids already sitting under the salesbox label, newest first.
+   *
+   * `fetchNewMessageIds` walks the history feed, which only ever moves FORWARD
+   * from the watch baseline — so mail that arrived before a company connected
+   * its mailbox is invisible to it, permanently. That is the backlog this
+   * exists to reach.
+   *
+   * Ids only. The caller fetches each message itself, so a large mailbox does
+   * not pull thousands of bodies into memory to decide it is over the cap.
+   * Both bounds are enforced: `newerThanDays` server-side via Gmail's query
+   * language, `maxMessages` by stopping the page walk.
+   */
+  async listLabelledMessageIds(
+    tenantId: string,
+    emailAccount: string,
+    opts: { maxMessages: number; newerThanDays: number },
+  ): Promise<string[]> {
+    // A cap of zero or less is "list nothing", and it has to be answered here:
+    // it would otherwise reach Gmail as maxResults <= 0 on the first page,
+    // which the API does not treat as "none".
+    if (opts.maxMessages <= 0) return [];
+
+    const gmailClient = await this.clientFactory.createClient(
+      tenantId,
+      emailAccount,
+    );
+
+    const salesboxLabelIds = await this.getSalesboxLabelIds(
+      tenantId,
+      emailAccount,
+    );
+    // Same guard as fetchNewMessageIds: with no label id, Gmail would happily
+    // list the ENTIRE mailbox rather than the salesbox subset.
+    if (salesboxLabelIds.length === 0) {
+      return [];
+    }
+
+    const ids: string[] = [];
+    const seen = new Set<string>();
+
+    // Several label ids can match ("salesbox", "salesbox/inbound"), and a
+    // message can carry more than one, hence the dedupe.
+    for (const labelId of salesboxLabelIds) {
+      let pageToken: string | undefined = undefined;
+      do {
+        const res: { data: gmail_v1.Schema$ListMessagesResponse } =
+          await gmailClient.users.messages.list({
+            userId: 'me',
+            labelIds: [labelId],
+            q: `newer_than:${opts.newerThanDays}d`,
+            maxResults: Math.min(500, opts.maxMessages - ids.length),
+            pageToken,
+          });
+
+        for (const m of res.data.messages ?? []) {
+          if (!m.id || seen.has(m.id)) continue;
+          seen.add(m.id);
+          ids.push(m.id);
+          if (ids.length >= opts.maxMessages) return ids;
+        }
+        pageToken = res.data.nextPageToken ?? undefined;
+      } while (pageToken);
+    }
+
+    return ids;
+  }
+
+  /**
+   * Diffs Gmail history since the stored baseline and returns the ids of
+   * messages newly added/labeled with the 'salesbox' label.
+   * 404 from Gmail (= baseline older than the ~1 week history window) is
+   * deliberately NOT handled here — the classifier processor resets its
+   * baseline on that signal.
+   */
+  async fetchNewMessageIds(
+    tenantId: string,
+    emailAccount: string,
+    startHistoryId: string,
+  ): Promise<NewMessagesResult> {
+    const gmailClient = await this.clientFactory.createClient(
+      tenantId,
+      emailAccount,
+    );
+
+    const salesboxLabelIds = await this.getSalesboxLabelIds(
+      tenantId,
+      emailAccount,
+    );
+
+    // CRITICAL: If no salesbox label exists on this account, return empty messageIds.
+    // Calling history.list with labelId = undefined would return ALL inbox messages.
+    if (salesboxLabelIds.length === 0) {
+      return { messageIds: [], newHistoryId: startHistoryId };
+    }
+
+    const messageIds = new Set<string>();
+    let newHistoryId = startHistoryId;
+
+    for (const labelId of salesboxLabelIds) {
+      let pageToken: string | undefined = undefined;
+      do {
+        const res: { data: gmail_v1.Schema$ListHistoryResponse } =
+          await gmailClient.users.history.list({
+            userId: 'me',
+            startHistoryId,
+            historyTypes: ['messageAdded', 'labelAdded'],
+            labelId,
+            pageToken,
+          });
+
+        for (const entry of res.data.history ?? []) {
+          for (const added of entry.messagesAdded ?? []) {
+            if (added.message?.id) messageIds.add(added.message.id);
+          }
+          for (const labeled of entry.labelsAdded ?? []) {
+            if (labeled.message?.id) messageIds.add(labeled.message.id);
+          }
+        }
+        if (res.data.historyId) newHistoryId = res.data.historyId;
+        pageToken = res.data.nextPageToken ?? undefined;
+      } while (pageToken);
+    }
+
+    return { messageIds: [...messageIds], newHistoryId };
+  }
+
+  async fetchNewSentThreadIds(
+    tenantId: string,
+    emailAccount: string,
+    startHistoryId: string,
+  ): Promise<NewSentThreadsResult> {
+    const gmailClient = await this.clientFactory.createClient(
+      tenantId,
+      emailAccount,
+    );
+    const threadIds = new Set<string>();
+    let newHistoryId = startHistoryId;
+    let pageToken: string | undefined = undefined;
+
+    do {
+      const res: { data: gmail_v1.Schema$ListHistoryResponse } =
+        await gmailClient.users.history.list({
+          userId: 'me',
+          startHistoryId,
+          historyTypes: ['messageAdded'],
+          labelId: 'SENT',
+          pageToken,
+        });
+
+      for (const entry of res.data.history ?? []) {
+        for (const added of entry.messagesAdded ?? []) {
+          if (added.message?.threadId) threadIds.add(added.message.threadId);
+        }
+      }
+      if (res.data.historyId) newHistoryId = res.data.historyId;
+      pageToken = res.data.nextPageToken ?? undefined;
+    } while (pageToken);
+
+    return { threadIds: [...threadIds], newHistoryId };
+  }
+
   async fetchThreads(
+    tenantId: string,
     emailAccount: string,
     query?: string,
   ): Promise<EmailThread[]> {
-    const gmailClient = await this.clientFactory.createClient(emailAccount);
+    const gmailClient = await this.clientFactory.createClient(
+      tenantId,
+      emailAccount,
+    );
+    const salesboxLabelIds = await this.getSalesboxLabelIds(
+      tenantId,
+      emailAccount,
+    );
+    if (salesboxLabelIds.length === 0) {
+      return [];
+    }
+
     const allThreads: gmail_v1.Schema$Thread[] = [];
     let pageToken: string | undefined = undefined;
 
@@ -40,6 +260,7 @@ export class GmailProvider implements EmailProvider {
         const listRes: { data: gmail_v1.Schema$ListThreadsResponse } =
           await gmailClient.users.threads.list({
             userId: 'me',
+            labelIds: salesboxLabelIds,
             q: query,
             pageToken: pageToken,
             maxResults: 20,
@@ -91,5 +312,89 @@ export class GmailProvider implements EmailProvider {
     });
 
     return parsedThreads;
+  }
+
+  /**
+   * Sends a reply to an email thread from the SE's Gmail account.
+   *
+   * Requires the `gmail.modify` (or `gmail.send`) OAuth scope — the current
+   * `gmail.readonly` scope will result in a 403 from the Gmail API. The caller
+   * must verify the token has the required scope before calling this method.
+   *
+   * Threading is preserved via the `In-Reply-To` and `References` RFC 2822
+   * headers, which Gmail and most email clients use to group messages in the
+   * same conversation. `threadId` keeps Gmail's own grouping consistent.
+   *
+   * @param tenantId     - Tenant owning the SE account (for credential lookup).
+   * @param accountEmail - The SE's email address (From: address of the reply).
+   * @param originalMessageId - Gmail message id of the email being replied to.
+   * @param originalThreadId  - Gmail thread id to keep the reply in-thread.
+   * @param toEmail      - Recipient address (the client who sent the original).
+   * @param subject      - Subject of the original email (Re: prepended if absent).
+   * @param replyBody    - Plain-text body of the auto-reply.
+   * @returns The Gmail message id of the sent reply.
+   */
+  async sendReply(
+    tenantId: string,
+    accountEmail: string,
+    originalMessageId: string,
+    originalThreadId: string,
+    toEmail: string,
+    subject: string,
+    replyBody: string,
+  ): Promise<string> {
+    const gmailClient = await this.clientFactory.createClient(
+      tenantId,
+      accountEmail,
+    );
+
+    // Fetch the original message to get the RFC 2822 Message-ID header (not the
+    // Gmail internal id). This is what In-Reply-To and References must reference.
+    let rfcMessageId: string | undefined;
+    try {
+      const orig = await gmailClient.users.messages.get({
+        userId: 'me',
+        id: originalMessageId,
+        format: 'metadata',
+        metadataHeaders: ['Message-ID', 'Message-Id'],
+      });
+      rfcMessageId =
+        orig.data.payload?.headers?.find(
+          (h) => h.name?.toLowerCase() === 'message-id',
+        )?.value ?? undefined;
+    } catch {
+      // Non-fatal: threading will still work via threadId; In-Reply-To just won't be set.
+    }
+
+    const reSubject = subject.trimStart().toLowerCase().startsWith('re:')
+      ? subject
+      : `Re: ${subject}`;
+
+    // Build RFC 2822 MIME message.
+    const lines = [
+      `From: ${accountEmail}`,
+      `To: ${toEmail}`,
+      `Subject: ${reSubject}`,
+      `Content-Type: text/plain; charset=UTF-8`,
+      ...(rfcMessageId
+        ? [`In-Reply-To: ${rfcMessageId}`, `References: ${rfcMessageId}`]
+        : []),
+      '',
+      replyBody,
+    ];
+
+    // Gmail API expects base64url-encoded RFC 2822.
+    const raw = Buffer.from(lines.join('\r\n'))
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+
+    const res = await gmailClient.users.messages.send({
+      userId: 'me',
+      requestBody: { raw, threadId: originalThreadId },
+    });
+
+    return res.data.id ?? '';
   }
 }

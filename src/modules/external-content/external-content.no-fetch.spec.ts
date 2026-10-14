@@ -48,7 +48,7 @@ describe('external-content — behavioral no-raw-fetch invariant', () => {
 
     const prisma = {
       allowedDomain: {
-        findUnique: jest.fn(({ where }: { where: { domain: string } }) =>
+        findFirst: jest.fn(({ where }: { where: { domain: string } }) =>
           Promise.resolve(
             where.domain === 'drive.google.com' ? { id: 'x' } : null,
           ),

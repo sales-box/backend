@@ -1,21 +1,54 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { extname } from 'node:path';
 import { DocumentStatus } from '@prisma/client';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { getEncoding, type Tiktoken } from 'js-tiktoken';
 import { PDFParse } from 'pdf-parse';
+import * as mammoth from 'mammoth';
+import * as ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 import { PrismaService } from '../../database/prisma.service';
+import type { PaginationOptions } from '../../database/pagination/pagination.types';
 import { UploadResponseDto } from './dto/upload-response.dto';
+import type { QualityPreviewResponseDto } from './dto/kb-search.dto';
+import {
+  EMBEDDINGS_QUEUE,
+  EMBED_DOCUMENT_JOB,
+} from '../embeddings/embeddings.constants';
+import { evaluateCoverage } from './quality/rules-evaluator';
+import { BUILTIN_RULES } from './quality/rubric';
+import type { CoverageResult } from './quality/quality.types';
 
 const MAX_TOKENS_PER_CHUNK = 1000;
 const CHUNK_OVERLAP_TOKENS = 150; // ~15% of chunk size
 
-type FileType = 'pdf' | 'txt' | 'md';
+// Quality gate thresholds — a scanned/image PDF yields almost no text
+// relative to its byte size; the admin must see that at upload time.
+const MIN_EXTRACTED_TEXT_CHARS = 200;
+const MIN_TEXT_TO_SIZE_RATIO = 0.001; // extracted chars per file byte
+
+export interface DocumentQuality {
+  isLowConfidence: boolean;
+  qualityReason: string | null;
+}
+
+type FileType = 'pdf' | 'txt' | 'md' | 'docx' | 'xlsx' | 'pptx';
 
 const ALLOWED_TYPES: Record<string, FileType> = {
   '.pdf': 'pdf',
   '.txt': 'txt',
   '.md': 'md',
+  '.docx': 'docx',
+  '.xlsx': 'xlsx',
+  '.pptx': 'pptx',
+  '.ppt': 'pptx',
 };
 
 export interface IngestInput {
@@ -24,24 +57,184 @@ export interface IngestInput {
   buffer: Buffer;
 }
 
+/** Tenant identity of the uploader, derived from the admin JWT claim. */
+export interface UploadOwner {
+  tenantId: string | null;
+  uploadedBy: string;
+}
+
 interface Chunk {
   chunkIndex: number;
   content: string;
   tokenCount: number;
 }
 
+/**
+ * What a file turns out to be, before anything is written down.
+ *
+ * Note what is absent: redundancy. `computeRedundancy` compares chunk
+ * embeddings in SQL, so it cannot exist until the chunks are stored AND
+ * embedded. A preview built from this is honestly incomplete, and says so
+ * rather than reporting a conciseness score it never measured.
+ */
+export interface AnalysedDocument {
+  fileType: FileType;
+  text: string;
+  chunks: Chunk[];
+  /** Layer 1 — did we read the file properly? */
+  extraction: DocumentQuality;
+  /** Layer 2 — does what we read actually answer sales questions? */
+  coverage: CoverageResult;
+}
+
 @Injectable()
 export class KnowledgeBaseService {
-  // cl100k_base matches OpenAI text-embedding-ada-002 / 3-small (our vector(1536)).
+  private readonly logger = new Logger(KnowledgeBaseService.name);
+  // cl100k_base is used for token *counting* during chunking. The embedding
+  // model is nomic-embed-text (vector(768), via Ollama) — a different
+  // tokenizer, but chunk-size budgeting only needs a consistent approximation.
   private readonly encoding: Tiktoken = getEncoding('cl100k_base');
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @InjectQueue(EMBEDDINGS_QUEUE) private readonly embeddingsQueue: Queue,
+  ) {}
 
-  async ingest({ filename, buffer }: IngestInput): Promise<UploadResponseDto> {
+  async ingest(
+    { filename, buffer }: IngestInput,
+    owner?: UploadOwner,
+  ): Promise<UploadResponseDto> {
+    const analysed = await this.analyse(filename, buffer);
+    return this.persist(
+      filename,
+      analysed.fileType,
+      analysed.chunks,
+      analysed.extraction,
+      owner,
+    );
+  }
+
+  /**
+   * Everything that can be known about a file without writing it down.
+   *
+   * Read the file, split it, judge it — and stop. No database, no queue, no
+   * side effect of any kind. This was inlined at the top of `ingest`, which
+   * meant the only way to find out what a document scored was to store it
+   * first: by the time the admin saw a number, the file was already in the
+   * knowledge base and had already replaced any earlier version of itself.
+   *
+   * Pulling it out costs nothing at upload time (`ingest` calls it) and makes
+   * a score-without-storing preview possible, which is the whole point.
+   */
+  async analyse(filename: string, buffer: Buffer): Promise<AnalysedDocument> {
     const fileType = this.resolveFileType(filename);
     const text = await this.extractText(buffer, fileType);
     const chunks = await this.chunk(text);
-    return this.persist(filename, fileType, chunks);
+    const extraction = this.assessDocumentQuality(
+      (text ?? '').trim().length,
+      buffer.length,
+      chunks.length,
+    );
+    // Scored over the JOINED CHUNK TEXT rather than the raw extraction, because
+    // that is exactly what the async worker scores (it rebuilds this same
+    // string from the stored chunks). Scoring `text` here would give a
+    // different number — chunk overlap repeats ~15% of the content — and the
+    // preview would disagree with the score that lands minutes later.
+    const coverage = evaluateCoverage(
+      chunks.map((c) => c.content).join('\n'),
+      BUILTIN_RULES,
+    );
+    return { fileType, text, chunks, extraction, coverage };
+  }
+
+  /**
+   * What this file would score, without putting it in the knowledge base.
+   *
+   * The admin can look before they commit. That matters more than it sounds,
+   * because `persist` deletes any existing document with the same filename
+   * before it writes — so re-uploading a worse version of "Pricing.pdf" to see
+   * how it scores would already have destroyed the better one. A preview has
+   * no such cost.
+   *
+   * `redundancyMeasured: false` is stated rather than left to inference. The
+   * repetition check compares chunk embeddings in SQL and cannot run before
+   * the file is stored and indexed; reporting a conciseness score here would
+   * mean inventing one, and reporting nothing at all would look like a
+   * perfect result.
+   */
+  async previewQuality(
+    filename: string,
+    buffer: Buffer,
+  ): Promise<QualityPreviewResponseDto> {
+    const { chunks, extraction, coverage } = await this.analyse(
+      filename,
+      buffer,
+    );
+    const totalWeight = BUILTIN_RULES.reduce((sum, r) => sum + r.weight, 0);
+    const worthOf = (category: string) => {
+      const rule = BUILTIN_RULES.find((r) => r.category === category);
+      return rule && totalWeight > 0
+        ? Math.round((100 * rule.weight) / totalWeight)
+        : 0;
+    };
+
+    return {
+      filename,
+      score: coverage.score,
+      chunks: chunks.length,
+      isLowConfidence: extraction.isLowConfidence,
+      qualityReason: extraction.qualityReason ?? undefined,
+      covers: coverage.passed,
+      // Ordered by what closing each gap is worth, so the admin's first move is
+      // the one that moves the score most rather than whichever rule happens
+      // to be declared first.
+      gaps: coverage.failed
+        .map((gap) => ({
+          category: gap.category,
+          asks: gap.asks,
+          example:
+            BUILTIN_RULES.find((r) => r.category === gap.category)?.example ??
+            '',
+          worth: worthOf(gap.category),
+        }))
+        .sort((a, b) => b.worth - a.worth),
+      redundancyMeasured: false,
+    };
+  }
+
+  /**
+   * Quality gate: flags uploads whose extraction looks unreliable so the
+   * admin sees the warning immediately in the upload response — not months
+   * later when the AI keeps guessing on a topic with no real content.
+   */
+  assessDocumentQuality(
+    extractedTextLength: number,
+    fileSizeBytes: number,
+    chunkCount: number,
+  ): DocumentQuality {
+    if (chunkCount === 0) {
+      return {
+        isLowConfidence: true,
+        qualityReason: 'No extractable text found',
+      };
+    }
+    if (extractedTextLength < MIN_EXTRACTED_TEXT_CHARS) {
+      return {
+        isLowConfidence: true,
+        qualityReason: `Very little extractable text (${extractedTextLength} characters)`,
+      };
+    }
+    if (
+      fileSizeBytes > 0 &&
+      extractedTextLength / fileSizeBytes < MIN_TEXT_TO_SIZE_RATIO
+    ) {
+      return {
+        isLowConfidence: true,
+        qualityReason:
+          'Extracted text is tiny relative to the file size — this may be a scanned or image-based document',
+      };
+    }
+    return { isLowConfidence: false, qualityReason: null };
   }
 
   private resolveFileType(filename: string): FileType {
@@ -49,7 +242,7 @@ export class KnowledgeBaseService {
     const fileType = ALLOWED_TYPES[ext];
     if (!fileType) {
       throw new BadRequestException(
-        `Unsupported file type "${ext || 'unknown'}". Allowed: .pdf, .txt, .md`,
+        `Unsupported file type "${ext || 'unknown'}". Allowed: .pdf, .txt, .md, .docx, .xlsx, .pptx`,
       );
     }
     return fileType;
@@ -60,10 +253,67 @@ export class KnowledgeBaseService {
     fileType: FileType,
   ): Promise<string> {
     if (fileType === 'pdf') {
-      const parser = new PDFParse({ data: buffer });
-      const { text } = await parser.getText();
-      return text ?? '';
+      try {
+        const parser = new PDFParse({ data: buffer });
+        const { text } = await parser.getText();
+        return text ?? '';
+      } catch {
+        throw new BadRequestException('Invalid or corrupted PDF file');
+      }
     }
+
+    if (fileType === 'docx') {
+      try {
+        const result = await mammoth.extractRawText({ buffer });
+        return result.value;
+      } catch {
+        throw new BadRequestException('Invalid or corrupted DOCX file');
+      }
+    }
+
+    if (fileType === 'xlsx') {
+      try {
+        const workbook = new ExcelJS.Workbook();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        await workbook.xlsx.load(buffer as any);
+        const lines: string[] = [];
+        workbook.eachSheet((worksheet) => {
+          lines.push(`## ${worksheet.name}`);
+          worksheet.eachRow((row) => {
+            const values = Array.isArray(row.values) ? row.values.slice(1) : [];
+            lines.push(values.map(String).join('\t'));
+          });
+        });
+        return lines.join('\n');
+      } catch {
+        throw new BadRequestException('Invalid or corrupted XLSX file');
+      }
+    }
+
+    if (fileType === 'pptx') {
+      try {
+        const zip = await JSZip.loadAsync(buffer);
+        const slideKeys = Object.keys(zip.files)
+          .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+          .sort();
+        const slideTexts: string[] = [];
+        for (const slideKey of slideKeys) {
+          const xmlContent = await zip.files[slideKey].async('string');
+          const textMatches: string[] =
+            xmlContent.match(/<a:t[^>]*>[^<]+<\/a:t>/g) ?? [];
+          const slideText = textMatches
+            .map((tag: string) => tag.replace(/<[^>]+>/g, '').trim())
+            .filter(Boolean)
+            .join(' ');
+          const slideNumber = slideKey.match(/slide(\d+)/)?.[1] ?? '?';
+          slideTexts.push(`## Slide ${slideNumber}\n${slideText}`);
+        }
+        return slideTexts.join('\n\n');
+      } catch {
+        throw new BadRequestException('Invalid or corrupted PPTX file');
+      }
+    }
+
     // txt / md are plain UTF-8.
     return buffer.toString('utf-8');
   }
@@ -93,14 +343,39 @@ export class KnowledgeBaseService {
     filename: string,
     fileType: FileType,
     chunks: Chunk[],
+    quality: DocumentQuality,
+    owner?: UploadOwner,
   ): Promise<UploadResponseDto> {
     const status = chunks.length
       ? DocumentStatus.completed
       : DocumentStatus.failed;
 
+    let documentId: string | null = null;
+
     await this.prisma.$transaction(async (tx) => {
-      // filename; ON DELETE CASCADE removes its old chunks, so no duplicates.
-      await tx.document.deleteMany({ where: { filename } });
+      // Serialise replacements of the same file within the same tenant.
+      //
+      // The delete-then-create below is a check-then-act, and uq_documents_file
+      // does not close the gap: it covers (tenant_id, filename, product_name),
+      // and Postgres treats NULLs as distinct in a unique index, so two rows
+      // with a NULL product_name — the normal case for an upload — never
+      // collide. Two uploads of one filename arriving together therefore both
+      // deleted nothing and both inserted, leaving the tenant with a duplicate
+      // document and double-counted chunks. Reproduced with two concurrent
+      // requests: 201/201, two rows, both product_name NULL.
+      //
+      // A transaction-scoped advisory lock is released automatically on commit
+      // or rollback, needs no schema change, and only ever contends with
+      // another upload of the very same file in the very same tenant.
+      const lockKey = `${owner?.tenantId ?? 'global'}:${filename}`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+
+      // Replace the tenant's own document with the same filename; ON DELETE
+      // CASCADE removes its old chunks, so no duplicates. Never touches
+      // another tenant's file of the same name.
+      await tx.document.deleteMany({
+        where: { filename, tenantId: owner?.tenantId ?? null },
+      });
 
       const doc = await tx.document.create({
         data: {
@@ -110,11 +385,17 @@ export class KnowledgeBaseService {
           chunkCount: chunks.length,
           processedAt: new Date(),
           processingError: chunks.length ? null : 'No extractable text found',
+          isLowConfidence: quality.isLowConfidence,
+          qualityReason: quality.qualityReason,
+          tenantId: owner?.tenantId ?? null,
+          uploadedBy: owner?.uploadedBy ?? null,
         },
       });
+      documentId = doc.id;
 
       if (chunks.length) {
-        // embedding stays NULL for now (populated later by the RAG worker).
+        // Chunks are stored with embedding = NULL; the embeddings worker
+        // (enqueued below, after commit) fills them in.
         await tx.documentChunk.createMany({
           data: chunks.map((c) => ({
             documentId: doc.id,
@@ -126,6 +407,101 @@ export class KnowledgeBaseService {
       }
     });
 
-    return { filename, chunksCreated: chunks.length, status };
+    // Enqueue AFTER the transaction commits (never inside it — the worker
+    // could start before the rows are visible). Fire-and-forget: a failed
+    // enqueue must not fail the upload; the chunks are safely stored and a
+    // manual/scheduled backfill still covers them.
+    if (documentId && chunks.length) {
+      await this.embeddingsQueue
+        .add(
+          EMBED_DOCUMENT_JOB,
+          { documentId },
+          { attempts: 3, backoff: { type: 'exponential', delay: 5000 } },
+        )
+        .catch((err) =>
+          this.logger.error(
+            `failed to enqueue embedding job for document ${documentId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          ),
+        );
+    }
+
+    return {
+      filename,
+      chunksCreated: chunks.length,
+      status,
+      isLowConfidence: quality.isLowConfidence,
+      qualityReason: quality.qualityReason ?? undefined,
+    };
+  }
+
+  /**
+   * Paginated list of the tenant's OWN documents, newest first (dashboard).
+   * Admins without a tenant (legacy tokens) only see pre-tenant NULL rows.
+   */
+  listDocuments(options?: PaginationOptions, tenantId?: string | null) {
+    return this.prisma.extended.document.paginate(
+      {
+        where: { tenantId: tenantId ?? null },
+        select: {
+          id: true,
+          filename: true,
+          fileType: true,
+          status: true,
+          chunkCount: true,
+          uploadDate: true,
+          processingError: true,
+          isLowConfidence: true,
+          qualityReason: true,
+          qualityScore: true,
+          qualityReport: true,
+        },
+        orderBy: { uploadDate: 'desc' },
+      },
+      options,
+    );
+  }
+
+  /**
+   * Deletes the tenant's OWN document by id — another tenant's document with
+   * the same id is a 404, never a cross-tenant delete. Chunks are removed by
+   * the ON DELETE CASCADE FK on DocumentChunk.
+   */
+  async deleteDocument(id: string, tenantId?: string | null): Promise<void> {
+    const { count } = await this.prisma.document.deleteMany({
+      where: { id, tenantId: tenantId ?? null },
+    });
+    if (count === 0) {
+      throw new NotFoundException(`Document ${id} not found`);
+    }
+  }
+
+  /**
+   * Empties one tenant's knowledge base.
+   *
+   * `tenantId` is a REQUIRED string, unlike `deleteDocument` above. That method
+   * can afford `tenantId ?? null` because the `id` predicate still pins it to a
+   * single row; here the id is gone, so an undefined tenant would silently
+   * become `tenantId: null` and delete every legacy null-tenant document in the
+   * table. Typing it required is what makes that unrepresentable.
+   *
+   * No `$transaction` needed: `deleteMany` is a single atomic statement, and the
+   * `ON DELETE CASCADE` on document_chunks takes the chunks and their pgvector
+   * embeddings with it inside that same statement.
+   */
+  async deleteAllDocuments(tenantId: string): Promise<{ deleted: number }> {
+    if (!tenantId) {
+      throw new BadRequestException(
+        'Tenant is required to empty a knowledge base',
+      );
+    }
+    const { count } = await this.prisma.document.deleteMany({
+      where: { tenantId },
+    });
+    this.logger.warn(
+      `Knowledge base emptied for tenant ${tenantId} — ${count} document(s) removed`,
+    );
+    return { deleted: count };
   }
 }

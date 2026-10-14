@@ -1,10 +1,16 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument */
-import { BadRequestException, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Logger,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as googleapis from 'googleapis';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthService } from './auth.service';
 import { CryptoService } from './crypto.service';
+import { AllowlistService } from '../allowlist/allowlist.service';
+import { JwtService } from '@nestjs/jwt';
 
 jest.mock('googleapis', () => {
   const getToken = jest.fn();
@@ -47,14 +53,16 @@ const env = {
 };
 
 describe('AuthService buildGoogleAuthUrl', () => {
-  function build(): URL {
+  function build(state?: string): URL {
     const service = new AuthService(
       makeConfig(env),
       {} as PrismaService,
       {} as CryptoService,
+      { verifyAccess: jest.fn() } as unknown as AllowlistService,
       { emit: jest.fn() } as any,
+      { signAsync: jest.fn() } as unknown as JwtService,
     );
-    return new URL(service.buildGoogleAuthUrl());
+    return new URL(service.buildGoogleAuthUrl(state));
   }
 
   it('targets the Google OAuth consent endpoint', () => {
@@ -78,12 +86,21 @@ describe('AuthService buildGoogleAuthUrl', () => {
     expect(params.get('prompt')).toBe('consent');
   });
 
+  it('carries the CSRF state param when provided, omits it otherwise', () => {
+    expect(build('csrf-state-123').searchParams.get('state')).toBe(
+      'csrf-state-123',
+    );
+    expect(build().searchParams.has('state')).toBe(false);
+  });
+
   it('throws when a required OAuth env var is missing', () => {
     const service = new AuthService(
       makeConfig({ GOOGLE_CLIENT_ID: 'x' }),
       {} as PrismaService,
       {} as CryptoService,
+      { verifyAccess: jest.fn() } as unknown as AllowlistService,
       { emit: jest.fn() } as any,
+      { signAsync: jest.fn() } as unknown as JwtService,
     );
     expect(() => service.buildGoogleAuthUrl()).toThrow();
   });
@@ -97,18 +114,32 @@ describe('AuthService handleGoogleCallback', () => {
   const EXPIRY = 1893456000000;
 
   let prisma: PrismaService;
-  let upsert: jest.Mock;
+  let findFirst: jest.Mock;
+  let update: jest.Mock;
+  let create: jest.Mock;
   let crypto: CryptoService;
   let service: AuthService;
 
   beforeEach(() => {
     jest.clearAllMocks();
-    upsert = jest.fn().mockResolvedValue({ id: 'mock-id', email: EMAIL });
-    prisma = { connectedAccount: { upsert } } as unknown as PrismaService;
+    findFirst = jest.fn().mockResolvedValue(null);
+    update = jest.fn().mockResolvedValue({ id: 'mock-id', email: EMAIL });
+    create = jest.fn().mockResolvedValue({ id: 'mock-id', email: EMAIL });
+    // findUnique is used by upsertConnectedAccount when tenantId is present
+    // (SE login path). Default to null so the create branch executes.
+    const findUnique = jest.fn().mockResolvedValue(null);
+    prisma = {
+      connectedAccount: { findFirst, findUnique, update, create },
+    } as unknown as PrismaService;
     crypto = new CryptoService(makeConfig({ TOKEN_ENCRYPTION_KEY: KEY }));
-    service = new AuthService(makeConfig(env), prisma, crypto, {
-      emit: jest.fn(),
-    } as any);
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess: jest.fn() } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+      { signAsync: jest.fn() } as unknown as JwtService,
+    );
   });
 
   function happyTokens(overrides: Record<string, unknown> = {}) {
@@ -124,7 +155,7 @@ describe('AuthService handleGoogleCallback', () => {
     gmocks.getProfile.mockResolvedValue({ data: { emailAddress: EMAIL } });
   }
 
-  it('exchanges the code and upserts an encrypted account, returning the email', async () => {
+  it('exchanges the code and creates an encrypted account if it does not exist', async () => {
     happyTokens();
 
     const result = await service.handleGoogleCallback(CODE);
@@ -136,37 +167,229 @@ describe('AuthService handleGoogleCallback', () => {
       env.GOOGLE_CLIENT_SECRET,
       env.GOOGLE_REDIRECT_URI,
     );
-    expect(upsert).toHaveBeenCalledTimes(1);
+    expect(findFirst).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalled();
 
-    const arg = upsert.mock.calls[0][0];
-    expect(arg.where).toEqual({ email: EMAIL });
-    expect(arg.create.status).toBe('connected');
-    expect(arg.create.scope).toBe(env.GOOGLE_SCOPES);
-    expect(arg.create.tokenExpiresAt).toEqual(new Date(EXPIRY));
+    const arg = create.mock.calls[0][0];
+    expect(arg.data.email).toEqual(EMAIL);
+    expect(arg.data.status).toBe('connected');
+    expect(arg.data.scope).toBe(env.GOOGLE_SCOPES);
+    expect(arg.data.tokenExpiresAt).toEqual(new Date(EXPIRY));
+  });
+
+  it('admin callback is NOT allowlist-gated — the allowlist is the SE guest list', async () => {
+    happyTokens();
+
+    // Even a bouncer that would refuse must never be consulted on the admin
+    // path: connecting Google grants no privileges by itself (privileges come
+    // from set-password), while SE login stays strictly gated.
+    const verifyAccess = jest
+      .fn()
+      .mockRejectedValue(new ForbiddenException('not on allowlist'));
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+      { signAsync: jest.fn() } as unknown as JwtService,
+    );
+
+    const result = await service.handleGoogleCallback(CODE);
+
+    expect(result).toEqual({ email: EMAIL });
+    expect(verifyAccess).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('mints an admin JWT when the account is an established admin', async () => {
+    happyTokens();
+    // The account already went through set-password: admin with a hash.
+    update.mockResolvedValue({
+      id: 'acct-admin',
+      email: EMAIL,
+      tenantId: 'tenant-a',
+      isAdmin: true,
+      passwordHash: '$argon2id$stored-hash',
+    });
+    findFirst.mockResolvedValue({ id: 'acct-admin', email: EMAIL });
+    const signAsync = jest.fn().mockResolvedValue('signed.admin.jwt');
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess: jest.fn() } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+      { signAsync } as unknown as JwtService,
+    );
+
+    const result = await service.handleGoogleCallback(CODE);
+
+    expect(result).toEqual({
+      email: EMAIL,
+      adminToken: 'signed.admin.jwt',
+      tenantId: 'tenant-a',
+    });
+    // Same claim shape as /auth/admin/login, module-default TTL (no override).
+    expect(signAsync).toHaveBeenCalledWith({
+      sub: 'acct-admin',
+      tenantId: 'tenant-a',
+      isAdmin: true,
+      email: EMAIL,
+    });
+  });
+
+  it('does NOT mint a token for an admin who has no password yet', async () => {
+    happyTokens();
+    update.mockResolvedValue({
+      id: 'acct-1',
+      email: EMAIL,
+      tenantId: 'tenant-a',
+      isAdmin: true,
+      passwordHash: null, // set-password not done yet
+    });
+    findFirst.mockResolvedValue({ id: 'acct-1', email: EMAIL });
+    const signAsync = jest.fn();
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess: jest.fn() } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+      { signAsync } as unknown as JwtService,
+    );
+
+    const result = await service.handleGoogleCallback(CODE);
+
+    expect(result).toEqual({ email: EMAIL });
+    expect(signAsync).not.toHaveBeenCalled();
+  });
+
+  it('seLoginWithGoogle signs the canonical claim shape with an SE TTL', async () => {
+    happyTokens();
+    // The upserted account is what the SE claims are built from.
+    create.mockResolvedValue({
+      id: 'acct-1',
+      email: EMAIL,
+      tenantId: 'tenant-1',
+      isAdmin: false,
+    });
+    const signAsync = jest.fn().mockResolvedValue('signed.jwt.token');
+    // verifyAccess returns the tenant the SE was granted under.
+    const verifyAccess = jest.fn().mockResolvedValue({ tenantId: 'tenant-1' });
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+      { signAsync } as unknown as JwtService,
+    );
+
+    const result = await service.seLoginWithGoogle(CODE);
+
+    expect(result).toEqual({ token: 'signed.jwt.token' });
+    // The allowlist tenant is stamped on the account, so tenant-scoped
+    // revoke/offboard can reach it later.
+    expect(create.mock.calls[0][0].data.tenantId).toBe('tenant-1');
+    // { sub, tenantId, isAdmin, email } — same shape the JwtAuthGuard verifies.
+    expect(signAsync).toHaveBeenCalledWith(
+      { sub: 'acct-1', tenantId: 'tenant-1', isAdmin: false, email: EMAIL },
+      { expiresIn: '7d' },
+    );
+    expect(create).toHaveBeenCalledTimes(1); // account upserted
+  });
+
+  it('an SE login never mints an admin token, even for an isAdmin row', async () => {
+    happyTokens();
+    create.mockResolvedValue({
+      id: 'acct-1',
+      email: EMAIL,
+      tenantId: 'tenant-1',
+      isAdmin: true, // row is an admin...
+    });
+    const signAsync = jest.fn().mockResolvedValue('t');
+    const verifyAccess = jest.fn().mockResolvedValue({ tenantId: 'tenant-1' });
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+      { signAsync } as unknown as JwtService,
+    );
+
+    await service.seLoginWithGoogle(CODE);
+
+    // ...but the SE session token is forced to isAdmin: false.
+    expect(signAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ isAdmin: false }),
+      { expiresIn: '7d' },
+    );
+  });
+
+  it('seLoginWithGoogle throws BadRequestException when the code exchange fails', async () => {
+    gmocks.getToken.mockRejectedValue(new Error('invalid_grant'));
+    const verifyAccess = jest.fn();
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+      { signAsync: jest.fn() } as unknown as JwtService,
+    );
+
+    await expect(service.seLoginWithGoogle(CODE)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(verifyAccess).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('seLoginWithGoogle returns invalid_allowlist for a non-allowlisted email', async () => {
+    happyTokens();
+    const verifyAccess = jest.fn().mockRejectedValue(new ForbiddenException());
+    const signAsync = jest.fn();
+    service = new AuthService(
+      makeConfig(env),
+      prisma,
+      crypto,
+      { verifyAccess } as unknown as AllowlistService,
+      { emit: jest.fn() } as any,
+      { signAsync } as unknown as JwtService,
+    );
+
+    const result = await service.seLoginWithGoogle(CODE);
+
+    expect(result).toEqual({ error: 'invalid_allowlist' });
+    expect(signAsync).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled(); // no account saved
   });
 
   it('stores tokens as ciphertext that decrypts back to the originals', async () => {
     happyTokens();
 
     await service.handleGoogleCallback(CODE);
-    const arg = upsert.mock.calls[0][0];
+    const arg = create.mock.calls[0][0];
 
-    expect(arg.create.accessToken).not.toBe(ACCESS);
-    expect(arg.create.refreshToken).not.toBe(REFRESH);
-    expect(crypto.decrypt(arg.create.accessToken)).toBe(ACCESS);
-    expect(crypto.decrypt(arg.create.refreshToken)).toBe(REFRESH);
+    expect(arg.data.accessToken).not.toBe(ACCESS);
+    expect(arg.data.refreshToken).not.toBe(REFRESH);
+    expect(crypto.decrypt(arg.data.accessToken)).toBe(ACCESS);
+    expect(crypto.decrypt(arg.data.refreshToken)).toBe(REFRESH);
   });
 
-  it('throws BadRequestException and skips upsert when the code is invalid', async () => {
+  it('throws BadRequestException and skips DB calls when the code is invalid', async () => {
     gmocks.getToken.mockRejectedValue(new Error('invalid_grant'));
 
     await expect(service.handleGoogleCallback(CODE)).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    expect(upsert).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
   });
 
-  it('throws and skips upsert when the profile lookup fails', async () => {
+  it('throws and skips DB calls when the profile lookup fails', async () => {
     gmocks.getToken.mockResolvedValue({ tokens: { access_token: ACCESS } });
     gmocks.getProfile.mockRejectedValue({
       response: {
@@ -178,7 +401,7 @@ describe('AuthService handleGoogleCallback', () => {
     await expect(service.handleGoogleCallback(CODE)).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    expect(upsert).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
   });
 
   it('throws BadRequestException for a missing code without calling Google', async () => {
@@ -186,7 +409,7 @@ describe('AuthService handleGoogleCallback', () => {
       BadRequestException,
     );
     expect(gmocks.getToken).not.toHaveBeenCalled();
-    expect(upsert).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
   });
 
   it('stores null expiry when Google omits expiry_date', async () => {
@@ -194,30 +417,35 @@ describe('AuthService handleGoogleCallback', () => {
 
     await service.handleGoogleCallback(CODE);
 
-    expect(upsert.mock.calls[0][0].create.tokenExpiresAt).toBeNull();
+    expect(create.mock.calls[0][0].data.tokenExpiresAt).toBeNull();
   });
 
-  it('does not overwrite a stored refresh token when re-consent omits it', async () => {
+  it('does not overwrite a stored refresh token when re-consent omits it (update scenario)', async () => {
+    findFirst.mockResolvedValue({ id: 'mock-id', email: EMAIL });
     happyTokens({ refresh_token: undefined });
 
     await service.handleGoogleCallback(CODE);
-    const arg = upsert.mock.calls[0][0];
 
-    expect('refreshToken' in arg.update).toBe(false);
-    expect(arg.update.accessToken).toBeDefined();
+    expect(update).toHaveBeenCalledTimes(1);
+    const arg = update.mock.calls[0][0];
+
+    expect('refreshToken' in arg.data).toBe(false);
+    expect(arg.data.accessToken).toBeDefined();
   });
 
-  it('does not overwrite a stored scope when re-consent omits it', async () => {
+  it('does not overwrite a stored scope when re-consent omits it (update scenario)', async () => {
+    findFirst.mockResolvedValue({ id: 'mock-id', email: EMAIL });
     happyTokens({ scope: undefined });
 
     await service.handleGoogleCallback(CODE);
-    const arg = upsert.mock.calls[0][0];
 
-    expect('scope' in arg.update).toBe(false);
-    expect(arg.create.scope).toBe(env.GOOGLE_SCOPES);
+    expect(update).toHaveBeenCalledTimes(1);
+    const arg = update.mock.calls[0][0];
+
+    expect('scope' in arg.data).toBe(false);
   });
 
-  it('throws and skips upsert when the account email cannot be resolved', async () => {
+  it('throws and skips DB calls when the account email cannot be resolved', async () => {
     gmocks.getToken.mockResolvedValue({
       tokens: { access_token: ACCESS, refresh_token: REFRESH },
     });
@@ -226,7 +454,7 @@ describe('AuthService handleGoogleCallback', () => {
     await expect(service.handleGoogleCallback(CODE)).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    expect(upsert).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
   });
 
   it('never leaks tokens or the auth code to logs', async () => {

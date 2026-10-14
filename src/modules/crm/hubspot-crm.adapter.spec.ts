@@ -1,11 +1,10 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
 import { ConfigService } from '@nestjs/config';
 import { HubSpotAdapter } from './hubspot-crm.adapter';
-import { makeMockClient } from './crm.test-fixtures';
 
 const mockDoSearch = jest.fn();
 const mockCreate = jest.fn();
 const mockUpdate = jest.fn();
+const mockGetPage = jest.fn();
 const mockNoteCreate = jest.fn();
 const mockDealSearch = jest.fn();
 const mockDealCreate = jest.fn();
@@ -16,7 +15,11 @@ jest.mock('@hubspot/api-client', () => ({
     crm: {
       contacts: {
         searchApi: { doSearch: mockDoSearch },
-        basicApi: { create: mockCreate, update: mockUpdate },
+        basicApi: {
+          create: mockCreate,
+          update: mockUpdate,
+          getPage: mockGetPage,
+        },
       },
       deals: {
         searchApi: { doSearch: mockDealSearch },
@@ -43,156 +46,117 @@ describe('HubSpotAdapter', () => {
     adapter = makeAdapter();
   });
 
-  describe('syncContact', () => {
-    it('creates a new contact when the email is not found', async () => {
-      mockDoSearch.mockResolvedValue({ results: [] });
-      mockCreate.mockResolvedValue({ id: 'new-contact-1' });
+  describe('getContactByEmail', () => {
+    it('returns contact object if email search matches', async () => {
+      mockDoSearch.mockResolvedValue({ results: [{ id: 'crm-contact-id' }] });
 
-      const id = await adapter.syncContact(
-        makeMockClient({ email: 'new@acme.com', name: 'Jane Doe' }),
-      );
+      const res = await adapter.getContactByEmail('test@acme.com');
 
-      expect(id).toBe('new-contact-1');
-      expect(mockUpdate).not.toHaveBeenCalled();
-      expect(mockCreate).toHaveBeenCalledTimes(1);
-      const arg = mockCreate.mock.calls[0][0];
-      expect(arg.properties).toMatchObject({
-        email: 'new@acme.com',
-        firstname: 'Jane',
-        lastname: 'Doe',
-        company: 'Acme',
-      });
-    });
-
-    it('updates the existing contact when found', async () => {
-      mockDoSearch.mockResolvedValue({ results: [{ id: 'existing-9' }] });
-      mockUpdate.mockResolvedValue({ id: 'existing-9' });
-
-      const id = await adapter.syncContact(
-        makeMockClient({ email: 'known@acme.com' }),
-      );
-
-      expect(id).toBe('existing-9');
-      expect(mockCreate).not.toHaveBeenCalled();
-      expect(mockUpdate).toHaveBeenCalledWith(
-        'existing-9',
+      expect(res).toEqual({ id: 'crm-contact-id' });
+      expect(mockDoSearch).toHaveBeenCalledWith(
         expect.objectContaining({
-          properties: expect.objectContaining({ email: 'known@acme.com' }),
+          filterGroups: [
+            expect.objectContaining({
+              filters: [
+                expect.objectContaining({
+                  propertyName: 'email',
+                  value: 'test@acme.com',
+                }),
+              ],
+            }),
+          ],
         }),
       );
     });
 
-    it('omits company when the client has none', async () => {
+    it('returns null if email search yields no results', async () => {
       mockDoSearch.mockResolvedValue({ results: [] });
-      mockCreate.mockResolvedValue({ id: 'new-2' });
 
-      await adapter.syncContact(makeMockClient({ company: null }));
+      const res = await adapter.getContactByEmail('notfound@acme.com');
 
-      const arg = mockCreate.mock.calls[0][0];
-      expect(arg.properties).not.toHaveProperty('company');
-    });
-
-    it('propagates HubSpot errors so the worker can retry', async () => {
-      mockDoSearch.mockRejectedValue(new Error('HubSpot 401'));
-
-      await expect(adapter.syncContact(makeMockClient())).rejects.toThrow(
-        'HubSpot 401',
-      );
+      expect(res).toBeNull();
     });
   });
 
-  describe('createOrUpdateDeal', () => {
-    it('creates a new deal when none exists with that name', async () => {
-      mockDealSearch.mockResolvedValue({ results: [] });
-      mockDealCreate.mockResolvedValue({ id: 'deal-1' });
-
-      const id = await adapter.createOrUpdateDeal(
-        'contact-1',
-        'product_inquiry',
-        'Solar Panel Pricing',
-        'Acme Corp',
-      );
-
-      expect(id).toBe('deal-1');
-      expect(mockDealUpdate).not.toHaveBeenCalled();
-      const arg = mockDealCreate.mock.calls[0][0];
-      expect(arg.properties.dealname).toBe('Acme Corp — Solar Panel Pricing');
-      expect(arg.properties.dealstage).toBe('presentationscheduled');
-      expect(arg.associations[0].to.id).toBe('contact-1');
-    });
-
-    it('updates stage when a deal with that name already exists', async () => {
-      mockDealSearch.mockResolvedValue({ results: [{ id: 'deal-5' }] });
-      mockDealUpdate.mockResolvedValue({ id: 'deal-5' });
-
-      const id = await adapter.createOrUpdateDeal(
-        'contact-1',
-        'meeting_request',
-        'Demo',
-        'Acme',
-      );
-
-      expect(id).toBe('deal-5');
-      expect(mockDealCreate).not.toHaveBeenCalled();
-      expect(mockDealUpdate).toHaveBeenCalledWith('deal-5', {
-        properties: { dealstage: 'appointmentscheduled' },
-      });
-    });
-
-    it('is idempotent — same name twice = 1 deal', async () => {
-      mockDealSearch.mockResolvedValue({ results: [{ id: 'deal-5' }] });
-      mockDealUpdate.mockResolvedValue({ id: 'deal-5' });
-
-      await adapter.createOrUpdateDeal('c-1', 'product_inquiry', 'X', 'Y');
-      await adapter.createOrUpdateDeal('c-1', 'product_inquiry', 'X', 'Y');
-
-      expect(mockDealCreate).not.toHaveBeenCalled();
-    });
-
-    it('propagates errors so the worker can retry', async () => {
-      mockDealSearch.mockRejectedValue(new Error('Deals API down'));
-
-      await expect(
-        adapter.createOrUpdateDeal('c-1', 'product_inquiry', 'X', 'Y'),
-      ).rejects.toThrow('Deals API down');
-    });
-  });
-
-  describe('logEngagementNote', () => {
-    it('creates a structured note with all payload fields', async () => {
-      mockNoteCreate.mockResolvedValue({ id: 'note-1' });
-
-      await adapter.logEngagementNote('contact-77', {
-        subject: 'Pricing Request',
-        summary: 'Client asked about bulk pricing',
-        classification: 'product_inquiry',
-        sentAt: '2026-07-09T10:00:00Z',
+  describe('fetchContacts', () => {
+    it('gets a page of contacts and maps them correctly', async () => {
+      mockGetPage.mockResolvedValue({
+        results: [
+          {
+            id: 'c-1',
+            properties: {
+              email: 'john@acme.com',
+              firstname: 'John',
+              lastname: 'Doe',
+              company: 'Acme',
+              lifecyclestage: 'customer',
+            },
+          },
+          {
+            id: 'c-2',
+            properties: {
+              email: 'jane@acme.com',
+              firstname: 'Jane',
+              lastname: '',
+              company: 'Acme Corp',
+              lifecyclestage: 'salesqualifiedlead',
+            },
+          },
+          {
+            id: 'c-3',
+            properties: {
+              email: '', // should be filtered out
+            },
+          },
+        ],
       });
 
-      expect(mockNoteCreate).toHaveBeenCalledTimes(1);
-      const arg = mockNoteCreate.mock.calls[0][0];
-      expect(arg.properties.hs_note_body).toContain('Subject: Pricing Request');
-      expect(arg.properties.hs_note_body).toContain(
-        'Classification: product_inquiry',
-      );
-      expect(arg.properties.hs_note_body).toContain(
-        'Summary: Client asked about bulk pricing',
-      );
-      expect(arg.associations[0].to.id).toBe('contact-77');
-      expect(arg.associations[0].types[0].associationTypeId).toBe(202);
+      const res = await adapter.fetchContacts();
+
+      expect(res).toEqual([
+        {
+          email: 'john@acme.com',
+          name: 'John Doe',
+          company: 'Acme',
+          crmId: 'c-1',
+          status: 'customer',
+        },
+        {
+          email: 'jane@acme.com',
+          name: 'Jane',
+          company: 'Acme Corp',
+          crmId: 'c-2',
+          status: 'qualified',
+        },
+      ]);
     });
 
-    it('propagates errors so the worker can retry', async () => {
-      mockNoteCreate.mockRejectedValue(new Error('Notes API down'));
+    it('asks HubSpot for lifecyclestage', async () => {
+      mockGetPage.mockResolvedValue({ results: [] });
 
-      await expect(
-        adapter.logEngagementNote('contact-77', {
-          subject: 'x',
-          summary: 'y',
-          classification: 'z',
-          sentAt: 'now',
-        }),
-      ).rejects.toThrow('Notes API down');
+      await adapter.fetchContacts();
+
+      expect(mockGetPage).toHaveBeenCalledWith(
+        100,
+        undefined,
+        expect.arrayContaining(['lifecyclestage']),
+      );
+    });
+
+    it('leaves status undefined when the stage is missing or unknown', async () => {
+      mockGetPage.mockResolvedValue({
+        results: [
+          { id: 'c-4', properties: { email: 'no-stage@acme.com' } },
+          {
+            id: 'c-5',
+            properties: { email: 'custom@acme.com', lifecyclestage: '9912' },
+          },
+        ],
+      });
+
+      const res = await adapter.fetchContacts();
+
+      expect(res.map((c) => c.status)).toEqual([undefined, undefined]);
     });
   });
 });

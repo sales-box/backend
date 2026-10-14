@@ -6,11 +6,16 @@ import {
   FastifyAdapter,
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
+import fastifyCookie from '@fastify/cookie';
 import * as googleapis from 'googleapis';
 import request from 'supertest';
+import { JwtService } from '@nestjs/jwt';
 import { AuthController } from './../src/modules/auth/auth.controller';
 import { AuthService } from './../src/modules/auth/auth.service';
 import { CryptoService } from './../src/modules/auth/crypto.service';
+import { JwtAuthGuard } from './../src/modules/auth/jwt-auth.guard';
+import { AllowlistService } from './../src/modules/allowlist/allowlist.service';
+import { TenantAllowlistGuard } from './../src/modules/allowlist/tenant-allowlist.guard';
 import { PrismaService } from './../src/database/prisma.service';
 
 jest.mock('googleapis', () => {
@@ -35,6 +40,8 @@ const gmocks = (googleapis as unknown as { __mocks: Record<string, jest.Mock> })
 
 describe('Auth (e2e)', () => {
   const DASHBOARD = 'http://localhost:5173/dashboard';
+  // All OAuth outcomes land on the SPA /callback page (same origin).
+  const CALLBACK = 'http://localhost:5173/callback';
   const env: Record<string, string> = {
     GOOGLE_CLIENT_ID: 'test-client-id',
     GOOGLE_CLIENT_SECRET: 'test-client-secret',
@@ -58,10 +65,31 @@ describe('Auth (e2e)', () => {
           useValue: { emit: jest.fn() },
         },
         {
+          // Admin login is allowlisted in this flow, so verifyAccess resolves.
+          provide: AllowlistService,
+          useValue: { verifyAccess: jest.fn().mockResolvedValue(undefined) },
+        },
+        {
+          provide: JwtService,
+          useValue: {
+            signAsync: jest.fn().mockResolvedValue('test.jwt.token'),
+            verifyAsync: jest.fn(),
+          },
+        },
+        // Guards on /auth/me and /auth/se/session must be resolvable at
+        // app.init(); their deps (JwtService, PrismaService) are mocked above.
+        JwtAuthGuard,
+        TenantAllowlistGuard,
+        {
           provide: PrismaService,
           useValue: {
             connectedAccount: {
-              upsert: jest.fn().mockResolvedValue({
+              findFirst: jest.fn().mockResolvedValue(null),
+              create: jest.fn().mockResolvedValue({
+                id: 'mock-id',
+                email: 'mock@example.com',
+              }),
+              update: jest.fn().mockResolvedValue({
                 id: 'mock-id',
                 email: 'mock@example.com',
               }),
@@ -85,6 +113,10 @@ describe('Auth (e2e)', () => {
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
     );
+    // Mirror main.ts cookie support (signed OAuth state cookie).
+    await app.register(fastifyCookie, {
+      secret: 'test-cookie-secret-0123456789ab',
+    });
     // Mirror main.ts global validation so the 400 path is exercised.
     app.useGlobalPipes(
       new ValidationPipe({
@@ -97,6 +129,18 @@ describe('Auth (e2e)', () => {
     await app.init();
     await app.getHttpAdapter().getInstance().ready();
   });
+
+  /** Runs the login step and returns the state cookie + state value. */
+  async function startOAuthFlow(): Promise<{ cookie: string; state: string }> {
+    const res = await request(app.getHttpServer())
+      .get('/auth/google')
+      .expect(302);
+    const setCookie = res.headers['set-cookie'] as unknown as string[];
+    const cookie = setCookie[0].split(';')[0]; // "oauth_state=<signed value>"
+    const state = new URL(res.headers.location).searchParams.get('state');
+    if (!state) throw new Error('auth URL is missing the state param');
+    return { cookie, state };
+  }
 
   afterEach(async () => {
     await app.close();
@@ -112,6 +156,9 @@ describe('Auth (e2e)', () => {
       'https://accounts.google.com/o/oauth2/v2/auth',
     );
     expect(location.searchParams.get('client_id')).toBe(env.GOOGLE_CLIENT_ID);
+    // CSRF: state present in the URL and mirrored in the state cookie.
+    expect(location.searchParams.get('state')).toMatch(/^[0-9a-f]{32}$/);
+    expect(res.headers['set-cookie'][0]).toContain('oauth_state=');
   });
 
   it('/auth/google/callback?code=good -> 302 dashboard ?status=connected', async () => {
@@ -127,26 +174,90 @@ describe('Auth (e2e)', () => {
       data: { emailAddress: 'seller@example.com' },
     });
 
+    const { cookie, state } = await startOAuthFlow();
     const res = await request(app.getHttpServer())
-      .get('/auth/google/callback?code=good-code')
+      .get(`/auth/google/callback?code=good-code&state=${state}`)
+      .set('Cookie', cookie)
       .expect(302);
 
     const location = new URL(res.headers.location);
-    expect(`${location.origin}${location.pathname}`).toBe(DASHBOARD);
+    expect(`${location.origin}${location.pathname}`).toBe(CALLBACK);
     expect(location.searchParams.get('status')).toBe('connected');
+  });
+
+  it('established admin -> 302 /callback?token=&tenantId= (Google acts as a login)', async () => {
+    gmocks.getToken.mockResolvedValue({
+      tokens: { access_token: 'access', expiry_date: 1893456000000 },
+    });
+    gmocks.getProfile.mockResolvedValue({
+      data: { emailAddress: 'admin@acme.com' },
+    });
+    // The upsert path finds an existing account that already completed
+    // set-password: isAdmin with a stored hash and a tenant.
+    const prisma = app.get(PrismaService);
+    (prisma.connectedAccount.findFirst as jest.Mock).mockResolvedValue({
+      id: 'acct-admin',
+      email: 'admin@acme.com',
+    });
+    (prisma.connectedAccount.update as jest.Mock).mockResolvedValue({
+      id: 'acct-admin',
+      email: 'admin@acme.com',
+      tenantId: 'tenant-a',
+      isAdmin: true,
+      passwordHash: '$argon2id$stored',
+    });
+
+    const { cookie, state } = await startOAuthFlow();
+    const res = await request(app.getHttpServer())
+      .get(`/auth/google/callback?code=good-code&state=${state}`)
+      .set('Cookie', cookie)
+      .expect(302);
+
+    const location = new URL(res.headers.location);
+    expect(`${location.origin}${location.pathname}`).toBe(CALLBACK);
+    expect(location.searchParams.get('token')).toBe('test.jwt.token');
+    expect(location.searchParams.get('tenantId')).toBe('tenant-a');
+    expect(location.searchParams.get('status')).toBeNull();
   });
 
   it('/auth/google/callback?code=bad -> 302 dashboard ?status=error&retry=1', async () => {
     gmocks.getToken.mockRejectedValue(new Error('invalid_grant'));
 
+    const { cookie, state } = await startOAuthFlow();
     const res = await request(app.getHttpServer())
-      .get('/auth/google/callback?code=bad-code')
+      .get(`/auth/google/callback?code=bad-code&state=${state}`)
+      .set('Cookie', cookie)
       .expect(302);
 
     const location = new URL(res.headers.location);
-    expect(`${location.origin}${location.pathname}`).toBe(DASHBOARD);
+    expect(`${location.origin}${location.pathname}`).toBe(CALLBACK);
     expect(location.searchParams.get('status')).toBe('error');
     expect(location.searchParams.get('retry')).toBe('1');
+  });
+
+  it('callback with a forged state -> 302 error, code never exchanged', async () => {
+    const { cookie } = await startOAuthFlow();
+    const res = await request(app.getHttpServer())
+      .get(`/auth/google/callback?code=good-code&state=${'b'.repeat(32)}`)
+      .set('Cookie', cookie)
+      .expect(302);
+
+    expect(new URL(res.headers.location).searchParams.get('status')).toBe(
+      'error',
+    );
+    expect(gmocks.getToken).not.toHaveBeenCalled();
+  });
+
+  it('callback without the state cookie -> 302 error, code never exchanged', async () => {
+    const { state } = await startOAuthFlow();
+    const res = await request(app.getHttpServer())
+      .get(`/auth/google/callback?code=good-code&state=${state}`)
+      .expect(302);
+
+    expect(new URL(res.headers.location).searchParams.get('status')).toBe(
+      'error',
+    );
+    expect(gmocks.getToken).not.toHaveBeenCalled();
   });
 
   it('/auth/google/callback?error=access_denied -> 302 error redirect', async () => {
@@ -173,8 +284,10 @@ describe('Auth (e2e)', () => {
       data: { emailAddress: 'seller@example.com' },
     });
 
+    const { cookie, state } = await startOAuthFlow();
     const query =
       'code=good' +
+      `&state=${state}` +
       '&scope=' +
       encodeURIComponent(env.GOOGLE_SCOPES) +
       '&iss=' +
@@ -183,6 +296,7 @@ describe('Auth (e2e)', () => {
 
     const res = await request(app.getHttpServer())
       .get(`/auth/google/callback?${query}`)
+      .set('Cookie', cookie)
       .expect(302);
 
     expect(new URL(res.headers.location).searchParams.get('status')).toBe(

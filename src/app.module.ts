@@ -26,6 +26,14 @@ import { KnowledgeBaseModule } from './modules/knowledge-base/knowledge-base.mod
 import { ExternalContentModule } from './modules/external-content/external-content.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AiModule } from './modules/ai/ai.module';
+import { AiModelModule } from './modules/ai/ai-model.module';
+import { EmbeddingsModule } from './modules/embeddings/embeddings.module';
+import { QualityModule } from './modules/knowledge-base/quality/quality.module';
+import { TenantsModule } from './modules/tenants/tenants.module';
+import { PaymentModule } from './modules/payments/payment.module';
+import { LlmModule } from './common/llm/llm.module';
+import { PlatformModule } from './modules/platform/platform.module';
+import { FaqModule } from './modules/faq/faq.module';
 
 const isProd = process.env.NODE_ENV === 'production';
 
@@ -73,31 +81,30 @@ const isProd = process.env.NODE_ENV === 'production';
     CacheModule.registerAsync({
       isGlobal: true,
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        stores: [
-          createKeyv(
-            `redis://${config.get<string>('REDIS_HOST')}:${config.get<number>('REDIS_PORT')}`,
-          ),
-        ],
-        ttl: 30_000,
-      }),
+      useFactory: (config: ConfigService) => {
+        const host = config.get<string>('REDIS_HOST');
+        const port = config.get<number>('REDIS_PORT');
+        const password = config.get<string>('REDIS_PASSWORD');
+        const redisUrl = password
+          ? `redis://:${encodeURIComponent(password)}@${host}:${port}`
+          : `redis://${host}:${port}`;
+        return {
+          stores: [createKeyv(redisUrl)],
+          ttl: 30_000,
+        };
+      },
     }),
     // Rate limiting backed by Redis so limits are shared across all instances.
     ThrottlerModule.forRootAsync({
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
+      inject: [ConfigService, 'REDIS_CLIENT'],
+      useFactory: (config: ConfigService, redis: Redis) => ({
         throttlers: [
           {
             ttl: config.get<number>('THROTTLE_TTL', 60_000),
             limit: config.get<number>('THROTTLE_LIMIT', 100),
           },
         ],
-        storage: new ThrottlerStorageRedisService(
-          new Redis({
-            host: config.get<string>('REDIS_HOST'),
-            port: config.get<number>('REDIS_PORT'),
-          }),
-        ),
+        storage: new ThrottlerStorageRedisService(redis),
       }),
     }),
     PrismaModule,
@@ -112,7 +119,15 @@ const isProd = process.env.NODE_ENV === 'production';
     KnowledgeBaseModule,
     ExternalContentModule,
     AnalyticsModule,
+    AiModelModule,
     AiModule,
+    EmbeddingsModule,
+    QualityModule,
+    TenantsModule,
+    PaymentModule,
+    LlmModule,
+    PlatformModule,
+    FaqModule,
   ],
   providers: [
     // Apply rate limiting globally.

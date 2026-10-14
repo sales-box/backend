@@ -20,4 +20,7 @@ export class ResolveExternalContentDto {
   @IsNotEmpty()
   @MaxLength(200)
   interactionId!: string;
+
+  // tenantId is intentionally NOT accepted here anymore — it is derived from
+  // the admin JWT claim by JwtAuthGuard (a caller must never pick its tenant).
 }

@@ -7,7 +7,13 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma, KnowledgeGap } from '@prisma/client';
-import { AnalyticsSummary } from './types/analytics.types';
+import {
+  AnalyticsSummary,
+  KnowledgeGapAlert,
+  TeamMemberStats,
+} from './types/analytics.types';
+import { ActivityFeedQueryDto } from './dto/activity-feed-query.dto';
+import { determineKnowledgeGapTopic } from './knowledge-gap-topic';
 
 @Injectable()
 export class AnalyticsService {
@@ -15,48 +21,113 @@ export class AnalyticsService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async getAnalyticsSummary(days: number = 7): Promise<AnalyticsSummary> {
+  async getAnalyticsSummary(
+    days: number,
+    tenantId: string,
+  ): Promise<AnalyticsSummary> {
     if (!Number.isFinite(days) || days <= 0) {
       throw new BadRequestException('days must be a positive number');
     }
+    // tenantId is REQUIRED — the summary is per-tenant. An omitted tenant is a
+    // caller bug, never a query that silently aggregates across tenants.
+    // AdminTenantGuard guarantees it upstream; this is defense in depth.
+    if (!tenantId) {
+      throw new BadRequestException('tenantId is required');
+    }
 
     try {
-      const since = new Date();
-      since.setDate(since.getDate() - days);
+      const dayMs = 86_400_000;
+      const now = Date.now();
+      const curStart = new Date(now - days * dayMs);
+      const prevStart = new Date(now - 2 * days * dayMs);
 
-      const [total, byClassificationRaw, confidenceStats, lowConfidenceCount] =
-        await Promise.all([
-          this.prisma.interaction.count({
-            where: { date: { gte: since } },
-          }),
-          this.prisma.interaction.groupBy({
-            by: ['classification'],
-            where: { date: { gte: since } },
-            _count: { classification: true },
-          }),
-          this.prisma.interaction.aggregate({
-            where: { date: { gte: since } },
-            _avg: { confidence: true },
-          }),
-          this.prisma.interaction.count({
-            where: { date: { gte: since }, confidence: { lt: 0.6 } },
-          }),
-        ]);
+      // Source of truth = general_analysis: one row per classified inbound
+      // email with a direct tenant_id (no join through client). Interaction is
+      // the per-client timeline, not the processed-email ledger.
+      const cur = { tenantId, createdAt: { gte: curStart } };
+      const aiReviewedWhere = { ...cur, supervisorLabel: { not: null } };
+
+      const [
+        total,
+        prevTotal,
+        byIntentRaw,
+        replyThreadRows,
+        aiReviewedCount,
+        escalatedCount,
+        confidenceStats,
+        dailyCounts,
+      ] = await Promise.all([
+        this.prisma.generalAnalysis.count({ where: cur }),
+        this.prisma.generalAnalysis.count({
+          where: { tenantId, createdAt: { gte: prevStart, lt: curStart } },
+        }),
+        this.prisma.generalAnalysis.groupBy({
+          by: ['intent'],
+          where: cur,
+          _count: { intent: true },
+        }),
+        // Replies counted per DISTINCT thread: reviewedAt is stamped on every
+        // un-reviewed row of a thread when ONE sent message is detected, so
+        // counting rows would multiply a single reply by the thread size.
+        this.prisma.generalAnalysis.findMany({
+          where: { ...cur, reviewedAt: { not: null } },
+          select: { threadId: true },
+          distinct: ['threadId'],
+        }),
+        this.prisma.generalAnalysis.count({ where: aiReviewedWhere }),
+        // supervisorLabel is persisted as 'green' | 'yellow' | 'red' (the
+        // orchestrator maps computeLabel's enum before saving). 'red' is the
+        // escalate-to-human band.
+        this.prisma.generalAnalysis.count({
+          where: { ...cur, supervisorLabel: 'red' },
+        }),
+        // Confidence is written only for emails an SE opened via /ai/process,
+        // so average over the AI-reviewed subset — never over all rows, whose
+        // NULLs would silently skew it.
+        this.prisma.generalAnalysis.aggregate({
+          where: aiReviewedWhere,
+          _avg: { productConfidence: true, clientHistoryConfidence: true },
+        }),
+        this.getDailyCounts(tenantId, curStart, days),
+      ]);
 
       const byClassification: Record<string, number> = {};
-      for (const row of byClassificationRaw) {
-        if (row.classification) {
-          byClassification[row.classification] = row._count.classification;
-        }
+      for (const row of byIntentRaw) {
+        byClassification[row.intent] = row._count.intent;
       }
+
+      let averageConfidence = 0;
+      const avgProd = confidenceStats._avg.productConfidence;
+      const avgHist = confidenceStats._avg.clientHistoryConfidence;
+      if (avgProd !== null && avgHist !== null) {
+        averageConfidence = (avgProd + avgHist) / 2;
+      } else if (avgProd !== null) {
+        averageConfidence = avgProd;
+      } else if (avgHist !== null) {
+        averageConfidence = avgHist;
+      }
+
+      const repliedThreads = replyThreadRows.filter(
+        (r) => r.threadId !== null,
+      ).length;
+
+      const momChangePct =
+        prevTotal > 0
+          ? Math.round(((total - prevTotal) / prevTotal) * 100)
+          : null;
 
       return {
         totalEmailsProcessed: total,
         byClassification,
-        averageConfidence: confidenceStats._avg.confidence ?? 0,
-        lowConfidenceCount,
+        averageConfidence,
+        lowConfidenceCount: escalatedCount, // back-compat: old FE reads this
+        momChangePct,
+        dailyCounts,
+        replies: { threads: repliedThreads },
+        aiReviewed: { count: aiReviewedCount, escalated: escalatedCount },
       };
     } catch (error) {
+      if (error instanceof BadRequestException) throw error;
       this.logger.error('Failed to compute analytics summary', error);
       throw new InternalServerErrorException(
         'Could not compute analytics summary',
@@ -64,7 +135,165 @@ export class AnalyticsService {
     }
   }
 
-  async upsertKnowledgeGap(topic: string): Promise<KnowledgeGap> {
+  /**
+   * Real per-day email volume over the window, bucketed by UTC calendar day
+   * and ZERO-FILLED so the chart spans the whole window with honest gaps
+   * instead of interpolating over missing days.
+   */
+  private async getDailyCounts(
+    tenantId: string,
+    since: Date,
+    days: number,
+  ): Promise<{ date: string; emails: number }[]> {
+    const rows = await this.prisma.$queryRaw<{ day: Date; emails: number }[]>`
+      SELECT (created_at AT TIME ZONE 'UTC')::date AS day, COUNT(*)::int AS emails
+      FROM general_analysis
+      WHERE tenant_id = ${tenantId}::uuid AND created_at >= ${since}
+      GROUP BY 1
+      ORDER BY 1
+    `;
+    const byDay = new Map<string, number>();
+    for (const r of rows) {
+      byDay.set(new Date(r.day).toISOString().slice(0, 10), Number(r.emails));
+    }
+    const startDay = Date.UTC(
+      since.getUTCFullYear(),
+      since.getUTCMonth(),
+      since.getUTCDate(),
+    );
+    const out: { date: string; emails: number }[] = [];
+    for (let i = 0; i <= days; i++) {
+      const key = new Date(startDay + i * 86_400_000)
+        .toISOString()
+        .slice(0, 10);
+      out.push({ date: key.slice(5), emails: byDay.get(key) ?? 0 });
+    }
+    return out;
+  }
+
+  /**
+   * Per-SE activity for the tenant's Team/Analytics pages.
+   *
+   * tenantId is REQUIRED here (unlike getAnalyticsSummary's optional param,
+   * which is a legacy accommodation for pre-multi-tenant rows). This method
+   * has no legitimate "all tenants" mode — a missing tenantId must be a
+   * compile error, not a query that silently falls back to `where: {}` and
+   * returns every tenant's SE stats. Every call site is the AnalyticsController,
+   * which only ever passes req.user.tenantId! after AdminTenantGuard has
+   * already confirmed it's non-null — never a client-suppliable value.
+   */
+  async getTeamStats(tenantId: string): Promise<TeamMemberStats[]> {
+    // Defense in depth: the type system says tenantId is required, but a
+    // future caller could still pass an empty string. Empty string is
+    // falsy but NOT the same as "field omitted" to Prisma's `where` —
+    // catch it explicitly rather than letting `where: { tenantId: '' }`
+    // quietly return zero rows and look like "this tenant has no team"
+    // instead of the caller bug it actually is.
+    if (!tenantId) {
+      throw new BadRequestException('tenantId is required');
+    }
+    try {
+      const [allowlistEntries, connectedAccounts, receivedGroups, sentGroups] =
+        await Promise.all([
+          this.prisma.allowlistEntry.findMany({
+            where: { tenantId },
+            select: {
+              email: true,
+              status: true,
+              grantedAt: true,
+              verifiedAt: true,
+            },
+            orderBy: { grantedAt: 'desc' },
+          }),
+          this.prisma.connectedAccount.findMany({
+            where: {
+              OR: [{ tenantId }, { tenantId: null }],
+            },
+            select: {
+              email: true,
+              lastLoginAt: true,
+              createdAt: true,
+              status: true,
+            },
+          }),
+          // emailsReceived: every GeneralAnalysis row is scoped to a single
+          // account+tenant at write time (classifier.processor.ts), so
+          // grouping by accountEmail here can never mix another tenant's rows in.
+          this.prisma.generalAnalysis.groupBy({
+            by: ['accountEmail'],
+            where: { tenantId },
+            _count: { _all: true },
+          }),
+          // repliesSent: same scope, plus reviewedAt IS NOT NULL — stamped
+          // only when the Gmail history diff confirms an actual SENT message
+          // on the thread, never on the SE merely opening the email.
+          this.prisma.generalAnalysis.groupBy({
+            by: ['accountEmail'],
+            where: { tenantId, reviewedAt: { not: null } },
+            _count: { _all: true },
+          }),
+        ]);
+
+      const connectedByEmail = new Map(
+        connectedAccounts.map((a) => [a.email.toLowerCase().trim(), a]),
+      );
+      const receivedByEmail = new Map(
+        receivedGroups.map((g) => [
+          g.accountEmail.toLowerCase().trim(),
+          g._count._all,
+        ]),
+      );
+      const sentByEmail = new Map(
+        sentGroups.map((g) => [
+          g.accountEmail.toLowerCase().trim(),
+          g._count._all,
+        ]),
+      );
+
+      return allowlistEntries.map((entry) => {
+        const key = entry.email.toLowerCase().trim();
+        const emailsReceived = receivedByEmail.get(key) ?? 0;
+        const repliesSent = sentByEmail.get(key) ?? 0;
+        const account = connectedByEmail.get(key);
+
+        const isConnected = !!(account && account.status !== 'revoked');
+        const lastLoginAt =
+          account?.lastLoginAt ?? (isConnected ? account.createdAt : null);
+
+        const status: 'granted' | 'verified' | 'revoked' =
+          entry.status === 'revoked'
+            ? 'revoked'
+            : isConnected || entry.verifiedAt || entry.status === 'verified'
+              ? 'verified'
+              : 'granted';
+
+        return {
+          email: entry.email,
+          status,
+          grantedAt: entry.grantedAt,
+          verifiedAt:
+            entry.verifiedAt ?? (status === 'verified' ? lastLoginAt : null),
+          lastLoginAt,
+          emailsReceived,
+          repliesSent,
+          // Guard divide-by-zero explicitly rather than relying on NaN
+          // happening to render as something reasonable downstream.
+          replyRate: emailsReceived > 0 ? repliesSent / emailsReceived : 0,
+        };
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to compute team stats for tenant ${tenantId}`,
+        error,
+      );
+      throw new InternalServerErrorException('Could not compute team stats');
+    }
+  }
+
+  async upsertKnowledgeGap(
+    topic: string,
+    tenantId?: string,
+  ): Promise<KnowledgeGap> {
     const normalizedTopic = topic.trim().toLowerCase();
 
     if (!normalizedTopic) {
@@ -72,10 +301,34 @@ export class AnalyticsService {
     }
 
     try {
-      return await this.prisma.knowledgeGap.upsert({
-        where: { topic: normalizedTopic },
-        update: { occurrences: { increment: 1 }, resolved: false },
-        create: { topic: normalizedTopic, occurrences: 1, resolved: false },
+      // Gaps are unique per (tenantId, topic): the same topic for two
+      // different companies stays two separate rows with separate counts.
+      if (tenantId) {
+        return await this.prisma.knowledgeGap.upsert({
+          where: { tenantId_topic: { tenantId, topic: normalizedTopic } },
+          update: { occurrences: { increment: 1 }, resolved: false },
+          create: {
+            topic: normalizedTopic,
+            tenantId,
+            occurrences: 1,
+            resolved: false,
+          },
+        });
+      }
+
+      // Legacy rows have tenantId NULL, which a compound unique cannot
+      // address in Prisma — emulate the upsert for that case.
+      const existing = await this.prisma.knowledgeGap.findFirst({
+        where: { topic: normalizedTopic, tenantId: null },
+      });
+      if (existing) {
+        return await this.prisma.knowledgeGap.update({
+          where: { id: existing.id },
+          data: { occurrences: { increment: 1 }, resolved: false },
+        });
+      }
+      return await this.prisma.knowledgeGap.create({
+        data: { topic: normalizedTopic, occurrences: 1, resolved: false },
       });
     } catch (error) {
       this.logger.error(
@@ -86,28 +339,240 @@ export class AnalyticsService {
     }
   }
 
-  async getKnowledgeGapAlerts(threshold: number = 3): Promise<KnowledgeGap[]> {
-    try {
-      return await this.prisma.knowledgeGap.findMany({
-        where: {
-          resolved: false,
-          occurrences: { gte: threshold },
-        },
-        orderBy: { occurrences: 'desc' },
+  async reportKnowledgeGap(messageId: string, tenantId: string) {
+    if (!tenantId) {
+      throw new BadRequestException('tenantId is required');
+    }
+
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedMessageId) {
+      throw new BadRequestException('messageId is required');
+    }
+
+    const interaction = await this.prisma.interaction.findUnique({
+      where: {
+        tenant_message: { tenantId, messageId: normalizedMessageId },
+      },
+      select: {
+        id: true,
+        subject: true,
+        aiSummary: true,
+        classification: true,
+      },
+    });
+
+    if (!interaction) {
+      throw new NotFoundException('Email interaction not found');
+    }
+
+    const topic = determineKnowledgeGapTopic(interaction);
+
+    const report = () =>
+      this.prisma.$transaction(async (tx) => {
+        const previousReport = await tx.knowledgeGapReport.findUnique({
+          where: { interactionId: interaction.id },
+          include: { knowledgeGap: true },
+        });
+        if (previousReport) {
+          return {
+            ...previousReport.knowledgeGap,
+            reportAdded: false,
+          };
+        }
+
+        // The gap row is the stable bucket. It starts at zero because only a
+        // successfully inserted, unique evidence row may increment the count.
+        const gap = await tx.knowledgeGap.upsert({
+          where: { tenantId_topic: { tenantId, topic } },
+          update: {},
+          create: {
+            topic,
+            tenantId,
+            occurrences: 0,
+            resolved: false,
+          },
+        });
+
+        const inserted = await tx.knowledgeGapReport.createMany({
+          data: {
+            knowledgeGapId: gap.id,
+            interactionId: interaction.id,
+          },
+          skipDuplicates: true,
+        });
+
+        // A concurrent retry can win the unique interactionId insert after our
+        // first read. Re-read its gap instead of incrementing another bucket.
+        if (!inserted.count) {
+          const concurrentReport = await tx.knowledgeGapReport.findUnique({
+            where: { interactionId: interaction.id },
+            include: { knowledgeGap: true },
+          });
+          if (!concurrentReport) {
+            throw new Error('Knowledge-gap report insert did not persist');
+          }
+          return {
+            ...concurrentReport.knowledgeGap,
+            reportAdded: false,
+          };
+        }
+
+        const current = await tx.knowledgeGap.update({
+          where: { id: gap.id },
+          data: { occurrences: { increment: 1 }, resolved: false },
+        });
+
+        return {
+          ...current,
+          reportAdded: true,
+        };
       });
+
+    try {
+      return await report();
+    } catch (error) {
+      let failure: unknown = error;
+      // Two different first reports for a new topic may race on the gap's
+      // tenant/topic unique key. Retry the whole fresh transaction once.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        try {
+          return await report();
+        } catch (retryError) {
+          failure = retryError;
+        }
+      }
+      this.logger.error(
+        `Failed to report knowledge gap for message ${normalizedMessageId}`,
+        failure,
+      );
+      throw new InternalServerErrorException('Could not report knowledge gap');
+    }
+  }
+
+  /**
+   * @param includeResolved - the dashboard shows an "N of M resolved" progress
+   *   bar, which it derives from this list. While resolved rows were filtered
+   *   out unconditionally the numerator was always zero, so the bar sat at 0%
+   *   for ever and the whole resolved-row rendering branch was unreachable.
+   *   Callers that only want outstanding work leave this false.
+   */
+  async getKnowledgeGapAlerts(
+    threshold: number = 3,
+    tenantId?: string,
+    includeResolved = false,
+  ): Promise<KnowledgeGapAlert[]> {
+    try {
+      const gaps = await this.prisma.knowledgeGap.findMany({
+        where: {
+          // The threshold is about OUTSTANDING volume, so it only applies to
+          // unresolved rows. Resolving resets occurrences to zero, so applying
+          // `gte: threshold` to resolved rows too would filter every one of them
+          // straight back out — and the progress bar this flag exists to feed
+          // would still have read "0 of N".
+          ...(includeResolved
+            ? {
+                OR: [
+                  { resolved: false, occurrences: { gte: threshold } },
+                  { resolved: true },
+                ],
+              }
+            : { resolved: false, occurrences: { gte: threshold } }),
+          ...(tenantId ? { tenantId } : {}),
+        },
+        // Outstanding work first, then busiest, then a stable tiebreaker. The
+        // dashboard asks for threshold=1, so most rows tie on occurrences; with
+        // no tiebreaker the list reshuffled between refetches and an admin
+        // mid-click could resolve a different topic than the one they aimed at.
+        orderBy: [
+          { resolved: 'asc' },
+          { occurrences: 'desc' },
+          { updatedAt: 'desc' },
+          { id: 'asc' },
+        ],
+        include: {
+          reports: {
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            take: 5,
+            select: {
+              createdAt: true,
+              interaction: {
+                select: {
+                  subject: true,
+                  aiSummary: true,
+                  classification: true,
+                  date: true,
+                  client: {
+                    select: {
+                      name: true,
+                      email: true,
+                      company: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      return gaps.map(({ reports, ...gap }) => ({
+        ...gap,
+        // `occurrences` IS the evidence count for the current episode: it resets
+        // to zero on resolve and reportKnowledgeGap increments it exactly once
+        // per newly-linked interaction. The UI can therefore say "showing 5 of
+        // 14" honestly instead of printing a badge that the 5 cards contradict.
+        evidenceTotal: gap.occurrences,
+        // Only evidence from the current episode. A gap resolved last month
+        // starts a fresh window, so a zeroed count is never shown beside
+        // examples collected before it was documented.
+        evidence: (reports ?? [])
+          .filter(
+            (report) => !gap.resolvedAt || report.createdAt > gap.resolvedAt,
+          )
+          .map((report) => ({
+            reportedAt: report.createdAt,
+            subject: report.interaction.subject,
+            summary: report.interaction.aiSummary,
+            classification: report.interaction.classification,
+            emailDate: report.interaction.date,
+            sender: report.interaction.client,
+          })),
+      }));
     } catch (error) {
       this.logger.error('Failed to fetch knowledge gap alerts', error);
       throw new InternalServerErrorException('Could not fetch knowledge gaps');
     }
   }
 
-  async resolveGap(id: string): Promise<KnowledgeGap> {
+  async resolveGap(id: string, tenantId?: string): Promise<KnowledgeGap> {
     try {
+      if (tenantId) {
+        const existing = await this.prisma.knowledgeGap.findFirst({
+          // Scoped exactly like getKnowledgeGapAlerts reads. It used to also
+          // accept `{ tenantId: null }`, so a tenant admin who learned a
+          // legacy NULL-tenant gap's id could resolve it and read back its
+          // topic and count — a row their own list is not allowed to show them.
+          where: { id, tenantId },
+        });
+        if (!existing) {
+          throw new NotFoundException(`Knowledge gap with ID ${id} not found`);
+        }
+      }
       return await this.prisma.knowledgeGap.update({
         where: { id },
-        data: { resolved: true },
+        // The count restarts with the topic. Leaving it meant a documented and
+        // resolved gap re-opened at its lifetime total — 12 old hits plus one
+        // new email came back as 13 and painted red, so the admin re-wrote
+        // documentation for a topic that had been asked about once since.
+        data: { resolved: true, occurrences: 0, resolvedAt: new Date() },
       });
     } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2025'
@@ -117,5 +582,300 @@ export class AnalyticsService {
       this.logger.error(`Failed to resolve knowledge gap ${id}`, error);
       throw new InternalServerErrorException('Could not resolve knowledge gap');
     }
+  }
+
+  async getActivityFeed(
+    tenantId: string,
+    query: ActivityFeedQueryDto,
+  ): Promise<{
+    data: Array<{
+      id: string;
+      time: Date;
+      client: string;
+      company: string;
+      classification: string | null;
+      confidence: number | null;
+      action: string | null;
+      faqAutoReplied: boolean;
+    }>;
+    meta: {
+      total: number;
+      page: number;
+      limit: number;
+      totalPages: number;
+    };
+  }> {
+    let targetDate: Date;
+    if (query.date) {
+      targetDate = new Date(query.date);
+      if (isNaN(targetDate.getTime())) {
+        throw new BadRequestException('Invalid date format');
+      }
+    } else {
+      targetDate = new Date();
+    }
+
+    const year = targetDate.getUTCFullYear();
+    const month = targetDate.getUTCMonth();
+    const day = targetDate.getUTCDate();
+
+    const start = new Date(Date.UTC(year, month, day, 0, 0, 0, 0));
+    const end = new Date(Date.UTC(year, month, day, 23, 59, 59, 999));
+
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 50;
+    const skip = (page - 1) * limit;
+
+    try {
+      const allowlistEntries = await this.prisma.allowlistEntry.findMany({
+        where: {
+          tenantId,
+          status: { in: ['granted', 'verified'] },
+        },
+        select: { email: true },
+      });
+      let seEmails = allowlistEntries
+        .map((e) => (e.email ? e.email.toLowerCase().trim() : ''))
+        .filter(Boolean);
+
+      // Fallback: If no allowlist entries exist, query all SE emails that have processed emails for this tenant
+      if (seEmails.length === 0) {
+        const tenantAnalyses = await this.prisma.generalAnalysis.findMany({
+          where: { tenantId },
+          select: { accountEmail: true },
+          distinct: ['accountEmail'],
+        });
+        seEmails = tenantAnalyses
+          .map((a) =>
+            a.accountEmail ? a.accountEmail.toLowerCase().trim() : '',
+          )
+          .filter(Boolean);
+      }
+
+      if (seEmails.length === 0) {
+        return {
+          data: [],
+          meta: {
+            total: 0,
+            page,
+            limit,
+            totalPages: 0,
+          },
+        };
+      }
+
+      const seAnalyses = await this.prisma.generalAnalysis.findMany({
+        where: {
+          tenantId,
+          accountEmail: { in: seEmails },
+        },
+        select: { messageId: true },
+      });
+      const seMessageIds = seAnalyses.map((a) => a.messageId);
+
+      const where: Prisma.InteractionWhereInput = {
+        ...(query.date ? { date: { gte: start, lte: end } } : {}),
+        client: {
+          tenantId,
+        },
+        messageId: {
+          in: seMessageIds,
+        },
+      };
+
+      const [total, interactions] = await Promise.all([
+        this.prisma.interaction.count({ where }),
+        this.prisma.interaction.findMany({
+          where,
+          include: {
+            client: true,
+          },
+          orderBy: {
+            date: 'desc',
+          },
+          skip,
+          take: limit,
+        }),
+      ]);
+
+      // Fetch faqAutoReplied from GeneralAnalysis for this batch
+      const msgIds = interactions
+        .map((i) => i.messageId)
+        .filter((id): id is string => id !== null);
+      const analyses = await this.prisma.generalAnalysis.findMany({
+        where: { messageId: { in: msgIds } },
+        select: { messageId: true, faqAutoReplied: true },
+      });
+      const faqByMsg = new Map(
+        analyses.map((a) => [a.messageId, a.faqAutoReplied]),
+      );
+
+      const data = interactions.map((interaction) => ({
+        id: interaction.id,
+        time: interaction.date,
+        client: interaction.client.name || '',
+        company: interaction.client.company || '',
+        classification: interaction.classification,
+        confidence: interaction.productConfidence,
+        action: interaction.recommendation,
+        faqAutoReplied:
+          interaction.messageId != null
+            ? (faqByMsg.get(interaction.messageId) ?? false)
+            : false,
+      }));
+
+      const totalPages = Math.ceil(total / limit);
+
+      return {
+        data,
+        meta: {
+          total,
+          page,
+          limit,
+          totalPages,
+        },
+      };
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      this.logger.error('Failed to retrieve activity feed', error);
+      throw new InternalServerErrorException(
+        'Could not retrieve activity feed',
+      );
+    }
+  }
+
+  async getEscalations(
+    tenantId: string,
+    page = 1,
+    limit = 50,
+    status?: string,
+    date?: string,
+  ) {
+    if (!tenantId) {
+      throw new BadRequestException('tenantId is required');
+    }
+    const skip = (page - 1) * limit;
+
+    let dateFilter: Prisma.EscalationItemWhereInput = {};
+    if (date) {
+      const d = new Date(date);
+      if (!Number.isNaN(d.getTime())) {
+        const start = new Date(d);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(d);
+        end.setHours(23, 59, 59, 999);
+        dateFilter = { createdAt: { gte: start, lte: end } };
+      }
+    }
+
+    const where: Prisma.EscalationItemWhereInput = {
+      tenantId,
+      ...(status ? { status } : {}),
+      ...dateFilter,
+    };
+
+    try {
+      const [total, items] = await Promise.all([
+        this.prisma.escalationItem.count({ where }),
+        this.prisma.escalationItem.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          skip,
+          take: limit,
+          include: {
+            generalAnalysis: {
+              select: {
+                intent: true,
+                intentConfidence: true,
+                isUrgent: true,
+                urgencyReason: true,
+                reasoning: true,
+                supervisorLabel: true,
+                createdAt: true,
+              },
+            },
+          },
+        }),
+      ]);
+
+      const messageIds = items.map((i) => i.messageId);
+      const interactions =
+        messageIds.length > 0
+          ? await this.prisma.interaction.findMany({
+              where: {
+                tenantId,
+                messageId: { in: messageIds },
+              },
+              include: {
+                client: {
+                  select: { name: true, email: true, company: true },
+                },
+              },
+            })
+          : [];
+
+      const interactionByMessageId = new Map(
+        interactions.map((int) => [int.messageId, int]),
+      );
+
+      const data = items.map((item) => {
+        const interaction = interactionByMessageId.get(item.messageId);
+        return {
+          id: item.id,
+          messageId: item.messageId,
+          accountEmail: item.accountEmail,
+          severity: item.severity,
+          reason: item.reason,
+          status: item.status,
+          reviewedBy: item.reviewedBy,
+          reviewedAt: item.reviewedAt,
+          createdAt: item.createdAt,
+          analysis: item.generalAnalysis,
+          client: interaction?.client ?? null,
+          subject: interaction?.subject ?? null,
+        };
+      });
+
+      return {
+        data,
+        meta: {
+          total,
+          page,
+          limit,
+          totalPages: Math.ceil(total / limit),
+        },
+      };
+    } catch (error) {
+      this.logger.error('Failed to retrieve escalations', error);
+      throw new InternalServerErrorException('Could not retrieve escalations');
+    }
+  }
+
+  async resolveEscalation(
+    id: string,
+    tenantId: string,
+    adminEmail: string,
+    status: 'reviewed' | 'dismissed' = 'reviewed',
+  ) {
+    if (!tenantId) {
+      throw new BadRequestException('tenantId is required');
+    }
+    const existing = await this.prisma.escalationItem.findFirst({
+      where: { id, tenantId },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Escalation item with ID ${id} not found`);
+    }
+
+    return this.prisma.escalationItem.update({
+      where: { id },
+      data: {
+        status,
+        reviewedBy: adminEmail,
+        reviewedAt: new Date(),
+      },
+    });
   }
 }

@@ -1,4 +1,5 @@
 import { ValidationPipe } from '@nestjs/common';
+import { timingSafeEqual } from 'node:crypto';
 import { NestFactory } from '@nestjs/core';
 import {
   FastifyAdapter,
@@ -13,15 +14,53 @@ import { setupGracefulShutdown } from 'nestjs-graceful-shutdown';
 import { AppModule } from './app.module';
 import { setupSwagger } from './config/swagger';
 
+/**
+ * Keep one background failure from taking the whole API down.
+ *
+ * LangGraph's Postgres checkpointer writes concurrently with node execution
+ * and does not await the write, so when `PostgresSaver.put` rejects — a
+ * network blip, a database restart, a full disk — nothing is holding the
+ * promise. Node's default for an unhandled rejection is to throw, so the
+ * process died. This was observed three times: ENETUNREACH to the database,
+ * and twice on `could not extend file ... No space left on device`.
+ *
+ * A checkpoint that failed to persist is bad, but it is one request's problem.
+ * Logging it loudly and staying up is strictly better than dropping every
+ * other in-flight request and refusing new ones until someone notices.
+ *
+ * `uncaughtException` is not the same case: by then the process state may be
+ * inconsistent, so the only safe move is to log the cause — which today is
+ * lost entirely — and let the supervisor restart us.
+ */
+function installProcessErrorHandlers(logger: Logger): void {
+  process.on('unhandledRejection', (reason) => {
+    logger.error(
+      reason instanceof Error ? reason.stack : String(reason),
+      'UnhandledRejection',
+    );
+  });
+
+  process.on('uncaughtException', (error) => {
+    logger.error(error.stack ?? error.message, 'UncaughtException');
+    process.exit(1);
+  });
+}
+
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     new FastifyAdapter(),
-    { bufferLogs: true },
+    {
+      bufferLogs: true,
+      rawBody: true,
+    },
   );
 
   // Route all framework logs through pino (structured JSON in prod).
-  app.useLogger(app.get(Logger));
+  const logger = app.get(Logger);
+  app.useLogger(logger);
+
+  installProcessErrorHandlers(logger);
 
   // Wire signal handling + Nest shutdown hooks for graceful termination.
   setupGracefulShutdown({ app });
@@ -44,10 +83,45 @@ async function bootstrap() {
     limits: { fileSize: 25 * 1024 * 1024, files: 1 },
   });
 
+  // Bull Board (/admin/queues) shows every queue, every job payload, and offers
+  // retry and remove controls. It shipped with no authentication at all, so an
+  // anonymous caller got the whole operations console. It now needs an explicit
+  // shared secret, and is switched off entirely when that secret is unset —
+  // closed by default rather than open by default.
+  const queueDashboardToken = process.env.QUEUE_DASHBOARD_TOKEN;
+  app
+    .getHttpAdapter()
+    .getInstance()
+    .addHook('onRequest', (request, reply, done) => {
+      const url = request.url ?? '';
+      if (!url.startsWith('/admin/queues')) {
+        done();
+        return;
+      }
+      if (!queueDashboardToken) {
+        void reply.code(404).send({ message: 'Not Found', statusCode: 404 });
+        return;
+      }
+      const header = request.headers['x-queue-dashboard-token'];
+      const supplied = Array.isArray(header) ? header[0] : header;
+      const expected = Buffer.from(queueDashboardToken);
+      const actual = Buffer.from(supplied ?? '');
+      const ok =
+        actual.length === expected.length && timingSafeEqual(actual, expected);
+      if (!ok) {
+        void reply.code(401).send({ message: 'Unauthorized', statusCode: 401 });
+        return;
+      }
+      done();
+    });
+
   // CORS for the admin dashboard SPA and Gmail add-on, with cookie credentials.
+  // Methods must be explicit — the default omits DELETE/PATCH/PUT, which
+  // silently fails browser preflight for deletes, gap-resolve, offboard, etc.
   app.enableCors({
     origin: (process.env.CORS_ORIGINS ?? 'http://localhost:5173').split(','),
     credentials: true,
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
 
   // Strict global validation: strip unknown fields and reject them outright,
